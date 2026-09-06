@@ -575,7 +575,13 @@ app.post("/api/jobs", async (req, res) => {
           }
           await sshExec(spark, `base64 -d ${remoteSh}.b64 > ${remoteSh} && rm -f ${remoteSh}.b64 && wc -c ${remoteSh}`, { timeoutMs: 20_000 });
         } catch (err) {
-          return res.status(502).json({ error: `bundle upload failed: ${err.message}` });
+          const target = `${spark.ssh?.user || "?"}@${spark.ssh?.host || spark.lanIp || "?"}`;
+          const hint = spark.ssh?.auth === "pass"
+            ? "password auth — make sure a password is stored for this spark (Edit Spark → Test or Save)"
+            : "key auth — add the dashboard's public key to the node's authorized_keys, or use a user that has one";
+          return res.status(502).json({
+            error: `agent bootstrap SSH failed (${target}): ${err.message}. Fix: ${hint}`,
+          });
         }
         const bootstrapScript = kind === "install-agent"
           ? buildInstallAgentScript({

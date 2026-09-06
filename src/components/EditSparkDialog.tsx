@@ -612,10 +612,23 @@ export function EditSparkDialog({
                 </div>
               )}
 
-              {!config.isLocal && (
-                <>
-                  <div>
-                    <label className="mb-1 block text-xs text-muted">SSH User</label>
+              <div className="rounded border border-border bg-surface-elevated/40 p-2">
+                <p className="mb-1 text-[10px] text-muted">
+                  SSH credentials — also used to bootstrap the sparkdash agent on this node
+                  (required even for local units, since the dashboard may run in Docker).
+                </p>
+                <div className="mt-2">
+                  <label className="mb-1 block text-xs text-muted">SSH Host</label>
+                  <input
+                    type="text"
+                    value={config.ssh.host || ""}
+                    onChange={(e) => updateSsh({ host: e.target.value })}
+                    placeholder={config.isLocal ? "e.g. 10.0.10.4" : "leave empty to use lanIp"}
+                    className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
+                  />
+                </div>
+                <div className="mt-2">
+                  <label className="mb-1 block text-xs text-muted">SSH User</label>
                     <input
                       type="text"
                       value={config.ssh.user}
@@ -674,9 +687,8 @@ export function EditSparkDialog({
                       )}
                     </div>
                   )}
-                </>
-              )}
-            </div>
+                </div>
+              </div>
           )}
 
           {testResult && (

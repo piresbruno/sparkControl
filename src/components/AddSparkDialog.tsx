@@ -240,56 +240,65 @@ export function AddSparkDialog({ open, onClose, onAdded, defaultLlmPort = 8888 }
             sparkdash agent (outbound WS transport; SSH stays as fallback)
           </label>
 
-          {!config.isLocal && (
-            <>
-              <div>
-                <label className="mb-1 block text-xs text-muted">SSH User</label>
-                <input
-                  type="text"
-                  value={config.ssh.user}
-                  onChange={(e) => updateSsh({ user: e.target.value })}
-                  className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-xs text-muted">SSH Auth</label>
-                <select
-                  value={config.ssh.auth}
-                  onChange={(e) => updateSsh({ auth: e.target.value as "key" | "pass" })}
-                  className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
-                >
-                  <option value="key">Key</option>
-                  <option value="pass">Password</option>
-                </select>
-                {config.ssh.auth === "key" && (
-                  <p className="mt-1 text-[10px] text-muted">
-                    SSH runs on the sparkDash host (not your browser). In Docker, mount a private
-                    key at /root/.ssh/id_ed25519 (see docker-compose.yml) or set SSH_IDENTITY_FILE.
-                    IPs are from that host&apos;s network. Mark this machine as “This host” so it
-                    skips SSH.
-                  </p>
-                )}
-              </div>
-
-              {config.ssh.auth === "pass" && (
-                <div>
-                  <label className="mb-1 block text-xs text-muted">SSH Password</label>
-                  <input
-                    type="password"
-                    value={config.ssh.password || ""}
-                    onChange={(e) => updateSsh({ password: e.target.value })}
-                    className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
-                    autoComplete="new-password"
-                  />
-                  <p className="mt-1 text-[10px] text-muted">
-                    Stored encrypted on the server (not in sparks.json, not returned by the API).
-                    Survives Docker restarts.
-                  </p>
-                </div>
+          <div className="rounded border border-border bg-surface-elevated/40 p-2">
+            <p className="mb-1 text-[10px] text-muted">
+              SSH credentials — also used to bootstrap the sparkdash agent on this node
+              (required even for local units, since the dashboard may run in Docker).
+            </p>
+            <div className="mt-2">
+              <label className="mb-1 block text-xs text-muted">SSH Host</label>
+              <input
+                type="text"
+                value={config.ssh.host}
+                onChange={(e) => updateSsh({ host: e.target.value })}
+                placeholder={config.isLocal ? "e.g. 10.0.10.4" : "leave empty to use lanIp"}
+                className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
+              />
+            </div>
+            <div className="mt-2">
+              <label className="mb-1 block text-xs text-muted">SSH User</label>
+              <input
+                type="text"
+                value={config.ssh.user}
+                onChange={(e) => updateSsh({ user: e.target.value })}
+                className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
+              />
+            </div>
+            <div className="mt-2">
+              <label className="mb-1 block text-xs text-muted">SSH Auth</label>
+              <select
+                value={config.ssh.auth}
+                onChange={(e) => updateSsh({ auth: e.target.value as "key" | "pass" })}
+                className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
+              >
+                <option value="key">Key</option>
+                <option value="pass">Password</option>
+              </select>
+              {config.ssh.auth === "key" && (
+                <p className="mt-1 text-[10px] text-muted">
+                  SSH runs on the sparkDash host (not your browser). In Docker, mount a private
+                  key at /root/.ssh/id_ed25519 (see docker-compose.yml) or set SSH_IDENTITY_FILE.
+                  IPs are from that host&apos;s network.
+                </p>
               )}
-            </>
-          )}
+            </div>
+            {config.ssh.auth === "pass" && (
+              <div className="mt-2">
+                <label className="mb-1 block text-xs text-muted">SSH Password</label>
+                <input
+                  type="password"
+                  value={config.ssh.password || ""}
+                  onChange={(e) => updateSsh({ password: e.target.value })}
+                  className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
+                  autoComplete="new-password"
+                />
+                <p className="mt-1 text-[10px] text-muted">
+                  Stored encrypted on the server (not in sparks.json, not returned by the API).
+                  Survives Docker restarts.
+                </p>
+              </div>
+            )}
+          </div>
         </div>
 
         {testResult && (
