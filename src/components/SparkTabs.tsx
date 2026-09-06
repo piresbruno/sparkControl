@@ -19,8 +19,8 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { SparkSnapshot } from "../api/types";
-import { PlusIcon, GridIcon, ActivityIcon } from "./ui/icons";
-import { OVERVIEW_ID, ANALYSIS_ID } from "../constants";
+import { PlusIcon, GridIcon, ActivityIcon, DiskIcon } from "./ui/icons";
+import { OVERVIEW_ID, ANALYSIS_ID, MODELS_ID } from "../constants";
 
 interface SparkTabsProps {
   sparks: SparkSnapshot[];
@@ -327,6 +327,7 @@ export function SparkTabs({
       <nav className="pill-nav" aria-label="Sparks">
         <OverviewTab isActive={activeId === OVERVIEW_ID} onSelect={onSelect} />
         <AnalysisTab isActive={activeId === ANALYSIS_ID} onSelect={onSelect} />
+        <ModelsTab isActive={activeId === MODELS_ID} onSelect={onSelect} />
         {sparks.map((spark) => (
           <div key={spark.id} className="shrink-0">
             <TabChrome
@@ -353,6 +354,7 @@ export function SparkTabs({
       <nav className="pill-nav" aria-label="Sparks">
         <OverviewTab isActive={activeId === OVERVIEW_ID} onSelect={onSelect} />
         <AnalysisTab isActive={activeId === ANALYSIS_ID} onSelect={onSelect} />
+        <ModelsTab isActive={activeId === MODELS_ID} onSelect={onSelect} />
         <SortableContext items={items} strategy={horizontalListSortingStrategy}>
           {ordered.map((spark) => (
             <SortableTab
@@ -437,6 +439,27 @@ function AnalysisTab({
   );
 }
 
+function ModelsTab({
+  isActive,
+  onSelect,
+}: {
+  isActive: boolean;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <div className="shrink-0">
+      <button
+        type="button"
+        onClick={() => onSelect(MODELS_ID)}
+        className={`pill-item ${isActive ? "is-active" : ""}`}
+      >
+        <DiskIcon className="h-3.5 w-3.5" />
+        Models
+      </button>
+    </div>
+  );
+}
+
 /* ─── Mobile dropdown menu ────────────────────────────── */
 
 function MobileSparkMenu({
@@ -516,6 +539,15 @@ function MobileSparkMenu({
       >
         <ActivityIcon className="h-3.5 w-3.5" />
         Analysis
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className={`mobile-menu-item ${activeId === MODELS_ID ? "is-active" : ""}`}
+        onClick={() => handleItemClick(MODELS_ID)}
+      >
+        <DiskIcon className="h-3.5 w-3.5" />
+        Models
       </button>
       {sparks.map((spark) => (
         <button
