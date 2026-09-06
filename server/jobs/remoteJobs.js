@@ -25,24 +25,23 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import { execFile } from "child_process";
 import { fileURLToPath } from "url";
 import { sshExec } from "../collectors/ssh.js";
+import { execOnLocalHost } from "../collectors/localHostExec.js";
 import { shellQuote } from "../util/shellQuote.js";
 import { atomicWrite } from "../util/atomicWrite.js";
 
 /**
- * Execute a command on a spark: local sparks run `sh -c` in-process
- * (matches SystemCollector._exec); remote sparks go over sshExec.
+ * Execute a command on a spark. Remote sparks go over sshExec; local sparks
+ * run on the HOST machine (host mount namespace + host user identity via
+ * execOnLocalHost) so host-installed CLIs (modelctl, uv, serving binaries),
+ * host mounts (NAS root) and the host user's ~/.sparkdash are visible — the
+ * dashboard itself may be containerized, where none of those exist. On a
+ * bare-host dev setup this degrades to plain in-process `sh -c`.
  */
 export function execOnSpark(spark, cmd, opts = {}) {
   if (spark?.isLocal) {
-    return new Promise((resolve, reject) => {
-      execFile("sh", ["-c", cmd], { timeout: opts.timeoutMs || 10_000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
-        if (err) return reject(new Error(stderr?.trim() || err.message));
-        resolve(String(stdout));
-      });
-    });
+    return execOnLocalHost(spark, cmd, opts);
   }
   return sshExec(spark, cmd, opts);
 }
