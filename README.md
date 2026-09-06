@@ -30,10 +30,9 @@ upstream project; this fork tracks upstream and extends it with the **LocalAI Co
 - **sparkdash agent** — an outbound-WebSocket daemon per node for push metrics, LLM probes, job execution, and serving supervision (SSH demoted to bootstrap + fallback).
 - **Worker model identification** — Overview cards show the actually-running model on worker nodes.
 
-Upstream README follows, unchanged in structure. Fork-specific documentation lives in the
+Upstream README follows, unchanged in structure. The upstream MIT license applies and is preserved in
+[LICENSE](./LICENSE). Fork-specific documentation lives in the
 **[LocalAI Command Center (fork additions)](#localai-command-center-fork-additions)** section below.
-
----
 
 ### LLM Prompt Showcase
 
