@@ -440,14 +440,14 @@ export function ModelsPage() {
       <section className="panel p-3">
         <h3 className="text-xs font-semibold uppercase tracking-wide text-muted mb-2">Serving</h3>
         <div className="flex flex-wrap items-center gap-2 mb-2">
-          <select className="text-xs rounded border border-border bg-surface px-2 py-1" value={servingSparkId} onChange={(e) => setServingSparkId(e.target.value)} aria-label="Runs on">
+          <select className="select-inline text-xs rounded border border-border bg-surface px-2 py-1" value={servingSparkId} onChange={(e) => setServingSparkId(e.target.value)} aria-label="Runs on">
             {enabledSparks.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
               </option>
             ))}
           </select>
-          <select className="text-xs rounded border border-border bg-surface px-2 py-1" value={scriptId} onChange={(e) => onScriptChange(e.target.value)} aria-label="Script">
+          <select className="select-inline text-xs rounded border border-border bg-surface px-2 py-1" value={scriptId} onChange={(e) => onScriptChange(e.target.value)} aria-label="Script">
             <option value="">Select script…</option>
             {scripts.map((s) => (
               <option key={s.id} value={s.id}>
@@ -455,7 +455,7 @@ export function ModelsPage() {
               </option>
             ))}
           </select>
-          <select className="text-xs rounded border border-border bg-surface px-2 py-1" value={modelName} onChange={(e) => setModelName(e.target.value)} aria-label="Model">
+          <select className="select-inline text-xs rounded border border-border bg-surface px-2 py-1" value={modelName} onChange={(e) => setModelName(e.target.value)} aria-label="Model">
             <option value="">No model</option>
             {matrixModels.map((m) => {
               const present = selectedServingInv?.models.some((x) => x.name === m);
