@@ -78,6 +78,22 @@ export function SparkHeader({ spark, onEdit }: SparkHeaderProps) {
                 {formatUptime(spark.uptime)}
               </span>
             )}
+            {spark.transport === "agent" && (
+              <span
+                className="shrink-0 rounded bg-success/15 px-1.5 py-0.5 text-[10px] font-medium text-success"
+                title={`sparkdash agent connected (v${spark.agentVersion ?? "?"}) — metrics stream over WebSocket; SSH is the fallback`}
+              >
+                Agent
+              </span>
+            )}
+            {spark.transport !== "agent" && spark.agentEnabled && (
+              <span
+                className="shrink-0 rounded bg-muted/15 px-1.5 py-0.5 text-[10px] font-medium text-muted"
+                title="sparkdash agent enabled but not connected — metrics come over SSH"
+              >
+                SSH
+              </span>
+            )}
             {hermes?.monitoring && hermes.installed && hermes.version && (
               <span
                 className="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 font-tabular text-[10px] font-medium text-accent"

@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useRef, useState } from "react";
-import { OVERVIEW_ID } from "../constants";
+import { OVERVIEW_ID, ANALYSIS_ID, MODELS_ID } from "../constants";
 
 export type RouteMode = "app" | "showcase";
 
@@ -37,10 +37,33 @@ export function useAppRoute(): AppRoute {
 }
 
 /**
+ * Resolve the active view id from a URL path.
+ *   /                  → Overview
+ *   /analysis[?query]  → Analysis (query kept for ?spark=&port= init)
+ *   /models            → Models
+ *   /spark/:id         → Spark detail page
+ *   anything else      → null (caller decides; popstate defaults to Overview)
+ */
+export function activeIdFromPath(path: string): string | null {
+  if (path === "/analysis" || path.startsWith("/analysis?") || path.startsWith("/analysis/")) {
+    return ANALYSIS_ID;
+  }
+  if (path === "/models" || path.startsWith("/models?") || path.startsWith("/models/")) {
+    return MODELS_ID;
+  }
+  const match = path.match(/^\/spark\/([^/]+)/);
+  if (match) return decodeURIComponent(match[1]);
+  if (path === "/" || path === "") return OVERVIEW_ID;
+  return null;
+}
+
+/**
  * useRoute — syncs the browser URL path with the active spark ID.
  *
  * URL scheme:
  *   /             → Overview
+ *   /analysis     → Analysis page (sentinel id; query params allowed)
+ *   /models       → Models page (sentinel id)
  *   /spark/:id    → Spark detail page
  *   /showcase/:id → full-screen showcase (handled separately via useAppRoute)
  *
@@ -60,9 +83,9 @@ export function useRoute(
     const path = window.location.pathname;
     if (path.startsWith("/showcase/")) return;
 
-    const match = path.match(/^\/spark\/([^/]+)/);
-    if (match) {
-      setActiveId(match[1]);
+    const resolved = activeIdFromPath(path);
+    if (resolved != null) {
+      setActiveId(resolved);
     } else if (path !== "/spark") {
       setActiveId(OVERVIEW_ID);
     }
@@ -73,8 +96,8 @@ export function useRoute(
     const handler = () => {
       const path = window.location.pathname;
       if (path.startsWith("/showcase/")) return;
-      const match = path.match(/^\/spark\/([^/]+)/);
-      setActiveId(match ? match[1] : OVERVIEW_ID);
+      const resolved = activeIdFromPath(path);
+      setActiveId(resolved ?? OVERVIEW_ID);
     };
     window.addEventListener("popstate", handler);
     return () => window.removeEventListener("popstate", handler);
@@ -83,7 +106,12 @@ export function useRoute(
   // Wrapped navigate function — updates URL + internal state
   const navigate = useCallback(
     (id: string | null) => {
-      const url = id && id !== OVERVIEW_ID ? `/spark/${encodeURIComponent(id)}` : "/";
+      let url = "/";
+      if (id && id !== OVERVIEW_ID) {
+        if (id === ANALYSIS_ID) url = "/analysis";
+        else if (id === MODELS_ID) url = "/models";
+        else url = `/spark/${encodeURIComponent(id)}`;
+      }
       window.history.pushState(null, "", url);
       setActiveId(id);
     },

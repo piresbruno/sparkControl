@@ -25,3 +25,23 @@ export function isLlmMonitoringEnabled(spark: {
   if (role === "head") return true;
   return spark.llmMonitoring !== false;
 }
+
+/**
+ * Part D: whether this spark probes engines at all (detection cadence for
+ * workers). Overview cards use this to show the actually-running model.
+ * Workers: llmPorts present. Head: always. Standalone: llmPorts present
+ * (llmMonitoring only controls the full panels, not identification).
+ */
+export function isLlmDetectionEnabled(spark: {
+  role?: SparkRole | string | null;
+  workerNode?: boolean | null;
+  llmPorts?: number[] | null;
+  llmPort?: number | null;
+}): boolean {
+  const ports = Array.isArray(spark.llmPorts) && spark.llmPorts.length > 0
+    ? spark.llmPorts
+    : Number.isInteger(spark.llmPort)
+      ? [spark.llmPort as number]
+      : [];
+  return ports.length > 0;
+}

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { SparkSnapshot } from "../../api/types";
-import { resolveSparkRole } from "../../api/sparkRole";
+import { resolveSparkRole, isLlmDetectionEnabled } from "../../api/sparkRole";
 import { shutdownAllSparks, updateAllHermes, wakeAllSparks } from "../../api/client";
 import { ConfirmShutdownDialog } from "../ConfirmShutdownDialog";
 import { MetricBar } from "../ui/MetricBar";
@@ -307,8 +307,34 @@ function SparkCard({
             {(() => {
               const role = resolveSparkRole(spark);
 
-              // Workers have no local LLM API — show cluster/model label instead.
+              // Part D: workers run detection probes — render the live model
+              // when available; fall back to the static cluster label; show
+              // "no model running" when the probe reports nothing available.
               if (role === "worker") {
+                const llmArr = spark.metrics.llm;
+                const llm = Array.isArray(llmArr) ? llmArr.find((l) => l.available) : null;
+                if (llm) {
+                  return (
+                    <MiniStat
+                      label={llm.backend === "vllm" ? "vLLM" : llm.backend ?? "LLM"}
+                      value={llm.modelId ?? "unknown"}
+                      tone="accent"
+                      title={llm.modelId ?? undefined}
+                      wrap
+                    />
+                  );
+                }
+                if (isLlmDetectionEnabled(spark)) {
+                  return (
+                    <MiniStat
+                      label="Worker"
+                      value="no model running"
+                      tone="default"
+                      title="Detection probe found no engine on the configured LLM ports"
+                      wrap
+                    />
+                  );
+                }
                 const label = spark.workerLabel?.trim() || "distributed";
                 const title = headSparkName
                   ? `${label} · worker of ${headSparkName}`

@@ -522,6 +522,15 @@ export class SparkRegistry {
        * the SparkMonitor checks for updates and allows one-click `hermes update`.
        */
       hermesMonitoring: Boolean(config.hermesMonitoring),
+      /**
+       * B1: opt-in modelctl integration for this node (jobs/inventories/placement).
+       */
+      modelctlEnabled: Boolean(config.modelctlEnabled),
+      /**
+       * C1: opt-in sparkdash agent (outbound WS transport). SSH remains the
+       * fallback transport whenever this is false or the agent is disconnected.
+       */
+      agentEnabled: Boolean(config.agentEnabled),
       disabledDevices: Array.isArray(config.disabledDevices) ? config.disabledDevices : [],
       disabledInterfaces: Array.isArray(config.disabledInterfaces) ? config.disabledInterfaces : [],
       storagePollDisabled: Boolean(config.storagePollDisabled),

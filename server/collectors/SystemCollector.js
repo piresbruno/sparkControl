@@ -1448,7 +1448,10 @@ export class SystemCollector {
         });
       }
     }
-    return this._readHostFile(`/proc/net/${relPath}`);
+    // Direct read — the caller is on the node itself (agent local mode) or the
+    // host namespace is shared. NEVER route back through _readHostFile: it
+    // detects the /proc/net/ prefix and recurses infinitely.
+    return fs.readFileSync(`/proc/net/${relPath}`, "utf-8");
   }
 
   /** Lightweight liveness for local Sparks. */

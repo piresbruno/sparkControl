@@ -16,6 +16,16 @@ import type {
   PrefillBenchJob,
   PrefillBenchListResponse,
   StartPrefillBenchRequest,
+  TraceEntry,
+  TraceListResponse,
+  JobKind,
+  MctlJob,
+  ModelctlStatus,
+  NasModel,
+  Placement,
+  ServingScript,
+  ServingStatus,
+  InventoryResponse,
 } from "./types";
 
 const BASE = "";
@@ -431,4 +441,126 @@ export function updateSettings(patch: Partial<Settings>): Promise<Settings> {
     method: "PUT",
     body: JSON.stringify(patch),
   });
+}
+
+// ─── Analysis traces (Part A) ─────────────────────────────
+export function listTraces(params: {
+  sparkId?: string;
+  port?: number;
+  source?: string;
+  method?: string;
+  since?: number;
+  limit?: number;
+} = {}): Promise<TraceListResponse> {
+  const q = new URLSearchParams();
+  if (params.sparkId) q.set("sparkId", params.sparkId);
+  if (params.port != null) q.set("port", String(params.port));
+  if (params.source && params.source !== "all") q.set("source", params.source);
+  if (params.method) q.set("method", params.method);
+  if (params.since != null) q.set("since", String(params.since));
+  if (params.limit != null) q.set("limit", String(params.limit));
+  const qs = q.toString();
+  return apiFetch(`/api/traces${qs ? `?${qs}` : ""}`);
+}
+
+export function getTrace(id: string): Promise<TraceEntry> {
+  return apiFetch(`/api/traces/${encodeURIComponent(id)}`);
+}
+
+export function clearTraces(): Promise<{ success: boolean }> {
+  return apiFetch("/api/traces", { method: "DELETE" });
+}
+
+// ─── Model ops + serving (Part B) ─────────────────────────
+export function listNasModels(): Promise<InventoryResponse> {
+  return apiFetch("/api/models/nas");
+}
+
+export function listNodeModels(sparkId: string): Promise<InventoryResponse> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(sparkId)}/models`);
+}
+
+export function modelctlStatus(sparkId: string, force = false): Promise<ModelctlStatus> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(sparkId)}/modelctl${force ? "?force=1" : ""}`);
+}
+
+export function startJob(body: {
+  kind: JobKind;
+  repo?: string;
+  name?: string;
+  quantization?: string;
+  revision?: string;
+  sparkId?: string;
+  model?: string;
+  sourceSparkId?: string;
+  targetSparkId?: string;
+}): Promise<{ jobId: string; kind: JobKind; sparkId: string }> {
+  return apiFetch("/api/jobs", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function listJobs(): Promise<{ jobs: MctlJob[] }> {
+  return apiFetch("/api/jobs");
+}
+
+export function getJob(jobId: string): Promise<MctlJob> {
+  return apiFetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+}
+
+export function cancelJob(jobId: string): Promise<MctlJob> {
+  return apiFetch(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
+}
+
+export function listServingScripts(): Promise<{ scripts: ServingScript[] }> {
+  return apiFetch("/api/serving/scripts");
+}
+
+export function servingStart(body: {
+  sparkId?: string;
+  scriptId: string;
+  modelName?: string;
+  port: number;
+  extraArgs?: string;
+}): Promise<{ success: boolean; sparkId: string; scriptId: string; port: number }> {
+  return apiFetch("/api/serving/start", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function servingStop(body: { sparkId?: string; scriptId?: string } = {}): Promise<{ success: boolean; running: boolean }> {
+  return apiFetch("/api/serving/stop", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function servingStatus(sparkId?: string, scriptId?: string): Promise<ServingStatus> {
+  const q = new URLSearchParams();
+  if (sparkId) q.set("sparkId", sparkId);
+  if (scriptId) q.set("scriptId", scriptId);
+  const qs = q.toString();
+  return apiFetch(`/api/serving/status${qs ? `?${qs}` : ""}`);
+}
+
+export function servingLog(sparkId?: string, scriptId?: string, bytes = 4000): Promise<{ sparkId: string; scriptId: string; log: string }> {
+  const q = new URLSearchParams();
+  if (sparkId) q.set("sparkId", sparkId);
+  if (scriptId) q.set("scriptId", scriptId);
+  q.set("bytes", String(bytes));
+  return apiFetch(`/api/serving/log?${q.toString()}`);
+}
+
+export function servingPlacement(model: string, sparkId?: string): Promise<Placement> {
+  const q = new URLSearchParams({ model });
+  if (sparkId) q.set("sparkId", sparkId);
+  return apiFetch(`/api/serving/placement?${q.toString()}`);
+}
+
+// ─── Agent (Part C) ───────────────────────────────────────
+export function agentStatus(sparkId: string): Promise<{
+  sparkId: string;
+  agentEnabled: boolean;
+  connected: boolean;
+  transport: "agent" | "ssh";
+  agentVersion: string | null;
+}> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(sparkId)}/agent`);
+}
+
+export function rotateAgentToken(): Promise<{ success: boolean; tokenConfigured: boolean; notified: number }> {
+  return apiFetch("/api/agent/token/rotate", { method: "POST" });
 }

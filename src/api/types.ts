@@ -82,6 +82,16 @@ export interface SparkConfig {
    * Report tailnet presence via `tailscale status --json` (default false; all roles).
    */
   tailscaleMonitoring?: boolean;
+  /**
+   * B1: opt-in modelctl integration for this node (inventories, placement,
+   * serving). Default false.
+   */
+  modelctlEnabled?: boolean;
+  /**
+   * C1: opt-in sparkdash agent transport (outbound WebSocket). Default false;
+   * SSH remains the fallback whenever the agent is absent or disconnected.
+   */
+  agentEnabled?: boolean;
   /** When true, storage is only updated on manual refresh, not auto-polled. */
   storagePollDisabled?: boolean;
 }
@@ -469,6 +479,11 @@ export interface SparkSnapshot {
   name: string;
   /** Unit type: spark (DGX Spark) or host (dedicated GPU Linux box). */
   kind?: "spark" | "host";
+  /** C3: metrics transport — agent (WS) or ssh fallback. */
+  transport?: "agent" | "ssh";
+  agentVersion?: string | null;
+  /** C1: agent opt-in flag mirrored onto the snapshot for UI badges. */
+  agentEnabled?: boolean;
   online: boolean;
   /** Uptime in seconds, or null when offline */
   uptime: number | null;
@@ -523,6 +538,21 @@ export interface Settings {
   benchDebugTraces: boolean;
   /** Layout density — compact (default) or comfortable. */
   density: "comfortable" | "compact";
+  /** A2: reverse-proxy trace capture (Analysis section). */
+  traceCapture: boolean;
+  /** A2: store request/response bodies with trace entries (capped). */
+  traceCaptureBodies: boolean;
+  /** A2: optional exact-origin CORS allowlist for /llm proxy. */
+  traceProxyAllowedOrigins: string[];
+  /** B1: modelctl integration settings. */
+  modelctl: {
+    nasRoot: string;
+    nasHostSparkId: string | null;
+    remoteBin: string;
+    source: string;
+  };
+  /** C4: agent token state (token itself never leaves the secrets store). */
+  agent: { tokenConfigured: boolean };
 }
 
 export interface SparksListResponse {
@@ -837,4 +867,105 @@ export interface ShowcaseListResponse {
 export interface ShowcaseStartResponse {
   sessionId: string;
   status: "running";
+}
+// ─── Analysis traces (Part A) ─────────────────────────────
+export type JobKind =
+  | "download"
+  | "sync"
+  | "push"
+  | "delete-local"
+  | "install-modelctl"
+  | "install-agent"
+  | "update-agent";
+
+export interface TraceEntry {
+  seq: number;
+  id: string;
+  ts: number;
+  sparkId: string | null;
+  port: number | null;
+  source: string | null;
+  method: string | null;
+  path: string | null;
+  query: string | null;
+  model: string | null;
+  stream: boolean;
+  status: number | null;
+  ttftMs: number | null;
+  durMs: number | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  tokensEstimated: boolean;
+  finishReason: string | null;
+  error: string | null;
+  reqBody?: string | null;
+  resText?: string | null;
+}
+
+export interface TraceListResponse {
+  traces: TraceEntry[];
+  lastSeq: number;
+}
+
+// ─── Model ops + serving (Part B) ─────────────────────────
+export interface NasModel {
+  name: string;
+  runtime: string | null;
+  repository: string | null;
+  bytes: number | null;
+}
+
+export interface NodeModel {
+  name: string;
+  runtime: string | null;
+  repository: string | null;
+  bytes?: null;
+}
+
+export interface InventoryResponse {
+  models: NasModel[];
+  error?: string;
+  stale?: boolean;
+  sparkId?: string;
+}
+
+export interface ModelctlStatus {
+  installed: boolean;
+  version: string | null;
+  uv: { installed: boolean; version: string | null };
+  error?: string;
+  stale?: boolean;
+}
+
+export interface MctlJob {
+  jobId: string;
+  kind: JobKind;
+  name: string;
+  sparkId: string;
+  status: "running" | "completed" | "failed" | "cancelled" | "interrupted";
+  createdAt: number;
+  startedAt: number | null;
+  endedAt: number | null;
+  exitCode: number | null;
+  logTail: string;
+  lastError?: string;
+}
+
+export interface ServingScript {
+  id: string;
+  description: string;
+  defaultPort: number | null;
+}
+
+export interface ServingStatus {
+  sparkId: string;
+  scriptId?: string;
+  running: boolean | "unknown";
+  startedAt?: number | null;
+  error?: string;
+}
+
+export interface Placement {
+  status: "present" | "sync" | "push" | "unavailable";
+  remediations: Array<{ kind: "sync" | "push"; sparkId: string; targetSparkId?: string }>;
 }

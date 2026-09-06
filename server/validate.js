@@ -77,7 +77,7 @@ export function isValidSshUser(user) {
  * Matches the frontend `OVERVIEW_ID` constant (kept in sync manually — it is
  * a single value and duplicated across the boundary on purpose).
  */
-export const RESERVED_SPARK_IDS = Object.freeze(new Set(["__overview__"]));
+export const RESERVED_SPARK_IDS = Object.freeze(new Set(["__overview__", "__analysis__", "__models__"]));
 
 /**
  * Validate a client-supplied Spark id. Same character class as the SSH user

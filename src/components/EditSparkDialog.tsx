@@ -253,6 +253,8 @@ export function EditSparkDialog({
           return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : 8188;
         })(),
         hermesMonitoring: Boolean(config.hermesMonitoring),
+        modelctlEnabled: Boolean(config.modelctlEnabled),
+        agentEnabled: Boolean(config.agentEnabled),
         tailscaleMonitoring: Boolean(config.tailscaleMonitoring),
         ssh: {
           host: config.ssh.host || config.lanIp,
@@ -505,6 +507,40 @@ export function EditSparkDialog({
                 machine via SSH.
               </p>
 
+              <label className="flex items-center gap-2 text-xs text-muted">
+                <input
+                  type="checkbox"
+                  checked={Boolean(config.modelctlEnabled)}
+                  onChange={(e) => update({ modelctlEnabled: e.target.checked })}
+                  className="rounded border-border"
+                />
+                <span>modelctl integration</span>
+                <span
+                  className="inline-flex shrink-0 cursor-help text-muted hover:text-text"
+                  title="modelctl model inventory, placement (sync/push), and serving scripts on this node."
+                  aria-label="Enable modelctl integration for this node."
+                >
+                  <InfoIcon className="h-3.5 w-3.5" />
+                </span>
+              </label>
+
+              <label className="flex items-center gap-2 text-xs text-muted">
+                <input
+                  type="checkbox"
+                  checked={Boolean(config.agentEnabled)}
+                  onChange={(e) => update({ agentEnabled: e.target.checked })}
+                  className="rounded border-border"
+                />
+                <span>sparkdash agent</span>
+                <span
+                  className="inline-flex shrink-0 cursor-help text-muted hover:text-text"
+                  title="Agent daemon with an outbound WebSocket to the dashboard. SSH stays as the fallback transport."
+                  aria-label="Enable the sparkdash agent transport for this node."
+                >
+                  <InfoIcon className="h-3.5 w-3.5" />
+                </span>
+              </label>
+
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
                 <label className="flex min-w-0 items-center gap-2">
                   <input
@@ -576,10 +612,23 @@ export function EditSparkDialog({
                 </div>
               )}
 
-              {!config.isLocal && (
-                <>
-                  <div>
-                    <label className="mb-1 block text-xs text-muted">SSH User</label>
+              <div className="rounded border border-border bg-surface-elevated/40 p-2">
+                <p className="mb-1 text-[10px] text-muted">
+                  SSH credentials — also used to bootstrap the sparkdash agent on this node
+                  (required even for local units, since the dashboard may run in Docker).
+                </p>
+                <div className="mt-2">
+                  <label className="mb-1 block text-xs text-muted">SSH Host</label>
+                  <input
+                    type="text"
+                    value={config.ssh.host || ""}
+                    onChange={(e) => updateSsh({ host: e.target.value })}
+                    placeholder={config.isLocal ? "e.g. 10.0.10.4" : "leave empty to use lanIp"}
+                    className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
+                  />
+                </div>
+                <div className="mt-2">
+                  <label className="mb-1 block text-xs text-muted">SSH User</label>
                     <input
                       type="text"
                       value={config.ssh.user}
@@ -638,9 +687,8 @@ export function EditSparkDialog({
                       )}
                     </div>
                   )}
-                </>
-              )}
-            </div>
+                </div>
+              </div>
           )}
 
           {testResult && (

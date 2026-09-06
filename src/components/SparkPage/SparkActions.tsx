@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { SparkSnapshot } from "../../api/types";
-import { shutdownSpark, wakeSpark } from "../../api/client";
+import { shutdownSpark, wakeSpark, startJob } from "../../api/client";
 import { ConfirmShutdownDialog } from "../ConfirmShutdownDialog";
 import { openHermesUpdateDialog } from "../../hooks/useHermesUpdateDialog";
 import { EditIcon, PowerOffIcon, PowerOnIcon, RotateIcon } from "../ui/icons";
@@ -33,6 +33,23 @@ export function SparkActions({ spark, onEdit, className }: SparkActionsProps) {
       sparkName: spark.name,
       currentVersion: hermes?.version ?? null,
     });
+  }
+
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [agentMsg, setAgentMsg] = useState<{ text: string; tone: "ok" | "err" } | null>(null);
+
+  async function handleInstallAgent() {
+    setAgentBusy(true);
+    setAgentMsg(null);
+    try {
+      await startJob({ kind: "install-agent", sparkId: spark.id });
+      setAgentMsg({ text: "Agent install queued — watch the Models page job panel", tone: "ok" });
+    } catch (err: unknown) {
+      setAgentMsg({ text: err instanceof Error ? err.message : "Install failed", tone: "err" });
+    } finally {
+      setAgentBusy(false);
+      setTimeout(() => setAgentMsg(null), 6000);
+    }
   }
 
   async function handleShutdown() {
@@ -150,6 +167,26 @@ export function SparkActions({ spark, onEdit, className }: SparkActionsProps) {
             <PowerOnIcon className="h-3 w-3" />
             Wake
           </button>
+        )}
+        {spark.agentEnabled && spark.transport !== "agent" && (
+          <button
+            type="button"
+            onClick={() => void handleInstallAgent()}
+            disabled={agentBusy || !online}
+            title="Bootstrap the sparkdash agent on this node over SSH (Node runtime → config → systemd → wait for first hello)"
+            className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[11px] transition-colors disabled:opacity-50 ${
+              agentMsg?.tone === "err"
+                ? "border-danger/40 text-danger"
+                : "border-border bg-surface-elevated text-muted hover:bg-accent/15 hover:text-accent"
+            }`}
+          >
+            {agentBusy ? "Installing…" : "Install agent"}
+          </button>
+        )}
+        {agentMsg && (
+          <span className="max-w-[16rem] truncate text-[11px] text-muted" title={agentMsg.text}>
+            {agentMsg.text}
+          </span>
         )}
         {onEdit && (
           <button

@@ -1,7 +1,7 @@
 {
   "name": "sparkdash",
   "version": "1.8.6",
-  "description": "sparkDash \u2014 Multi-DGX Spark Monitoring Dashboard",
+  "description": "sparkDash — Multi-DGX Spark Monitoring Dashboard — LocalAI Command Center fork (upstream: MiaAI-Lab/sparkDash)",
   "type": "module",
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
@@ -9,7 +9,10 @@
     "dev:client": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "node --test server/collectors/__tests__/*.test.js server/sparks/__tests__/*.test.js",
+    "test": "node --test --test-force-exit \"server/**/*.test.js\"",
+    "test:coverage": "c8 --check-coverage --lines 75 --include server --include agent/src node --test --test-force-exit \"server/**/*.test.js\"",
+    "test:ui": "vitest run",
+    "build:agent": "esbuild agent/src/main.js --bundle --platform=node --format=esm --outfile=agent/dist/sparkdash-agent.mjs --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\"",
     "preview": "vite preview",
     "start": "node server/index.js",
     "docker:up": "docker compose up -d",
@@ -26,7 +29,9 @@
     "monitoring",
     "dashboard",
     "gpu",
-    "llm"
+    "llm",
+    "localai",
+    "modelctl"
   ],
   "author": "Mia'a AI Lab",
   "homepage": "https://x.com/MiaAI_lab",
@@ -41,19 +46,31 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@tailwindcss/vite": "^4.3.2",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
     "@types/express": "^5.0.6",
     "@types/node": "^26.1.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.0.3",
+    "@vitest/coverage-v8": "^5.0.0",
     "autoprefixer": "^10.5.2",
+    "c8": "^12.0.0",
     "concurrently": "^10.0.3",
+    "esbuild": "^0.28.2",
+    "jsdom": "^30.0.1",
     "postcss": "^8.5.19",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "tailwindcss": "^4.3.2",
     "typescript": "^7.0.2",
-    "vite": "^8.1.4"
+    "vite": "^8.1.4",
+    "vitest": "^5.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MiaAI-Lab/sparkDash.git"
   }
 }

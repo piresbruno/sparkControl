@@ -2476,3 +2476,18 @@ html {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-muted);
 }
+/* ─── Analysis trace detail (A5) ─────────────────────────── */
+.trace-body__pre {
+  max-height: 60vh;
+  overflow: auto;
+  padding: 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  background: var(--color-surface, #0b0e14);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--color-text, #e5e7eb);
+  margin: 0;
+}

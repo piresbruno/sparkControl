@@ -25,6 +25,9 @@ RUN npm ci --no-audit --no-fund \
 # Copy source and build
 COPY . .
 RUN npm run build
+# LocalAI Command Center: bundle the sparkdash agent (the dashboard ships the
+# artifact that install-agent uploads to nodes over SSH).
+RUN npm run build:agent
 
 # Drop devDependencies so the runtime image can copy node_modules
 # (avoids a second `npm ci --omit=dev`, which has been flaky in Docker:
@@ -52,6 +55,7 @@ COPY --from=builder /app/package-lock.json ./package-lock.json
 COPY --from=builder /app/server ./server
 COPY --from=builder /app/src/shared ./src/shared
 COPY --from=builder /app/config ./config
+COPY --from=builder /app/agent/dist ./agent/dist
 
 # Volume for persistent sparks.json
 VOLUME /app/config

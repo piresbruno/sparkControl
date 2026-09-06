@@ -17,13 +17,22 @@ It also supports **non-Spark units**: any Linux machine with an NVIDIA GPU (e.g.
 
 <img src="./assets/screenshot.jpg" alt="sparkDash Overview page with multiple DGX Spark units, GPU metrics, and LLM status">
 
-## Fork notice
+## Fork notice — LocalAI Command Center
 
 This repository is a **fork of [MiaAI-Lab/sparkDash](https://github.com/MiaAI-Lab/sparkDash)** — the original
 multi-unit monitoring dashboard for NVIDIA DGX Spark by [Mia'a AI Lab](https://x.com/MiaAI_lab).
-All credit for the original dashboard (collectors, SSE architecture, benchmark suites, UI shell) belongs to the
-upstream project; this fork extends it with additional features. The upstream MIT license applies and is
-preserved in [LICENSE](./LICENSE).
+All credit for the dashboard core (collectors, SSE architecture, benchmark suites, UI shell) belongs to the
+upstream project; this fork tracks upstream and extends it with the **LocalAI Command Center** feature set:
+
+- **Analysis** — every inference request/response through a built-in reverse proxy, with payloads, timing, and tokens (SQLite, 1-week retention).
+- **modelctl integration** — NAS model store inventory, HF downloads, node sync/push over CX7, placement planning.
+- **Serving scripts** — user-authored bash scripts the dashboard supervises on any node (env contract, no generated serve commands).
+- **sparkdash agent** — an outbound-WebSocket daemon per node for push metrics, LLM probes, job execution, and serving supervision (SSH demoted to bootstrap + fallback).
+- **Worker model identification** — Overview cards show the actually-running model on worker nodes.
+
+Upstream README follows, unchanged in structure. The upstream MIT license applies and is preserved in
+[LICENSE](./LICENSE). Fork-specific documentation lives in the
+**[LocalAI Command Center (fork additions)](#localai-command-center-fork-additions)** section below.
 
 ### LLM Prompt Showcase
 
@@ -39,6 +48,7 @@ preserved in [LICENSE](./LICENSE).
 
 - [Latest version changelog](#latest-version-changelog)
 - [Features](#features)
+- [LocalAI Command Center (fork additions)](#localai-command-center-fork-additions)
 - [ComfyUI monitoring](#comfyui-monitoring)
 - [Hermes Agent monitoring](#hermes-agent-monitoring)
 - [Tailnet monitoring](#tailnet-monitoring)
@@ -95,6 +105,86 @@ Full history: [CHANGELOG.md](./CHANGELOG.md)
 | **Hot config** | Add / edit / remove / reorder Sparks from the UI with no process restart |
 
 ---
+
+## LocalAI Command Center (fork additions)
+
+Everything in this section is fork-only; upstream `sparkDash` has none of it. All new server modules live
+under `server/proxy/`, `server/jobs/`, `server/serving/`, `server/agent/`, plus `agent/src` for the node daemon.
+
+### Analysis — reverse-proxy trace capture
+
+Point any OpenAI-compatible client at `http://<dashboard>/llm/<sparkId>/<port>` and every request/response is
+recorded (when capture is on) with status, TTFT, duration, token counts, finish reason, and capped bodies
+(32 KB request / 64 KB response). Dashboard **bench / prefill / showcase** traffic is traced too.
+
+- **Storage:** file-based SQLite (`config/traces.sqlite`, WAL) via Node's built-in `node:sqlite` — zero new deps. 1-week retention, purge on boot + hourly.
+- **UI:** new **Analysis** tab — spark/port pickers, source filters (proxy / bench / prefill-bench / showcase), live 1.5 s follow poll, detail modal with Request / Response / Timing tabs, **Copy-as-curl**, capture-off banner.
+- **Auth injection:** if the spark has a stored per-port LLM key, the proxy injects `Authorization: Bearer …` (client header always wins).
+- **CORS:** off by default; optional exact-origin allowlist in Settings (`traceProxyAllowedOrigins`) — never `*`.
+- **Toggles:** `traceCapture` (off = pure forwarding, zero recording) and `traceCaptureBodies` in Settings.
+- **Env:** `TRACES_DB_PATH` overrides the SQLite location (dev checkouts with root-owned `config/`).
+
+### modelctl integration (Models page)
+
+Wraps the [`modelctl`](https://github.com/piresbruno/modelctl) CLI for inventory + placement — the dashboard
+never generates serve commands and never calls destructive NAS `delete`.
+
+- **NAS inventory** (`modelctl list --json --root <nasRoot>`, 60 s cache) and **node inventory** (`list --local --json`, 30 s cache; last-good served stale for 5× TTL on failure).
+- **Download from Hugging Face** to the NAS, **sync NAS → node** (`sync-local`), **push node → node** over ConnectX-7 (`push --host … --jobs 4`, runs on the source node), **remove from node**.
+- **Placement planning:** for any model × target node → `present` / `sync` / `push` (with the peer that holds it) / `unavailable`, surfaced as one-click remediations in the node matrix.
+- **modelctl/uv validation** per node with an idempotent **install-modelctl** job (git check → uv installer → `uv tool install --force` → verify).
+- Per-spark opt-in: **"modelctl integration"** checkbox in Add/Edit Spark.
+- Heavyweight ops run as detached remote jobs with live log tails; one active job per node (409 otherwise).
+
+### Serving scripts
+
+User-authored bash in `config/serving/` (filename = script id). The dashboard supervises one script per node
+with an env contract only — **no serve commands are generated**:
+
+| Env | Meaning |
+|-----|---------|
+| `MODEL_NAME` | selected model (`""` when none) |
+| `PORT` | user-specified port |
+| `EXTRA_ARGS` | one shell-quoted string the script expands unquoted |
+
+- Seeded examples (`example-vllm.sh`, `example-llama-cpp.sh`) resolve model paths via `modelctl path "$MODEL_NAME" --local`.
+- Start/Stop/Status/Log over SSH **or the agent**, with placement-aware start: a missing model returns 409 plus sync/push remediations.
+- Edit scripts directly on disk (config volume); they survive container restarts.
+
+### sparkdash agent
+
+A small daemon on each node holding an **outbound WebSocket** to `ws://<dashboard>/agent-ws` (NAT/tailnet-friendly; SSH stays as bootstrap + fallback).
+
+- **Push metrics** (GPU/CPU/RAM/network/storage) at dashboard-configured cadences using the same collectors — snapshot shapes are identical, the UI cannot tell the transports apart. Snapshot gains `transport` + `agentVersion`.
+- **LLM probes on workers** at a 10 s detection cadence so Overview cards show the actually-running model.
+- **Job execution** (dashboard-supplied scripts, argv or shell mode, 100 KB output ring) and **serving supervision** (spawn, pidfile, 5 MB log rotation, process-group stop, reconnect re-attach).
+- **Bootstrap:** the spark detail page shows **Install agent** when enabled — chunked bundle upload over SSH, Node ≥18 tarball into `~/.sparkdash/agent/node`, `config.json` (token from the encrypted store), systemd system unit via `sudo -n` (user-unit + linger instructions in the job log as fallback).
+- **Token rotation:** Settings → Agent token → Regenerate pushes `config-update`; connected agents rewrite their config and re-auth. Disconnected agents must be re-bootstrapped.
+
+### Worker model identification
+
+Workers now run detection-only probes (`POLL_INTERVAL_LLM_DETECT = 10 s`) on their configured `llmPorts`, so the
+Overview card shows the live `modelId`, falls back to "no model running", then to the static worker label.
+Daily tok/s rollups stay gated to full-monitoring sparks.
+
+### Fork configuration & scripts
+
+| Env / script | Purpose |
+|---|---|
+| `TRACES_DB_PATH` | SQLite trace store location (default `config/traces.sqlite`) |
+| `POLL_INTERVAL_LLM_DETECT` | Worker detection cadence (default 10000 ms) |
+| `SPARKDASH_JOBS_STATE_PATH` | Remote-job state file (default `config/modelctl-jobs.json`) |
+| `SPARKDASH_SERVING_CONFIG_DIR` / `SPARKDASH_SERVING_SOURCE_DIR` | Serving script dirs (runtime / seed source) |
+| `SPARKDASH_AGENT_BUNDLE` / `SPARKDASH_AGENT_CONFIG` | Agent bundle + node config overrides |
+| `npm run build:agent` | esbuild bundle → `agent/dist/sparkdash-agent.mjs` (required before install-agent) |
+| `npm run test:coverage` | c8 gate ≥ 75 % lines on `server/` + `agent/src` |
+| `npm run test:ui` | vitest + Testing Library (frontend behavior tests) |
+
+New REST surface (all before the SPA fallback): `/llm/:sparkId/:port/*` (proxy), `/api/traces[/:id]`,
+`/api/jobs[/:id][/cancel]`, `/api/models/nas`, `/api/sparks/:id/models`, `/api/sparks/:id/modelctl`,
+`/api/serving/scripts|start|stop|status|log|placement`, `/api/sparks/:id/agent`, `/api/agent/token/rotate`,
+plus the `/agent-ws` WebSocket endpoint.
+
 
 ## ComfyUI monitoring
 
