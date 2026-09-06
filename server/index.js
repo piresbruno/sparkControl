@@ -3,6 +3,7 @@ import { createServer } from "http";
 import { WebSocketServer } from "ws";
 import { spawn } from "child_process";
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
@@ -536,11 +537,15 @@ app.post("/api/jobs", async (req, res) => {
         if (!spark.agentEnabled) {
           return res.status(409).json({ error: `agent is not enabled on ${sparkId}` });
         }
-        if (spark.isLocal) {
-          return res.status(400).json({ error: "install-agent targets remote nodes (the dashboard host does not bootstrap itself)" });
-        }
-        if (spark.ssh?.auth === "pass" && !registry.hasPassword(sparkId)) {
+        // Local sparks bootstrap in-process (execOnSpark runs sh -c here);
+        // remote sparks go over SSH. The systemd/systemctl steps inside the
+        // script use sudo -n with a user-unit fallback either way.
+        const isLocalInstall = Boolean(spark.isLocal);
+        if (!isLocalInstall && spark.ssh?.auth === "pass" && !registry.hasPassword(sparkId)) {
           return res.status(400).json({ error: "agent bootstrap over password SSH requires the stored password" });
+        }
+        if (!fs.existsSync(AGENT_BUNDLE_PATH)) {
+          return res.status(503).json({ error: "agent bundle missing — run `npm run build:agent` first" });
         }
         // Upload the bundle (~130 KB) in base64 chunks — a single argv with the
         // whole payload trips E2BIG. Chunks ride in separate sshExec calls.
@@ -558,18 +563,22 @@ app.post("/api/jobs", async (req, res) => {
         } catch (err) {
           return res.status(502).json({ error: `bundle upload failed: ${err.message}` });
         }
+        // Local installs reach the dashboard over loopback; the unit runs as
+        // the dashboard process user (not the spark's SSH user).
+        const dashHost = isLocalInstall ? `127.0.0.1:${PORT}` : req.headers.host;
+        const unitUser = isLocalInstall ? os.userInfo().username : (spark.ssh?.user || "root");
         const bootstrapScript = kind === "install-agent"
           ? buildInstallAgentScript({
-              dashboardUrl: `ws://${req.headers.host}/agent-ws`,
+              dashboardUrl: `ws://${dashHost}/agent-ws`,
               token: getAgentToken(),
               sparkId,
-              sshUser: spark.ssh?.user || "root",
+              sshUser: unitUser,
             })
           : buildUpdateAgentScript({
-              dashboardUrl: `ws://${req.headers.host}/agent-ws`,
+              dashboardUrl: `ws://${dashHost}/agent-ws`,
               token: getAgentToken(),
               sparkId,
-              sshUser: spark.ssh?.user || "root",
+              sshUser: unitUser,
             });
         script = bootstrapScript;
         name = kind === "install-agent" ? "install agent" : "update agent (force redeploy)";

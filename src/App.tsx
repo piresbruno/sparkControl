@@ -13,6 +13,9 @@ import { ThemeSwitch } from "./components/ThemeSwitch";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { GearIcon, BoltIcon } from "./components/ui/icons";
 import { OVERVIEW_ID, ANALYSIS_ID, MODELS_ID } from "./constants";
+
+/** Sentinel tab ids — refreshFromApi must never bounce these back to a spark. */
+const SENTINEL_IDS = new Set([OVERVIEW_ID, ANALYSIS_ID, MODELS_ID]);
 import { AnalysisPage } from "./components/AnalysisPage/AnalysisPage";
 import { ModelsPage } from "./components/ModelsPage/ModelsPage";
 import type { Settings, SparkSnapshot } from "./api/types";
@@ -218,10 +221,11 @@ function DashboardApp() {
           );
         })
       );
-      if (configs.length && activeId !== OVERVIEW_ID && !configs.some((c) => c.id === activeId)) {
+      const activeIsSentinel = SENTINEL_IDS.has(activeId ?? "");
+      if (configs.length && !activeIsSentinel && activeId !== OVERVIEW_ID && !configs.some((c) => c.id === activeId)) {
         setActiveId(configs[0].id);
       }
-      if (configs.length === 0 && activeId !== OVERVIEW_ID) setActiveId(null);
+      if (configs.length === 0 && !activeIsSentinel && activeId !== OVERVIEW_ID) setActiveId(null);
     } catch (err) {
       console.error("Failed to refresh sparks:", err);
     }

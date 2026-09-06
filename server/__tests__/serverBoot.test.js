@@ -9,6 +9,11 @@ import os from "node:os";
 import path from "node:path";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "boot-cov-"));
+// Local install-agent bootstrap writes into $HOME/.sparkdash — sandbox it so
+// the test never touches the real home directory.
+const fakeHome = path.join(tmp, "home");
+fs.mkdirSync(fakeHome, { recursive: true });
+process.env.HOME = fakeHome;
 for (const [k, v] of Object.entries({
   SETTINGS_JSON_PATH: "settings.json",
   SPARKS_SECRETS_PATH: "secrets.json",
@@ -180,6 +185,43 @@ test("llm bench + prefill + showcase routes registered (validation paths)", asyn
   // GET bench state
   const g = await j(await fetch(`${BASE}/api/sparks/cov-remote/llm/bench`));
   assert.ok([200, 404].includes(g.status));
+});
+
+test("install-agent on the local head bootstraps in-process (sandboxed HOME)", async () => {
+  await fetch(`${BASE}/api/sparks/cov-spark`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ agentEnabled: true }),
+  });
+  // Dispatch: 409 when not enabled…
+  const before = await fetch(`${BASE}/api/sparks`, { method: "GET" });
+  assert.equal(before.status, 200);
+  const r = await fetch(`${BASE}/api/jobs`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "install-agent", sparkId: "cov-spark" }),
+  });
+  const dispatch = await r.json().catch(() => null);
+  assert.equal(r.status, 202, `install-agent dispatch ${r.status} ${JSON.stringify(dispatch)}`);
+  const { jobId } = dispatch;
+  // The local bootstrap runs sh -c in-process: node exists, sudo -n fails in
+  // the sandbox → user-unit fallback instructions, script completes.
+  let job = null;
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r2) => setTimeout(r2, 500));
+    job = await (await fetch(`${BASE}/api/jobs/${jobId}`)).json();
+    if (job.status !== "running") break;
+  }
+  assert.equal(job.status, "completed", `status ${job.status} err ${job.error}`);
+  assert.equal(job.exitCode, 0);
+  assert.match(job.logTail || "", /__AGENT_UNIT__none/);
+  assert.match(job.logTail || "", /enable-linger|systemd\/user/);
+  // config.json written into the sandboxed HOME.
+  const cfg = path.join(fakeHome, ".sparkdash", "agent", "config.json");
+  const parsed = JSON.parse(fs.readFileSync(cfg, "utf8"));
+  assert.equal(parsed.sparkId, "cov-spark");
+  assert.match(parsed.dashboardUrl, /ws:\/\/127\.0\.0\.1:5830\/agent-ws/);
+  assert.match(parsed.token, /^[0-9a-f]{64}$/);
 });
 
 test("agent status + comfy cancel + shutdown-all routes", async () => {

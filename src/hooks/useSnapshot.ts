@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { SparkSnapshot, WsSnapshot } from "../api/types";
 import { ingestSnapshots } from "./metricsStore";
-import { OVERVIEW_ID } from "../constants";
+import { OVERVIEW_ID, ANALYSIS_ID, MODELS_ID } from "../constants";
+
+/** Sentinel tab ids (not real sparks) — never reset by snapshot guards. */
+const SENTINEL_IDS = new Set([OVERVIEW_ID, ANALYSIS_ID, MODELS_ID]);
 
 const WS_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws`;
 const RECONNECT_DELAY = 2000;
@@ -45,7 +48,7 @@ export function useSnapshot() {
           // Default to the Overview tab; keep the current selection if it
           // is still valid (Overview is always valid).
           setActiveId((prev) => {
-            if (prev === OVERVIEW_ID) return OVERVIEW_ID;
+            if (prev != null && SENTINEL_IDS.has(prev)) return prev;
             if (prev && msg.sparks.some((s) => s.id === prev)) return prev;
             return OVERVIEW_ID;
           });

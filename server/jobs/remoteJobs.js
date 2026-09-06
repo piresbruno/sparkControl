@@ -155,7 +155,7 @@ export class RemoteJobManager {
    * }} [opts]
    */
   constructor(opts = {}) {
-    this._exec = opts.exec || ((spark, cmd, o) => sshExec(spark, cmd, o));
+    this._exec = opts.exec || execOnSpark;
     this._now = opts.now || Date.now;
     this._statePath = opts.statePath || JOBS_STATE_PATH;
     this._sweepIntervalMs = opts.sweepIntervalMs ?? SWEEP_INTERVAL_MS;
