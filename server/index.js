@@ -196,6 +196,7 @@ const agentRegistry = getAgentRegistry();
 agentRegistry.onConnect((sparkId, version) => {
   const monitor = monitors.get(sparkId);
   if (monitor) monitor.setAgentConnected(true, version);
+  remoteJobs.agentConnected(sparkId);
 });
 agentRegistry.onDisconnect((sparkId) => {
   const monitor = monitors.get(sparkId);
@@ -497,6 +498,8 @@ app.post("/api/jobs", async (req, res) => {
   try {
     const body = req.body || {};
     const kind = String(body.kind || "");
+    /** Transport override for this job: "ssh" forces SSH even for isLocal sparks. */
+    let installTransportMode = null;
     if (!MODEL_JOB_KINDS.has(kind)) {
       return res.status(400).json({ error: `kind must be one of ${[...MODEL_JOB_KINDS].join(", ")}` });
     }
@@ -537,50 +540,59 @@ app.post("/api/jobs", async (req, res) => {
         if (!spark.agentEnabled) {
           return res.status(409).json({ error: `agent is not enabled on ${sparkId}` });
         }
-        // Local sparks bootstrap in-process (execOnSpark runs sh -c here);
-        // remote sparks go over SSH. The systemd/systemctl steps inside the
-        // script use sudo -n with a user-unit fallback either way.
-        const isLocalInstall = Boolean(spark.isLocal);
-        if (!isLocalInstall && spark.ssh?.auth === "pass" && !registry.hasPassword(sparkId)) {
+        // Agent bootstrap ALWAYS runs over SSH to the target machine — the
+        // dashboard may be containerized on a different host, so "isLocal"
+        // must not route to in-container execution. The head spark therefore
+        // needs SSH credentials (settable via Edit Spark) and a reachable
+        // target host (ssh.host or lanIp).
+        // isLocal sparks previously never needed SSH — for agent bootstrap
+        // they do (the dashboard container may run on another host). Require
+        // an explicit ssh.host; remote sparks fall back to lanIp as usual.
+        const hasSshHost = Boolean(spark.ssh?.host);
+        const sshTarget = hasSshHost ? spark.ssh.host : spark.lanIp;
+        if ((spark.isLocal && !hasSshHost) || !sshTarget || !spark.ssh?.user) {
+          return res.status(400).json({
+            error: "agent bootstrap needs SSH credentials on this spark — set SSH host + user in Edit Spark (the head is bootstrapped the same way as remote nodes)",
+          });
+        }
+        if (spark.ssh?.auth === "pass" && !registry.hasPassword(sparkId)) {
           return res.status(400).json({ error: "agent bootstrap over password SSH requires the stored password" });
         }
         if (!fs.existsSync(AGENT_BUNDLE_PATH)) {
           return res.status(503).json({ error: "agent bundle missing — run `npm run build:agent` first" });
         }
         // Upload the bundle (~130 KB) in base64 chunks — a single argv with the
-        // whole payload trips E2BIG. Chunks ride in separate sshExec calls.
+        // whole payload trips E2BIG. Chunks ride in separate SSH calls.
         const bundleB64 = fs.readFileSync(AGENT_BUNDLE_PATH).toString("base64");
         const CHUNK = 48_000; // argv-safe size per ssh call
         const remoteSh = path.join("~/.sparkdash/agent/sparkdash-agent.mjs");
         try {
-          await execOnSpark(spark, "mkdir -p ~/.sparkdash/agent", { timeoutMs: 15_000 });
+          await sshExec(spark, "mkdir -p ~/.sparkdash/agent", { timeoutMs: 15_000 });
           for (let i = 0; i < bundleB64.length; i += CHUNK) {
             const part = bundleB64.slice(i, i + CHUNK);
             const op = i === 0 ? ">" : ">>";
-            await execOnSpark(spark, `printf '%s' ${shellQuote(part)} ${op} ${remoteSh}.b64`, { timeoutMs: 20_000 });
+            await sshExec(spark, `printf '%s' ${shellQuote(part)} ${op} ${remoteSh}.b64`, { timeoutMs: 20_000 });
           }
-          await execOnSpark(spark, `base64 -d ${remoteSh}.b64 > ${remoteSh} && rm -f ${remoteSh}.b64 && wc -c ${remoteSh}`, { timeoutMs: 20_000 });
+          await sshExec(spark, `base64 -d ${remoteSh}.b64 > ${remoteSh} && rm -f ${remoteSh}.b64 && wc -c ${remoteSh}`, { timeoutMs: 20_000 });
         } catch (err) {
           return res.status(502).json({ error: `bundle upload failed: ${err.message}` });
         }
-        // Local installs reach the dashboard over loopback; the unit runs as
-        // the dashboard process user (not the spark's SSH user).
-        const dashHost = isLocalInstall ? `127.0.0.1:${PORT}` : req.headers.host;
-        const unitUser = isLocalInstall ? os.userInfo().username : (spark.ssh?.user || "root");
         const bootstrapScript = kind === "install-agent"
           ? buildInstallAgentScript({
-              dashboardUrl: `ws://${dashHost}/agent-ws`,
+              dashboardUrl: `ws://${req.headers.host}/agent-ws`,
               token: getAgentToken(),
               sparkId,
-              sshUser: unitUser,
+              sshUser: spark.ssh.user,
             })
           : buildUpdateAgentScript({
-              dashboardUrl: `ws://${dashHost}/agent-ws`,
+              dashboardUrl: `ws://${req.headers.host}/agent-ws`,
               token: getAgentToken(),
               sparkId,
-              sshUser: unitUser,
+              sshUser: spark.ssh.user,
             });
         script = bootstrapScript;
+        // Transport flag: the job, its polls, and its cancel all go over SSH.
+        installTransportMode = "ssh";
         name = kind === "install-agent" ? "install agent" : "update agent (force redeploy)";
       } else {
         const m = body.model;
@@ -614,7 +626,11 @@ app.post("/api/jobs", async (req, res) => {
     if (remoteJobs.hasActiveJobForNode(spark.id)) {
       return res.status(409).json({ error: `A job is already running on ${spark.id}` });
     }
-    const { jobId } = await remoteJobs.startRemoteJob(spark, { name, script, kind });
+    const { jobId } = await remoteJobs.startRemoteJob(spark, { name, script, kind, transport: installTransportMode });
+    // C3: the job is only "done" once the agent actually connects (60 s).
+    if (kind === "install-agent" || kind === "update-agent") {
+      remoteJobs.setExpectAgentConnect(jobId);
+    }
     res.status(202).json({ jobId, kind, sparkId: spark.id });
   } catch (err) {
     res.status(500).json({ error: err.message });

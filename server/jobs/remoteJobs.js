@@ -201,17 +201,20 @@ export class RemoteJobManager {
    * @param {{ name: string, script: string, kind?: string }} spec
    * @returns {Promise<{ jobId: string }>}
    */
-  async startRemoteJob(spark, { name, script, kind = "generic" }) {
+  async startRemoteJob(spark, { name, script, kind = "generic", transport = null }) {
     const jobId = `job-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
     const wrapped = wrapJobScript(script);
     const cmd = buildLaunchCommand(jobId, wrapped);
-    await this._exec(spark, cmd, { timeoutMs: 15_000 });
+    const exec = transport === "ssh" ? sshExec : this._exec;
+    await exec(spark, cmd, { timeoutMs: 15_000 });
     const job = {
       jobId,
       kind,
       name,
       sparkId: spark.id,
       status: "running",
+      /** "ssh" forces SSH transport even for isLocal sparks (agent bootstrap). */
+      transport,
       script: script.slice(0, 4000),
       createdAt: this._now(),
       startedAt: this._now(),
@@ -245,7 +248,8 @@ export class RemoteJobManager {
     if (job.status !== "running") return job; // terminal states don't re-poll
     let out = "";
     try {
-      out = await this._exec(spark, buildPollCommand(jobId), { timeoutMs: 10_000 });
+      const exec = job.transport === "ssh" ? sshExec : this._exec;
+      out = await exec(spark, buildPollCommand(jobId), { timeoutMs: 10_000 });
     } catch (err) {
       // Node offline / SSH failure: leave status untouched (still running,
       // resolved on a later poll). Surface via error field only.
@@ -270,6 +274,52 @@ export class RemoteJobManager {
   }
 
   /**
+   * Speculatively attach a hello-verifier to a job: when the job's exported
+   * `expectAgentConnect` is set, the dashboard-side connection watcher marks
+   * the job complete/failed based on agent connectivity (see serveAgentHello
+   * registration in index.js).
+   * @param {string} jobId
+   */
+  setExpectAgentConnect(jobId, expect = true) {
+    const job = this.jobs.get(jobId);
+    if (job) job.expectAgentConnect = expect;
+  }
+
+  /**
+   * Called by index.js connection watchers: nil out the hello expectation once
+   * the agent actually connects.
+   * @param {string} sparkId
+   */
+  agentConnected(sparkId) {
+    for (const job of this.jobs.values()) {
+      if (job.sparkId === sparkId && job.expectAgentConnect && job.status === "running") {
+        delete job.expectAgentConnect;
+        job.status = "completed";
+        job.exitCode = 0;
+        job.endedAt = this._now();
+        job.logTail = (job.logTail + "\n[install-agent] agent connected (hello verified)").slice(-4000);
+        this._persist();
+      }
+    }
+  }
+
+  /**
+   * Fail any expectAgentConnect job past its deadline (60 s) with guidance.
+   * @param {number} now
+   */
+  failStaleHelloJobs(now, timeoutMs = 60_000) {
+    for (const job of this.jobs.values()) {
+      if (job.expectAgentConnect && job.status === "running" && now - job.startedAt > timeoutMs) {
+        delete job.expectAgentConnect;
+        job.status = "failed";
+        job.error = "agent did not connect within 60s — check the journal: systemctl --user status sparkdash-agent (user unit) or journalctl -u sparkdash-agent (system unit)";
+        job.endedAt = this._now();
+        this._persist();
+      }
+    }
+  }
+
+  /**
    * Cancel a job (kill + kill -9 ladder).
    * @param {object} spark
    * @param {string} jobId
@@ -278,7 +328,8 @@ export class RemoteJobManager {
     const job = this.jobs.get(jobId);
     if (!job) throw new Error(`Unknown job: ${jobId}`);
     try {
-      await this._exec(spark, buildCancelCommand(jobId), { timeoutMs: 10_000 });
+      const exec = job.transport === "ssh" ? sshExec : this._exec;
+      await exec(spark, buildCancelCommand(jobId), { timeoutMs: 10_000 });
     } catch (err) {
       job.lastError = err.message;
     }
@@ -323,6 +374,9 @@ export class RemoteJobManager {
     this._resolveSpark = resolveSpark;
     this._sweepTimer = setInterval(() => {
       const active = this.listJobs().filter((j) => j.status === "running");
+      if (active.some((j) => j.expectAgentConnect)) {
+        this.failStaleHelloJobs(Date.now());
+      }
       for (const job of active) {
         const spark = resolveSpark(job.sparkId);
         if (!spark) continue;
