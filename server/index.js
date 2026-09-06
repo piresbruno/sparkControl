@@ -40,7 +40,7 @@ const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, "..");
 
 /** Bundled agent artifact uploaded by install-agent (npm run build:agent). */
-const AGENT_BUNDLE_PATH = process.env.SPARKDASH_AGENT_BUNDLE || path.join(ROOT, "agent", "dist", "sparkdash-agent.mjs");
+const AGENT_BUNDLE_PATH = process.env.SPARK_COMMAND_AGENT_BUNDLE || path.join(ROOT, "agent", "dist", "spark-command-agent.mjs");
 // Default to loopback: the dashboard exposes SSH and remote power controls, so it
 // should not be reachable on the LAN unless explicitly opted in. Set BIND_HOST to the
 // host's LAN IP (or 0.0.0.0) to expose it; docker-compose.yml already sets 0.0.0.0.
@@ -565,9 +565,9 @@ app.post("/api/jobs", async (req, res) => {
         // whole payload trips E2BIG. Chunks ride in separate SSH calls.
         const bundleB64 = fs.readFileSync(AGENT_BUNDLE_PATH).toString("base64");
         const CHUNK = 48_000; // argv-safe size per ssh call
-        const remoteSh = path.join("~/.sparkdash/agent/sparkdash-agent.mjs");
+        const remoteSh = path.join("~/.sparkcontrol/agent/spark-command-agent.mjs");
         try {
-          await sshExec(spark, "mkdir -p ~/.sparkdash/agent", { timeoutMs: 15_000 });
+          await sshExec(spark, "mkdir -p ~/.sparkcontrol/agent", { timeoutMs: 15_000 });
           for (let i = 0; i < bundleB64.length; i += CHUNK) {
             const part = bundleB64.slice(i, i + CHUNK);
             const op = i === 0 ? ">" : ">>";

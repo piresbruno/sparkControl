@@ -25,7 +25,7 @@ RUN npm ci --no-audit --no-fund \
 # Copy source and build
 COPY . .
 RUN npm run build
-# LocalAI Command Center: bundle the sparkdash agent (the dashboard ships the
+# LocalAI Command Center: bundle the Spark Command Agent (the dashboard ships the
 # artifact that install-agent uploads to nodes over SSH).
 RUN npm run build:agent
 

@@ -203,7 +203,7 @@ test("install-agent always uses SSH transport (head included)", async () => {
     calls.push(cmd);
     if (cmd.includes("base64 -d")) return cb(null, "123456 bytes", "");
     if (cmd.includes("printf '%s'")) return cb(null, "ok", "");
-    if (cmd.includes("mkdir -p ~/.sparkdash/agent")) return cb(null, "ok", "");
+    if (cmd.includes("mkdir -p ~/.sparkcontrol/agent")) return cb(null, "ok", "");
     if (cmd.includes("nohup sh ~/.sparkdash/jobs")) return cb(null, "LAUNCHED 4242", "");
     if (cmd.includes("__ALIVE:")) return cb(null, "out\n__ALIVE:no\n__SPARKDASH_EXIT:0", "");
     return cb(null, "ok", "");

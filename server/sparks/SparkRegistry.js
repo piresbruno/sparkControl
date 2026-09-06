@@ -527,7 +527,7 @@ export class SparkRegistry {
        */
       modelctlEnabled: Boolean(config.modelctlEnabled),
       /**
-       * C1: opt-in sparkdash agent (outbound WS transport). SSH remains the
+       * C1: opt-in Spark Command Agent (outbound WS transport). SSH remains the
        * fallback transport whenever this is false or the agent is disconnected.
        */
       agentEnabled: Boolean(config.agentEnabled),

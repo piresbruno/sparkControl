@@ -531,11 +531,11 @@ export function EditSparkDialog({
                   onChange={(e) => update({ agentEnabled: e.target.checked })}
                   className="rounded border-border"
                 />
-                <span>sparkdash agent</span>
+                <span>Spark Command Agent</span>
                 <span
                   className="inline-flex shrink-0 cursor-help text-muted hover:text-text"
                   title="Agent daemon with an outbound WebSocket to the dashboard. SSH stays as the fallback transport."
-                  aria-label="Enable the sparkdash agent transport for this node."
+                  aria-label="Enable the Spark Command Agent transport for this node."
                 >
                   <InfoIcon className="h-3.5 w-3.5" />
                 </span>
@@ -614,7 +614,7 @@ export function EditSparkDialog({
 
               <div className="rounded border border-border bg-surface-elevated/40 p-2">
                 <p className="mb-1 text-[10px] text-muted">
-                  SSH credentials — also used to bootstrap the sparkdash agent on this node
+                  SSH credentials — also used to bootstrap the Spark Command Agent on this node
                   (required even for local units, since the dashboard may run in Docker).
                 </p>
                 <div className="mt-2">
