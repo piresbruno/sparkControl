@@ -109,6 +109,11 @@ test("serving scripts list (seeds present)", async () => {
   assert.ok(Array.isArray(scripts.scripts));
 });
 
+test("serving log returns a string (regression: unawaited exec serialized as {})", async () => {
+  const body = await (await fetch(`${BASE}/api/serving/log?sparkId=cov-spark`)).json();
+  assert.equal(typeof body.log, "string", "log must be a string, not a serialized Promise");
+});
+
 test("404 for unknown spark-scoped routes", async () => {
   assert.equal((await fetch(`${BASE}/api/sparks/ghost/metrics`)).status, 404);
   assert.equal((await fetch(`${BASE}/api/traces/does-not-exist`)).status, 404);

@@ -954,7 +954,7 @@ app.get("/api/serving/log", async (req, res) => {
     const bytes = Number(req.query.bytes) || 4000;
     let log = "";
     try {
-      log = await agentDataRings.tail(`serve:${scriptId}`, bytes) || execForSpark(spark, buildServeLogCommand(scriptId, bytes), { timeoutMs: 10_000 });
+      log = (await agentDataRings.tail(`serve:${scriptId}`, bytes)) || (await execForSpark(spark, buildServeLogCommand(scriptId, bytes), { timeoutMs: 10_000 }));
     } catch (err) {
       return res.status(502).json({ error: err.message });
     }
