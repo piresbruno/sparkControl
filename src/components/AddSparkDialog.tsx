@@ -220,6 +220,25 @@ export function AddSparkDialog({ open, onClose, onAdded, defaultLlmPort = 8888 }
             />
             This host (local collectors — no SSH for metrics)
           </label>
+          <label className="flex items-center gap-2 text-xs text-muted">
+            <input
+              type="checkbox"
+              checked={config.modelctlEnabled ?? false}
+              onChange={(e) => update({ modelctlEnabled: e.target.checked })}
+              className="rounded border-border"
+            />
+            modelctl integration (inventory, placement, serving on this node)
+          </label>
+
+          <label className="flex items-center gap-2 text-xs text-muted">
+            <input
+              type="checkbox"
+              checked={config.agentEnabled ?? false}
+              onChange={(e) => update({ agentEnabled: e.target.checked })}
+              className="rounded border-border"
+            />
+            sparkdash agent (outbound WS transport; SSH stays as fallback)
+          </label>
 
           {!config.isLocal && (
             <>

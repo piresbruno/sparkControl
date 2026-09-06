@@ -202,6 +202,74 @@ export function loadSecrets() {
 }
 
 /**
+ * App-level secrets (agent token, …) — same encrypted store, separate bucket.
+ * getAppSecret/setAppSecret carry other buckets' ciphertext verbatim (no
+ * decrypt/rewrite), so they never race with credential saves.
+ */
+
+/** @returns {Record<string, string>} raw ciphertext blob map, or {} */
+function _readAppSecretsRaw() {
+  try {
+    if (!fs.existsSync(SPARKS_SECRETS_PATH)) return {};
+    const raw = JSON.parse(fs.readFileSync(SPARKS_SECRETS_PATH, "utf8"));
+    const out = raw?.appSecrets;
+    return out && typeof out === "object" ? out : {};
+  } catch {
+    return {};
+  }
+}
+
+/** @returns {boolean} does the store file hold any app secrets? */
+function _fileHasAppSecrets() {
+  return Object.keys(_readAppSecretsRaw()).length > 0;
+}
+
+/**
+ * Read one app-level secret. Returns null when absent or unreadable.
+ * @param {string} name
+ * @returns {string | null}
+ */
+export function getAppSecret(name) {
+  if (typeof name !== "string" || !name) return null;
+  const blob = _readAppSecretsRaw()[name];
+  if (typeof blob !== "string") return null;
+  try {
+    return decrypt(blob, resolveKey());
+  } catch (err) {
+    console.error(`[secretsStore] Failed to read app secret "${name}": ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Write one app-level secret (encrypted); other buckets preserved verbatim.
+ * @param {string} name
+ * @param {string} value
+ */
+export function setAppSecret(name, value) {
+  if (typeof name !== "string" || !name) throw new Error("App secret name is required");
+  const data = {
+    version: 2,
+    secrets: {},
+    llmApiKeys: {},
+    appSecrets: _readAppSecretsRaw(),
+  };
+  try {
+    if (fs.existsSync(SPARKS_SECRETS_PATH)) {
+      const raw = JSON.parse(fs.readFileSync(SPARKS_SECRETS_PATH, "utf8"));
+      if (raw && typeof raw === "object") {
+        if (raw.secrets && typeof raw.secrets === "object") data.secrets = raw.secrets;
+        if (raw.llmApiKeys && typeof raw.llmApiKeys === "object") data.llmApiKeys = raw.llmApiKeys;
+      }
+    }
+  } catch (err) {
+    console.error(`[secretsStore] Reading existing secrets before app-secret write failed: ${err.message}`);
+  }
+  data.appSecrets[name] = encrypt(String(value), resolveKey());
+  atomicWrite(SPARKS_SECRETS_PATH, JSON.stringify(data, null, 2) + "\n", 0o600);
+}
+
+/**
  * Persist SSH passwords + per-port LLM API keys (encrypted).
  * Empty maps remove the file when both are empty.
  *
@@ -220,7 +288,7 @@ export function saveSecrets(passwords, llmApiKeys = new Map()) {
     }
   }
 
-  if (!hasPasswords && !hasKeys) {
+  if (!hasPasswords && !hasKeys && !_fileHasAppSecrets()) {
     if (fs.existsSync(SPARKS_SECRETS_PATH)) {
       try {
         fs.accessSync(SPARKS_SECRETS_PATH, fs.constants.W_OK);
@@ -256,9 +324,9 @@ export function saveSecrets(passwords, llmApiKeys = new Map()) {
       llmOut[id] = encrypt(JSON.stringify(clean), key);
     }
   }
-
   const payload =
-    JSON.stringify({ version: 2, secrets, llmApiKeys: llmOut }, null, 2) + "\n";
+    JSON.stringify({ version: 2, secrets, llmApiKeys: llmOut, appSecrets: _readAppSecretsRaw() }, null, 2) + "\n";
+
   atomicWrite(SPARKS_SECRETS_PATH, payload, 0o644);
   const keyCount = Object.keys(llmOut).length;
   console.log(

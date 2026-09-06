@@ -18,6 +18,9 @@ const SECRETS_KEY_PATH =
 /** Daily LLM tok/s rollups (gitignored). */
 const LLM_DAILY_JSON_PATH =
   process.env.LLM_DAILY_JSON_PATH || path.join(ROOT, "config", "llm-daily.json");
+/** Analysis trace store (A1). env override for dev checkouts with root-owned config/. */
+const TRACES_DB_PATH =
+  process.env.TRACES_DB_PATH || path.join(ROOT, "config", "traces.sqlite");
 
 // ─── LLM / Comfy probe timeouts ──────────────────────────
 const LLM_PROBE_TIMEOUT_MS = 3000;
@@ -31,6 +34,9 @@ const POLL_INTERVAL_CPU = parseInt(process.env.POLL_INTERVAL_CPU || "2000", 10);
 const POLL_INTERVAL_NETWORK = parseInt(process.env.POLL_INTERVAL_NETWORK || "2000", 10);
 const POLL_INTERVAL_STORAGE = parseInt(process.env.POLL_INTERVAL_STORAGE || "5000", 10);
 const POLL_INTERVAL_LLM = parseInt(process.env.POLL_INTERVAL_LLM || "2000", 10);
+// Part D: detection-only cadence for worker nodes (identify the running model
+// without full metric panels). Slower than the full LLM poll by design.
+const POLL_INTERVAL_LLM_DETECT = parseInt(process.env.POLL_INTERVAL_LLM_DETECT || "10000", 10);
 const POLL_INTERVAL_COMFY = parseInt(process.env.POLL_INTERVAL_COMFY || "2000", 10);
 // Tailnet membership changes slowly; each poll is an SSH round-trip.
 const POLL_INTERVAL_TAILSCALE = parseInt(process.env.POLL_INTERVAL_TAILSCALE || "30000", 10);
@@ -50,6 +56,11 @@ const HERMES_UPDATE_TIMEOUT_MS = parseInt(
 // ─── Port ────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT || "5555", 10);
 const LLM_PORT = parseInt(process.env.LLM_PORT || "8888", 10);
+// ─── Analysis trace capture caps (A1) ─────────────────────
+/** Max stored request body bytes for proxy traces. */
+const TRACE_MAX_REQ_BODY = 32768;
+/** Max stored response body bytes for proxy traces. */
+const TRACE_MAX_RES_BODY = 65536;
 /** Default ComfyUI HTTP port. */
 const COMFY_PORT = parseInt(process.env.COMFY_PORT || "8188", 10);
 
@@ -104,6 +115,7 @@ export {
   POLL_INTERVAL_NETWORK,
   POLL_INTERVAL_STORAGE,
   POLL_INTERVAL_LLM,
+  POLL_INTERVAL_LLM_DETECT,
   POLL_INTERVAL_COMFY,
   POLL_INTERVAL_TAILSCALE,
   POLL_INTERVAL_BANDWIDTH,
@@ -112,7 +124,10 @@ export {
   HERMES_UPDATE_TIMEOUT_MS,
   PORT,
   LLM_PORT,
+  TRACES_DB_PATH,
   COMFY_PORT,
+  TRACE_MAX_REQ_BODY,
+  TRACE_MAX_RES_BODY,
   DGX_SPARK,
   UNIT_CONVERSION,
   HARDWARE_DEFAULTS,

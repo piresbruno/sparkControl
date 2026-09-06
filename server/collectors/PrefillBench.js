@@ -115,11 +115,8 @@ async function runPrefillSize({
   targetTokens,
   abortSignal,
   apiKey = null,
+  traceMeta = null,
 }) {
-  const url = `${baseUrl}/v1/chat/completions`;
-  const salt = randomUUID();
-  const prompt = buildPrefillPrompt(targetTokens, salt);
-  const promptChars = prompt.length;
   const timeoutMs = timeoutMsForSize(targetTokens);
 
   const ctrl = new AbortController();
@@ -135,12 +132,17 @@ async function runPrefillSize({
   }, timeoutMs);
   const wallStart = performance.now();
 
+  const url = `${baseUrl}/v1/chat/completions`;
+  const salt = randomUUID();
+  const prompt = buildPrefillPrompt(targetTokens, salt);
+  const promptChars = prompt.length;
+
   try {
     const result = await runStreamingRequest(
       url,
       prefillRequestBody(modelId, prompt),
       ctrl.signal,
-      { retryOnThinking400: true, thinking: false, apiKey }
+      { retryOnThinking400: true, thinking: false, apiKey, traceMeta }
     );
     const durationMs = round2(performance.now() - wallStart);
     const timeoutErr = timedOut
@@ -529,6 +531,7 @@ export class PrefillBenchManager {
           targetTokens: size,
           abortSignal: job._abort.signal,
           apiKey: job._apiKey,
+          traceMeta: { source: "prefill-bench", sparkId: job.sparkId, port: job.config.port },
         });
 
         if (job._abort.signal.aborted) {

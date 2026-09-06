@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchSettings, updateSettings } from "../api/client";
+import { fetchSettings, updateSettings, rotateAgentToken } from "../api/client";
 import type { Settings } from "../api/types";
 import { useModalPresence } from "../hooks/useModalPresence";
 import packageJson from "../../package.json";
@@ -66,6 +66,24 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
     setSettings((prev) => (prev ? { ...prev, ...patch } : prev));
     setDirty(true);
   };
+
+  const [rotating, setRotating] = useState(false);
+  const [rotateMsg, setRotateMsg] = useState<string | null>(null);
+
+  async function handleRotateToken() {
+    setRotating(true);
+    try {
+      await rotateAgentToken();
+      const fresh = await fetchSettings();
+      setSettings((prev) => (prev ? { ...prev, ...fresh } : fresh));
+      setRotateMsg("Token regenerated — connected agents re-auth; disconnected ones need re-bootstrap");
+    } catch (err: unknown) {
+      setRotateMsg(err instanceof Error ? err.message : "Rotate failed");
+    } finally {
+      setRotating(false);
+      setTimeout(() => setRotateMsg(null), 6000);
+    }
+  }
 
   const handleSave = async () => {
     if (!settings) return;
@@ -192,6 +210,130 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
                   </span>
                 </span>
               </label>
+            </div>
+
+            {/* Analysis: trace capture */}
+            <div>
+              <label className="flex items-start gap-3 text-xs text-muted">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={Boolean(settings.traceCapture)}
+                  onClick={() => update({ traceCapture: !settings.traceCapture })}
+                  className={`toggle-track relative mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                    settings.traceCapture ? "is-on" : ""
+                  }`}
+                >
+                  <span
+                    className={`toggle-dot inline-block h-4 w-4 transform rounded-full shadow transition-transform ${
+                      settings.traceCapture ? "translate-x-4" : "translate-x-0"
+                    }`}
+                  />
+                </button>
+                <span>
+                  <span className="block text-text">Capture LLM traces (Analysis)</span>
+                  <span className="mt-0.5 block text-[10px] leading-snug text-muted">
+                    Record every inference through the /llm proxy plus bench/showcase
+                    runs. Off = pure forwarding, nothing recorded.
+                  </span>
+                </span>
+              </label>
+            </div>
+
+            {/* Analysis: capture bodies */}
+            <div>
+              <label className="flex items-start gap-3 text-xs text-muted">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={Boolean(settings.traceCaptureBodies)}
+                  onClick={() => update({ traceCaptureBodies: !settings.traceCaptureBodies })}
+                  className={`toggle-track relative mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                    settings.traceCaptureBodies ? "is-on" : ""
+                  }`}
+                >
+                  <span
+                    className={`toggle-dot inline-block h-4 w-4 transform rounded-full shadow transition-transform ${
+                      settings.traceCaptureBodies ? "translate-x-4" : "translate-x-0"
+                    }`}
+                  />
+                </button>
+                <span>
+                  <span className="block text-text">Store request/response bodies</span>
+                  <span className="mt-0.5 block text-[10px] leading-snug text-muted">
+                    Capped at 32 KB request / 64 KB response. Applies only when trace
+                    capture is on. Bodies are never captured when off.
+                  </span>
+                </span>
+              </label>
+            </div>
+
+            {/* Analysis: CORS allowlist */}
+            <div>
+              <label className="text-xs text-muted">Proxy CORS allowlist (origins, comma-separated)</label>
+              <input
+                type="text"
+                value={(settings.traceProxyAllowedOrigins || []).join(", ")}
+                onChange={(e) =>
+                  update({
+                    traceProxyAllowedOrigins: e.target.value
+                      .split(",")
+                      .map((s) => s.trim())
+                      .filter(Boolean),
+                  })
+                }
+                placeholder="http://localhost:5173"
+                className="mt-1 w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
+              />
+              <p className="mt-1 text-[10px] text-muted">
+                Exact origins allowed to call /llm cross-origin. Empty = same-origin only.
+              </p>
+            </div>
+
+            {/* modelctl */}
+            <div className="grid gap-2">
+              <label className="text-xs text-muted">modelctl NAS root (path on nodes)</label>
+              <input
+                type="text"
+                value={settings.modelctl?.nasRoot ?? ""}
+                onChange={(e) => update({ modelctl: { ...settings.modelctl, nasRoot: e.target.value } })}
+                className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
+              />
+              <label className="text-xs text-muted">modelctl remote binary (name or path)</label>
+              <input
+                type="text"
+                value={settings.modelctl?.remoteBin ?? ""}
+                onChange={(e) => update({ modelctl: { ...settings.modelctl, remoteBin: e.target.value } })}
+                className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
+              />
+              <label className="text-xs text-muted">modelctl install source (uv tool install)</label>
+              <input
+                type="text"
+                value={settings.modelctl?.source ?? ""}
+                onChange={(e) => update({ modelctl: { ...settings.modelctl, source: e.target.value } })}
+                className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
+              />
+            </div>
+
+            {/* Agent token */}
+            <div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-muted">Agent token</label>
+                <button
+                  type="button"
+                  onClick={() => void handleRotateToken()}
+                  disabled={rotating || !settings.agent?.tokenConfigured}
+                  className="text-[11px] rounded border border-border bg-surface-elevated px-2 py-0.5 text-muted hover:text-text disabled:opacity-40"
+                >
+                  {rotating ? "Regenerating…" : "Regenerate"}
+                </button>
+              </div>
+              <p className="mt-1 text-[10px] leading-snug text-muted">
+                {settings.agent?.tokenConfigured
+                  ? "Configured (stored encrypted, never shown). Regenerate rotates it; connected agents re-auth automatically, disconnected ones must be re-bootstrapped."
+                  : "Not configured yet (generated on first agent install)."}
+                {rotateMsg ? ` ${rotateMsg}` : ""}
+              </p>
             </div>
 
             {/* Temperature unit */}

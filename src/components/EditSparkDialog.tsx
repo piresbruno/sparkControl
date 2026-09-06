@@ -253,6 +253,8 @@ export function EditSparkDialog({
           return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : 8188;
         })(),
         hermesMonitoring: Boolean(config.hermesMonitoring),
+        modelctlEnabled: Boolean(config.modelctlEnabled),
+        agentEnabled: Boolean(config.agentEnabled),
         tailscaleMonitoring: Boolean(config.tailscaleMonitoring),
         ssh: {
           host: config.ssh.host || config.lanIp,
@@ -504,6 +506,40 @@ export function EditSparkDialog({
                 <code className="rounded bg-surface-elevated px-1">hermes update</code> on this
                 machine via SSH.
               </p>
+
+              <label className="flex items-center gap-2 text-xs text-muted">
+                <input
+                  type="checkbox"
+                  checked={Boolean(config.modelctlEnabled)}
+                  onChange={(e) => update({ modelctlEnabled: e.target.checked })}
+                  className="rounded border-border"
+                />
+                <span>modelctl integration</span>
+                <span
+                  className="inline-flex shrink-0 cursor-help text-muted hover:text-text"
+                  title="modelctl model inventory, placement (sync/push), and serving scripts on this node."
+                  aria-label="Enable modelctl integration for this node."
+                >
+                  <InfoIcon className="h-3.5 w-3.5" />
+                </span>
+              </label>
+
+              <label className="flex items-center gap-2 text-xs text-muted">
+                <input
+                  type="checkbox"
+                  checked={Boolean(config.agentEnabled)}
+                  onChange={(e) => update({ agentEnabled: e.target.checked })}
+                  className="rounded border-border"
+                />
+                <span>sparkdash agent</span>
+                <span
+                  className="inline-flex shrink-0 cursor-help text-muted hover:text-text"
+                  title="Agent daemon with an outbound WebSocket to the dashboard. SSH stays as the fallback transport."
+                  aria-label="Enable the sparkdash agent transport for this node."
+                >
+                  <InfoIcon className="h-3.5 w-3.5" />
+                </span>
+              </label>
 
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
                 <label className="flex min-w-0 items-center gap-2">

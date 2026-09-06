@@ -5,17 +5,32 @@
  * Uses execFile + argv arrays (no shell interpolation of user/host/cmd).
  * Password auth uses sshpass -e (password via env), not -p on the command line.
  */
-import { execFile } from "child_process";
+import { execFile as _execFileReal } from "child_process";
 import fs from "fs";
 import { COMFY_PORT, COMFY_PROBE_TIMEOUT_MS, SSH_CONNECT_TIMEOUT } from "../config.js";
 import { isAllowedTargetHost, isValidSshUser } from "../validate.js";
 import { llmProbeHost } from "./llmHost.js";
 
+/**
+ * DI seam for tests: prod code always uses the real execFile; tests override
+ * via _setExecFile() (pass null to restore). Never used at runtime outside tests.
+ */
+let execFileImpl = _execFileReal;
+export function _setExecFile(fn) {
+  execFileImpl = fn || _execFileReal;
+}
+
+/** Test seam for the sshpass presence probe (null restores auto-detection). */
+export function _setSshpassAvailable(v) {
+  _sshpassAvailable = v;
+}
+
+
 // Detect sshpass without shelling out to `which` on every cold call —
 // checking PATH entries directly is faster and avoids spawning a shell.
 let _sshpassAvailable = null;
 function sshpassAvailable() {
-  if (_sshpassAvailable !== null) return _sshpassAvailable;
+  if (_sshpassAvailable != null) return _sshpassAvailable;
   try {
     const candidates = [
       "/usr/bin/sshpass",
@@ -136,7 +151,7 @@ export async function sshExec(spark, cmd, options = {}) {
   }
 
   return new Promise((resolve, reject) => {
-    execFile(file, args, { timeout: timeoutMs, env, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFileImpl(file, args, { timeout: timeoutMs, env, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
         const msg = stderr?.trim() || err.message;
         reject(new Error(`SSH to ${targetHost} failed: ${msg}`));

@@ -242,6 +242,7 @@ async function runConcurrencyWave({
   debug = false,
   apiKey = null,
   promptType = DECODE_BENCH_DEFAULT_TYPE,
+  traceMeta = null,
 }) {
   const url = `${baseUrl}/v1/chat/completions`;
   const prompts = pickBenchPrompts(concurrency, promptType);
@@ -286,6 +287,7 @@ async function runConcurrencyWave({
       retryOnThinking400: true,
       thinking: false,
       apiKey,
+      traceMeta,
     };
 
     return (async () => {
@@ -754,8 +756,8 @@ export class DecodeBenchManager {
     this._checkpointActive();
 
     // Fire and forget — client polls GET
-    this._runJob(job, lanIp).catch(() => {
-      /* errors recorded on job */
+    this._runJob(job, lanIp).catch((err) => {
+      console.error('[DecodeBench] _runJob rejected:', err?.message || err);
     });
 
     return publicJob(job);
@@ -811,10 +813,10 @@ export class DecodeBenchManager {
           debug,
           apiKey: job._apiKey,
           promptType: job.config.promptType,
+          traceMeta: { source: "bench", sparkId: job.sparkId, port: job.config.port },
         });
 
         if (job._abort.signal.aborted) {
-          // Keep partial wave only if it fully succeeded before cancel
           if (wave.streamsOk > 0 && !wave.error) {
             job.results.push(wave);
             job.progress.completedLevels += 1;

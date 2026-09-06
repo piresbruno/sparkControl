@@ -13,6 +13,7 @@ import {
   POLL_INTERVAL_NETWORK,
   POLL_INTERVAL_STORAGE,
   POLL_INTERVAL_LLM,
+  POLL_INTERVAL_LLM_DETECT,
   POLL_INTERVAL_COMFY,
   POLL_INTERVAL_BANDWIDTH,
   POLL_INTERVAL_LIVENESS,
@@ -43,7 +44,7 @@ export class SparkMonitor {
 
     // One LlmProbe per port — none when LLM monitoring is off
     this.llmProbes = new Map();
-    if (this._llmMonitoringEnabled(spark)) {
+    if (this._llmDetectEnabled(spark)) {
       for (const port of this._llmPorts()) {
         this.llmProbes.set(port, new LlmProbe(spark, port));
       }
@@ -83,8 +84,13 @@ export class SparkMonitor {
     this.online = false;
     this.lastOnlineOk = 0;
 
+    // C3: transport selection — "ssh" (default) or "agent" while a sparkdash
+    // agent holds an outbound WS. applyAgentData() writes _metrics directly;
+    // agent-connected monitors suspend SSH poll intervals for pushed domains.
+    this.transport = "ssh";
+    this.agentVersion = null;
+
     // System uptime seconds (from /proc/uptime), null when offline
-    this._uptimeSeconds = null;
 
     // Cached metrics per domain — never null objects for UI safety
     this._metrics = {
@@ -128,6 +134,8 @@ export class SparkMonitor {
     this._running = false;
     /** @type {Record<string, boolean>} in-flight domain guards */
     this._inflight = {};
+    /** C3: true while an agent connection pushes metrics (SSH polls idle). */
+    this._agentSuspended = false;
   }
 
   /** Hot-update config without tearing down poll loops / rate baselines. */
@@ -141,7 +149,7 @@ export class SparkMonitor {
     this.collector.spark = spark;
 
     // Rebuild LLM probe map — add new ports, remove stale ones, update existing
-    const ports = this._llmMonitoringEnabled() ? this._llmPorts() : [];
+    const ports = this._llmDetectEnabled() ? this._llmPorts() : [];
     const prevProbes = this.llmProbes;
     this.llmProbes = new Map();
     for (const port of ports) {
@@ -153,7 +161,7 @@ export class SparkMonitor {
         this.llmProbes.set(port, new LlmProbe(spark, port));
       }
     }
-    if (!this._llmMonitoringEnabled()) {
+    if (!this._llmDetectEnabled()) {
       this._metrics.llm = [];
     }
 
@@ -223,6 +231,24 @@ export class SparkMonitor {
    * Workers: never. Head: always. Standalone: llmMonitoring (default true).
    * @param {object} [spark]
    */
+  /**
+   * Part D: ANY role with llmPorts probes its engines at the detection cadence
+   * so Overview cards can show the actually-running model on workers.
+   */
+  _llmDetectEnabled(spark = this.spark) {
+    // Raw port list only — _llmPorts() falls back to the default 8888, which
+    // would make every port-less spark "detect" nothing meaningfully.
+    const raw = spark?.llmPorts;
+    if (Array.isArray(raw)) {
+      return raw.some((v) => {
+        const n = typeof v === "string" ? parseInt(v, 10) : Number(v);
+        return Number.isInteger(n) && n >= 1 && n <= 65535;
+      });
+    }
+    const legacy = Number(spark?.llmPort);
+    return Number.isInteger(legacy) && legacy >= 1 && legacy <= 65535;
+  }
+
   _llmMonitoringEnabled(spark = this.spark) {
     const role = spark?.role || (spark?.workerNode ? "worker" : "standalone");
     if (role === "worker") return false;
@@ -237,8 +263,9 @@ export class SparkMonitor {
       this._intervals = this._intervals.filter((id) => id !== this._llmIntervalId);
       this._llmIntervalId = null;
     }
-    if (this._llmMonitoringEnabled() && this._running) {
-      this._llmIntervalId = setInterval(() => this._pollDomain("llm"), POLL_INTERVAL_LLM);
+    if (this._llmDetectEnabled() && this._running) {
+      const cadence = this._llmMonitoringEnabled() ? POLL_INTERVAL_LLM : POLL_INTERVAL_LLM_DETECT;
+      this._llmIntervalId = setInterval(() => this._pollDomain("llm"), cadence);
       this._intervals.push(this._llmIntervalId);
       void this._pollDomain("llm");
     }
@@ -359,6 +386,58 @@ export class SparkMonitor {
     console.log(`[SparkMonitor] ${this.spark.id} started`);
   }
 
+  // ─── Agent transport (C3) ───────────────────────────────
+
+  /**
+   * Called by the agent WS endpoint on metrics/llm pushes. Shapes are
+   * identical to the collectors' outputs — snapshot/broadcast unchanged.
+   * @param {string} domain "gpu"|"cpu"|"ram"|"network"|"storage"|"unified"|"bandwidth"|"memory"|"llm"
+   * @param {unknown} payload
+   */
+  applyAgentData(domain, payload) {
+    if (this._stopped) return;
+    const now = Date.now();
+    this.lastOnlineOk = now;
+    switch (domain) {
+      case "gpu": this._metrics.gpu = payload; break;
+      case "cpu": this._metrics.cpu = payload; break;
+      case "ram": this._metrics.ram = payload; break;
+      case "network": this._metrics.network = payload; break;
+      case "storage": this._metrics.storage = payload; break;
+      case "unified":
+      case "memory":
+        this._metrics.unifiedMemory = payload;
+        break;
+      case "bandwidth":
+        this._metrics.bandwidth = payload;
+        break;
+      case "llm":
+        // Agent pushes an array of per-port probe snapshots.
+        this._metrics.llm = Array.isArray(payload) ? payload : payload ? [payload] : [];
+        break;
+      default:
+        break;
+    }
+    this._lastUpdate[domain] = now;
+  }
+
+  /** Called on registry connect/disconnect events. */
+  setAgentConnected(connected, agentVersion = null) {
+    if (connected) {
+      this.transport = "agent";
+      this.agentVersion = agentVersion;
+      this.online = true;
+      // SSH poll intervals for pushed domains suspend: _pollDomain gates.
+      this._agentSuspended = true;
+    } else {
+      this.transport = "ssh";
+      this.agentVersion = null;
+      this._agentSuspended = false;
+      // Existing liveness grace applies: _checkOnline resumes its cadence and
+      // flips online=false if SSH liveness also fails.
+    }
+  }
+
   /** Stop background polling. */
   stop() {
     this._running = false;
@@ -382,13 +461,15 @@ export class SparkMonitor {
 
   /** Return a full snapshot of this Spark's metrics. */
   snapshot() {
-    const ports = this._llmMonitoringEnabled() ? this._llmPorts() : [];
+    const ports = this._llmDetectEnabled() ? this._llmPorts() : [];
     const comfyOn = this._comfyMonitoringEnabled();
     const tailscaleOn = this._tailscaleMonitoringEnabled();
     return {
       id: this.spark.id,
       name: this.spark.name,
       kind: this.spark.kind || "spark",
+      transport: this.transport,
+      agentVersion: this.agentVersion,
       online: this.online,
       uptime: this._uptimeSeconds,
       lanIp: this.spark.lanIp || "",
@@ -397,6 +478,7 @@ export class SparkMonitor {
       disabledInterfaces: this.spark.disabledInterfaces || [],
       storagePollDisabled: Boolean(this.spark.storagePollDisabled),
       workerNode: Boolean(this.spark.workerNode),
+      agentEnabled: Boolean(this.spark.agentEnabled),
       role: this.spark.role || (this.spark.workerNode ? "worker" : "standalone"),
       workerLabel: this.spark.workerLabel || null,
       workerHeadId: this.spark.workerHeadId || null,
@@ -505,10 +587,11 @@ export class SparkMonitor {
 
   async _pollDomain(domain) {
     if (!this._running || this._inflight[domain]) return;
-    // Skip storage auto-poll when disabled for this spark
+    // C3: while the agent pushes these domains over the WS, SSH polls idle.
+    if (this._agentSuspended && ["gpu", "cpu", "ram", "network", "storage", "memory", "bandwidth", "llm"].includes(domain)) return;
     if (domain === "storage" && this.spark.storagePollDisabled) return;
     // Worker nodes: no local LLM API
-    if (domain === "llm" && !this._llmMonitoringEnabled()) return;
+    if (domain === "llm" && !(this._llmMonitoringEnabled() || this._llmDetectEnabled())) return;
     if (domain === "comfy" && !this._comfyMonitoringEnabled()) return;
     if (domain === "hermes" && !this._hermesMonitoringEnabled()) return;
     if (domain === "tailscale" && !this._tailscaleMonitoringEnabled()) return;
@@ -585,10 +668,14 @@ export class SparkMonitor {
         case "llm":
           this._metrics.llm = result;
           {
+            // llmDaily rollups stay gated to full-monitoring sparks (workers
+            // probe at detection cadence but never write daily history).
             const probes = Array.from(this.llmProbes.values());
             for (let i = 0; i < result.length; i++) {
               const probe = probes[i];
-              if (probe) llmDaily.record(this.spark.id, probe.port, result[i]);
+              if (probe && this._llmMonitoringEnabled()) {
+                llmDaily.record(this.spark.id, probe.port, result[i]);
+              }
             }
           }
           break;

@@ -397,14 +397,40 @@ export async function runStreamingRequest(
     retryOnThinking400 = false,
     thinking = false,
     apiKey = null,
+    /** A3: `{ source, sparkId, port }` — records one trace entry per attempt. */
+    traceMeta = null,
   } = {}
 ) {
-  const result = await runStreamingRequestOnce(url, body, signal, {
-    debug,
-    collectContent,
-    onDelta,
-    apiKey,
-  });
+  /** Trace recorder: falls back to the dashboard singleton when the caller
+   * didn't inject one; no-op unless traceMeta is set and capture is on. */
+  let traceStore = null;
+  if (traceMeta) {
+    try {
+      traceStore = getSettings().traceCapture ? getTraceStore() : null;
+    } catch {
+      traceStore = null;
+    }
+  }
+  const attempt = async (reqBody, attemptIndex) => {
+    const t0 = Date.now();
+    const result = await runStreamingRequestOnce(url, reqBody, signal, {
+      debug,
+      collectContent,
+      onDelta,
+      apiKey,
+    });
+    if (traceStore) {
+      _recordBenchTrace(traceStore, traceMeta, {
+        t0,
+        result,
+        reqBody,
+        url,
+      });
+    }
+    return result;
+  };
+
+  const result = await attempt(body, 0);
 
   if (
     retryOnThinking400 &&
@@ -421,15 +447,55 @@ export async function runStreamingRequest(
               : {},
         })
       : thinkingOffFallbackBody(body);
-    return runStreamingRequestOnce(url, retryBody, signal, {
-      debug,
-      collectContent,
-      onDelta,
-      apiKey,
-    });
+    return attempt(retryBody, 1);
   }
 
   return result;
+}
+
+/**
+ * Record one trace entry for a bench/showcase streaming attempt (A3).
+ * Bodies capped by TraceStore itself (TRACE_MAX_REQ/RES).
+ */
+function _recordBenchTrace(store, traceMeta, { t0, result, reqBody, url }) {
+  try {
+    store.record({
+      ts: t0,
+      sparkId: traceMeta.sparkId ?? null,
+      port: Number.isFinite(traceMeta.port) ? traceMeta.port : null,
+      source: traceMeta.source ?? null,
+      method: "POST",
+      path: (() => {
+        try {
+          const u = new URL(url);
+          return u.pathname;
+        } catch {
+          return url;
+        }
+      })(),
+      query: (() => {
+        try {
+          return new URL(url).search.replace(/^\?/, "") || null;
+        } catch {
+          return null;
+        }
+      })(),
+      model: result.model ?? null,
+      stream: true,
+      status: result.error ? null : result.httpStatus ?? 200,
+      ttftMs: result.ttftMs != null ? Math.round(result.ttftMs) : null,
+      durMs: result.totalMs != null ? Math.round(result.totalMs) : null,
+      promptTokens: result.prefillTokens ?? null,
+      completionTokens: result.completionTokens ?? null,
+      tokensEstimated: !(result.usage && result.usage.completionTokens > 0),
+      finishReason: result.finishReason ?? null,
+      error: result.error ?? null,
+      reqBody: typeof reqBody === "string" ? reqBody : JSON.stringify(reqBody ?? null),
+      resText: typeof result.content === "string" ? result.content : null,
+    });
+  } catch (err) {
+    console.error("[llmStreaming] trace record failed:", err.message);
+  }
 }
 
 /**
@@ -675,4 +741,6 @@ async function runStreamingRequestOnce(
 
   return out;
 }
+import { getTraceStore } from "./TraceStore.js";
+import { getSettings } from "../settings.js";
 

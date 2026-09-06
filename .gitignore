@@ -10,6 +10,10 @@ config/prefill-bench-history.json
 config/prefill-bench-active.json
 config/showcase-history.json
 config/llm-daily.json
+config/traces.sqlite
+config/traces.sqlite-*
+config/modelctl-jobs.json
+config/serving/
 config/gpu-memory.json
 config/gpu-memory.json.*
 config/bench-exports/
@@ -26,3 +30,5 @@ HANDOFF.md
 HANDOFF-HERMES.md
 handoff.md
 test/
+
+coverage/

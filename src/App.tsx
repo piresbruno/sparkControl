@@ -12,7 +12,9 @@ import { ShowcasePage } from "./components/ShowcasePage/ShowcasePage";
 import { ThemeSwitch } from "./components/ThemeSwitch";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { GearIcon, BoltIcon } from "./components/ui/icons";
-import { OVERVIEW_ID } from "./constants";
+import { OVERVIEW_ID, ANALYSIS_ID, MODELS_ID } from "./constants";
+import { AnalysisPage } from "./components/AnalysisPage/AnalysisPage";
+import { ModelsPage } from "./components/ModelsPage/ModelsPage";
 import type { Settings, SparkSnapshot } from "./api/types";
 
 function placeholderSnapshot(
@@ -139,7 +141,11 @@ function DashboardApp() {
 
 
   const isOverview = activeId === OVERVIEW_ID;
-  const displayActive = isOverview
+  const isAnalysis = activeId === ANALYSIS_ID;
+  const isModels = activeId === MODELS_ID;
+  // Sentinel pages (Overview/Analysis/Models) never resolve to a spark —
+  // the displaySparks[0] fallback here must not hijack them.
+  const displayActive = isOverview || isAnalysis || isModels
     ? null
     : displaySparks.find((s) => s.id === activeId) || displaySparks[0] || activeSpark || null;
 
@@ -274,6 +280,10 @@ function DashboardApp() {
               temperatureUnit={settings?.temperatureUnit ?? "celsius"}
               onSelectSpark={navigate}
             />
+          ) : isAnalysis ? (
+            <AnalysisPage />
+          ) : isModels ? (
+            <ModelsPage />
           ) : displayActive ? (
             <SparkPage
               spark={displayActive}

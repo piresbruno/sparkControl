@@ -712,6 +712,7 @@ export class ShowcaseManager {
         retryOnThinking400: true,
         thinking: session.thinking,
         apiKey: session._apiKey,
+        traceMeta: { source: "showcase", sparkId: session.sparkId, port: session.port },
         onDelta: (info) => {
           if (session.status !== "running") return;
           this._appendParts(session, stream, {
@@ -739,6 +740,7 @@ export class ShowcaseManager {
                 retryOnThinking400: true,
                 thinking: session.thinking,
                 apiKey: session._apiKey,
+                traceMeta: { source: "showcase", sparkId: session.sparkId, port: session.port },
                 onDelta: (info) => {
                   if (session.status !== "running") return;
                   this._appendParts(session, stream, {
