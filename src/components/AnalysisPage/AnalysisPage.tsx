@@ -48,10 +48,20 @@ function timeLabel(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour12: false });
 }
 
-function fmtNum(n: number | null | undefined, unit = ""): string {
-  if (n == null) return "—";
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k${unit}`;
-  return `${n}${unit}`;
+/** 380 → "380ms", 3800 → "3.80s", 75.4s → "1m 15s" (same convention as the bench dialogs' formatTtft). */
+function fmtMs(ms: number | null | undefined): string {
+  if (ms == null) return "—";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(2)}s`;
+  const total = Math.round(ms / 1000);
+  return `${Math.floor(total / 60)}m ${total % 60}s`;
+}
+
+/** Post-first-token decode tok/s: completion tokens over (duration − TTFT). */
+function tpsLabel(t: TraceEntry): string {
+  if (t.completionTokens == null || !t.durMs) return "—";
+  const genMs = t.durMs - (t.ttftMs ?? 0) || t.durMs;
+  return ((t.completionTokens / genMs) * 1000).toFixed(1);
 }
 
 function statusPillClass(status: number | null): string {
@@ -161,7 +171,7 @@ export function AnalysisPage() {
       <header className="flex flex-wrap items-center gap-2 mb-3">
         <h2 className="text-sm font-semibold text-text-strong m-0">Analysis</h2>
         <select
-          className="text-xs rounded border border-border bg-surface px-2 py-1"
+          className="select-inline text-xs rounded border border-border bg-surface px-2 py-1"
           value={sparkId}
           onChange={(e) => setSparkId(e.target.value)}
           aria-label="Spark"
@@ -174,7 +184,7 @@ export function AnalysisPage() {
           ))}
         </select>
         <select
-          className="text-xs rounded border border-border bg-surface px-2 py-1"
+          className="select-inline text-xs rounded border border-border bg-surface px-2 py-1"
           value={port}
           onChange={(e) => setPort(e.target.value)}
           aria-label="Port"
@@ -226,16 +236,16 @@ export function AnalysisPage() {
         </p>
       )}
 
-      <div className="bench-results">
-        <div className="bench-results__head" aria-hidden="true">
+      <div className="bench-results bench-results--analysis">
+        <div className="analysis-table__head" aria-hidden="true">
           <span>Time</span>
           <span>Spark:Port</span>
           <span>Request</span>
           <span>Model</span>
           <span>Status</span>
-          <span>Tok/s</span>
-          <span>TTFT</span>
-          <span>Duration</span>
+          <span className="analysis-table__num">Tok/s</span>
+          <span className="analysis-table__num">TTFT</span>
+          <span className="analysis-table__num">Duration</span>
           <span>Source</span>
         </div>
         {traces.length === 0 ? (
@@ -247,28 +257,22 @@ export function AnalysisPage() {
             <button
               key={t.id}
               type="button"
-              className={`bench-result-row text-left w-full ${t.method === "GET" ? "opacity-60" : ""}`}
+              className={`analysis-table__row ${t.method === "GET" ? "opacity-60" : ""}`}
               onClick={() => setDetailId(t.id)}
             >
-              <div className="grid grid-cols-9 gap-2 px-3 py-2 text-xs items-center">
-                <span className="text-muted">{timeLabel(t.ts)}</span>
-                <span>
-                  {t.sparkId ?? "—"}:{t.port ?? "—"}
-                </span>
-                <span className="truncate" title={`${t.method} ${t.path}${t.query ? `?${t.query}` : ""}`}>
-                  {t.method} {t.path}
-                </span>
-                <span className="truncate">{t.model ?? "—"}</span>
-                <span className={statusPillClass(t.status)}>{t.status ?? "ERR"}</span>
-                <span>
-                  {t.completionTokens != null && t.durMs
-                    ? ((t.completionTokens / (t.durMs - (t.ttftMs ?? 0) || t.durMs)) * 1000).toFixed(1)
-                    : "—"}
-                </span>
-                <span>{t.ttftMs != null ? fmtNum(t.ttftMs, "ms") : "—"}</span>
-                <span>{t.durMs != null ? fmtNum(t.durMs, "ms") : "—"}</span>
-                <span className="text-muted">{t.source ?? "—"}</span>
-              </div>
+              <span className="text-muted font-tabular">{timeLabel(t.ts)}</span>
+              <span className="truncate">
+                {t.sparkId ?? "—"}:{t.port ?? "—"}
+              </span>
+              <span className="truncate" title={`${t.method} ${t.path}${t.query ? `?${t.query}` : ""}`}>
+                {t.method} {t.path}
+              </span>
+              <span className="truncate">{t.model ?? "—"}</span>
+              <span className={`analysis-table__pill ${statusPillClass(t.status)}`}>{t.status ?? "ERR"}</span>
+              <span className="analysis-table__num font-tabular">{tpsLabel(t)}</span>
+              <span className="analysis-table__num font-tabular">{fmtMs(t.ttftMs)}</span>
+              <span className="analysis-table__num font-tabular">{fmtMs(t.durMs)}</span>
+              <span className="text-muted">{t.source ?? "—"}</span>
             </button>
           ))
         )}
@@ -359,9 +363,9 @@ function TraceDetailModal({
                   <dt className="text-muted">Status</dt>
                   <dd>{entry.status ?? `error: ${entry.error ?? "unknown"}`}</dd>
                   <dt className="text-muted">TTFT</dt>
-                  <dd>{entry.ttftMs != null ? `${entry.ttftMs} ms` : "—"}</dd>
+                  <dd>{fmtMs(entry.ttftMs)}</dd>
                   <dt className="text-muted">Duration</dt>
-                  <dd>{entry.durMs != null ? `${entry.durMs} ms` : "—"}</dd>
+                  <dd>{fmtMs(entry.durMs)}</dd>
                   <dt className="text-muted">Prompt tokens</dt>
                   <dd>{entry.promptTokens ?? "—"}{entry.tokensEstimated ? " (estimated)" : ""}</dd>
                   <dt className="text-muted">Completion tokens</dt>

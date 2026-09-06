@@ -9,6 +9,11 @@ Format: version sections are listed newest first.
 
 ## [Unreleased]
 
+### Fixed
+- **Analysis table alignment** — header and rows now share one grid, so every column lines up with its data; numeric columns (Tok/s, TTFT, Duration) are right-aligned tabular figures and the status pill no longer stretches. Narrow viewports scroll the table horizontally instead of crushing columns.
+- **Analysis TTFT/duration units** — values ≥ 1 s were rendered as `3.8kms`; they now format as `380ms` / `3.80s` / `1m 4s` (same convention as the bench dialogs), in the table and the trace detail sheet.
+- **Page-wide filter dropdowns** — the global `select { width: 100% }` rule wrapped the Analysis and Models serving filter bars onto their own full-width rows; toolbar selects now size to content (`.select-inline`).
+
 ---
 
 ## [1.8.6] — 2026-09-01
