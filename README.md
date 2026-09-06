@@ -17,6 +17,14 @@ It also supports **non-Spark units**: any Linux machine with an NVIDIA GPU (e.g.
 
 <img src="./assets/screenshot.jpg" alt="sparkDash Overview page with multiple DGX Spark units, GPU metrics, and LLM status">
 
+## Fork notice
+
+This repository is a **fork of [MiaAI-Lab/sparkDash](https://github.com/MiaAI-Lab/sparkDash)** — the original
+multi-unit monitoring dashboard for NVIDIA DGX Spark by [Mia'a AI Lab](https://x.com/MiaAI_lab).
+All credit for the original dashboard (collectors, SSE architecture, benchmark suites, UI shell) belongs to the
+upstream project; this fork extends it with additional features. The upstream MIT license applies and is
+preserved in [LICENSE](./LICENSE).
+
 ### LLM Prompt Showcase
 
 <a href="https://github.com/MiaAI-Lab/sparkDash/releases/download/media-showcase/llm-showcase.mp4">
