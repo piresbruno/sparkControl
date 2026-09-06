@@ -1,7 +1,7 @@
 {
-  "name": "sparkdash",
+  "name": "sparkcontrol",
   "version": "1.8.6",
-  "description": "sparkDash — Multi-DGX Spark Monitoring Dashboard — LocalAI Command Center fork (upstream: MiaAI-Lab/sparkDash)",
+  "description": "sparkControl — LocalAI Command Center (fork of sparkDash; upstream: MiaAI-Lab/sparkDash)",
   "type": "module",
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
@@ -12,7 +12,7 @@
     "test": "node --test --test-force-exit \"server/**/*.test.js\"",
     "test:coverage": "c8 --check-coverage --lines 75 --include server --include agent/src node --test --test-force-exit \"server/**/*.test.js\"",
     "test:ui": "vitest run",
-    "build:agent": "esbuild agent/src/main.js --bundle --platform=node --format=esm --outfile=agent/dist/sparkdash-agent.mjs --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\"",
+    "build:agent": "esbuild agent/src/main.js --bundle --platform=node --format=esm --outfile=agent/dist/spark-command-agent.mjs --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\"",
     "preview": "vite preview",
     "start": "node server/index.js",
     "docker:up": "docker compose up -d",

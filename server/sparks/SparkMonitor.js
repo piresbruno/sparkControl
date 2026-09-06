@@ -84,8 +84,8 @@ export class SparkMonitor {
     this.online = false;
     this.lastOnlineOk = 0;
 
-    // C3: transport selection — "ssh" (default) or "agent" while a sparkdash
-    // agent holds an outbound WS. applyAgentData() writes _metrics directly;
+    // C3: transport selection — "ssh" (default) or "agent" while a Spark
+    // Command Agent holds an outbound WS. applyAgentData() writes _metrics directly;
     // agent-connected monitors suspend SSH poll intervals for pushed domains.
     this.transport = "ssh";
     this.agentVersion = null;

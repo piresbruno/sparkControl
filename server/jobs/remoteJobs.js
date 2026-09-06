@@ -311,7 +311,7 @@ export class RemoteJobManager {
       if (job.expectAgentConnect && job.status === "running" && now - job.startedAt > timeoutMs) {
         delete job.expectAgentConnect;
         job.status = "failed";
-        job.error = "agent did not connect within 60s — check the journal: systemctl --user status sparkdash-agent (user unit) or journalctl -u sparkdash-agent (system unit)";
+        job.error = "agent did not connect within 60s — check the journal: systemctl --user status spark-command-agent (user unit) or journalctl -u spark-command-agent (system unit)";
         job.endedAt = this._now();
         this._persist();
       }

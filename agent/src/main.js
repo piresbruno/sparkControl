@@ -1,5 +1,5 @@
 /**
- * sparkdash agent (C1/C2) — small daemon on each node holding an OUTBOUND
+ * Spark Command Agent (C1/C2) — small daemon on each node holding an OUTBOUND
  * WebSocket to the dashboard.
  *
  * Responsibilities:
@@ -25,9 +25,9 @@
  *  ← job-status-req {reqId}          → resp {reqId, ok, payload|error}
  *
  * Node layout on the node:
- *   ~/.sparkdash/agent/sparkdash-agent.mjs  (esbuild bundle, ws bundled)
- *   ~/.sparkdash/agent/config.json          {dashboardUrl, token, sparkId}
- *   ~/.sparkdash/runs/<scriptId>.pid/.log   serving supervision state
+ *   ~/.sparkcontrol/agent/spark-command-agent.mjs  (esbuild bundle, ws bundled)
+ *   ~/.sparkcontrol/agent/config.json          {dashboardUrl, token, sparkId}
+ *   ~/.sparkcontrol/runs/<scriptId>.pid/.log   serving supervision state
  */
 import { spawn } from "child_process";
 import fs from "fs";
@@ -37,14 +37,14 @@ import { WebSocket } from "ws";
 
 const PROTO = 1;
 const AGENT_VERSION = "1.0.0";
-const HOME = path.join(os.homedir(), ".sparkdash");
+const HOME = path.join(os.homedir(), ".sparkcontrol");
 const AGENT_DIR = path.join(HOME, "agent");
 const RUNS_DIR = path.join(HOME, "runs");
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30_000;
 
 function readConfig() {
-  const cfgPath = process.env.SPARKDASH_AGENT_CONFIG || path.join(AGENT_DIR, "config.json");
+  const cfgPath = process.env.SPARK_COMMAND_AGENT_CONFIG || path.join(AGENT_DIR, "config.json");
   const raw = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
   if (!raw.dashboardUrl || !raw.token || !raw.sparkId) {
     throw new Error("agent config.json must define dashboardUrl, token, sparkId");
@@ -53,7 +53,7 @@ function readConfig() {
 }
 
 function log(...args) {
-  console.log(`[sparkdash-agent ${new Date().toISOString()}]`, ...args);
+  console.log(`[spark-command-agent ${new Date().toISOString()}]`, ...args);
 }
 
 // ─── Collectors (reused domain code, local mode) ──────────
@@ -176,7 +176,7 @@ class ServingSupervisor {
         fs.writeFileSync(this._pidPath(scriptId), String(child.pid));
         this.children.set(scriptId, { child, logStream, scriptId, startedAt });
         child.on("exit", (code) => {
-          logStream.end(`\n[sparkdash-agent] exited code=${code}\n`);
+          logStream.end(`\n[spark-command-agent] exited code=${code}\n`);
           this.children.delete(scriptId);
           try {
             const pidNow = parseInt(fs.readFileSync(this._pidPath(scriptId), "utf8"), 10);
@@ -523,9 +523,9 @@ export async function main() {
 export { PROTO, AGENT_VERSION };
 
 // Entry point when run directly.
-if (process.argv[1] && process.argv[1].endsWith("sparkdash-agent.mjs")) {
+if (process.argv[1] && process.argv[1].endsWith("spark-command-agent.mjs")) {
   main().catch((err) => {
-    console.error("[sparkdash-agent] fatal:", err.message);
+    console.error("[spark-command-agent] fatal:", err.message);
     process.exit(1);
   });
 }
