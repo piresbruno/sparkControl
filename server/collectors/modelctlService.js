@@ -21,7 +21,10 @@ export const VERSION_CACHE_TTL_MS = 5 * 60_000;
 const STALE_MULTIPLIER = 5;
 
 /** Model names validated here too (defense in depth; REST re-validates). */
-const MODEL_NAME_RE = /^[a-zA-Z0-9._-]+$/;
+// Leading '-' is rejected: shellQuote passes hyphenated names unquoted, so
+// "-apply"/"-v" would become modelctl *flags* (option injection on a
+// destructive command). Real store names never start with a dash.
+const MODEL_NAME_RE = /^(?!-)[a-zA-Z0-9._-]+$/;
 
 export function validModelName(name) {
   return typeof name === "string" && name.length > 0 && name.length <= 128 && MODEL_NAME_RE.test(name);

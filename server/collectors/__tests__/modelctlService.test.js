@@ -125,6 +125,9 @@ test("validModelName enforces the REST-layer regex", () => {
   assert.ok(!validModelName("a b"));
   assert.ok(!validModelName(""));
   assert.ok(!validModelName("../escape"));
+  // option-injection: leading dash must not become a modelctl flag
+  assert.ok(!validModelName("-apply"));
+  assert.ok(!validModelName("--yes"));
 });
 
 // ─── Service caches / error shapes ────────────────────────

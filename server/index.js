@@ -162,6 +162,7 @@ import {
   buildPushScript,
   buildDeleteLocalScript,
   buildNasDeleteScript,
+  buildInstallModelctlScript,
   planPlacement,
   validModelName,
 } from "./collectors/modelctlService.js";
