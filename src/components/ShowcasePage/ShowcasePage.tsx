@@ -14,7 +14,7 @@ import type {
   SparkConfig,
 } from "../../api/types";
 import { isLlmMonitoringEnabled } from "../../api/sparkRole";
-import { BoltIcon } from "../ui/icons";
+import { SparkIcon } from "../ui/icons";
 import { TerminalCard } from "./TerminalCard";
 import {
   PROMPT_TYPES,
@@ -770,10 +770,10 @@ export function ShowcasePage({ sparkId }: ShowcasePageProps) {
       {!barVisible ? (
         <div className="showcase-config-peek">
           <div className="showcase-config__title">
-            <a href="/" className="logo-pill showcase-brand" title="sparkDash home">
-              <BoltIcon className="showcase-brand__bolt" />
+            <a href="/" className="logo-pill showcase-brand" title="sparkControl home">
+              <SparkIcon className="showcase-brand__bolt" />
               <span>
-                spark<span className="logo-pill-dash">Dash</span>
+                spark<span className="logo-pill-dash">Control</span>
               </span>
             </a>
             <div className="showcase-config__subtitle">
@@ -822,10 +822,10 @@ export function ShowcasePage({ sparkId }: ShowcasePageProps) {
       <div className={`showcase-config${configOpen ? "" : " is-collapsed"}`}>
         <div className="showcase-config__bar">
           <div className="showcase-config__title">
-            <a href="/" className="logo-pill showcase-brand" title="sparkDash home">
-              <BoltIcon className="showcase-brand__bolt" />
+            <a href="/" className="logo-pill showcase-brand" title="sparkControl home">
+              <SparkIcon className="showcase-brand__bolt" />
               <span>
-                spark<span className="logo-pill-dash">Dash</span>
+                spark<span className="logo-pill-dash">Control</span>
               </span>
             </a>
             <div className="showcase-config__subtitle">

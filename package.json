@@ -1,7 +1,7 @@
 {
   "name": "sparkdash",
   "version": "1.8.6",
-  "description": "sparkDash — Multi-DGX Spark Monitoring Dashboard — LocalAI Command Center fork (upstream: MiaAI-Lab/sparkDash)",
+  "description": "sparkControl — Multi-DGX Spark Monitoring Dashboard — LocalAI Command Center fork (upstream: MiaAI-Lab/sparkDash)",
   "type": "module",
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",

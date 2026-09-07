@@ -2266,15 +2266,15 @@ markAgentTokenConfigured();
 startBroadcast();
 
 server.listen(PORT, BIND_HOST, () => {
-  console.log(`[sparkDash] server listening on http://${BIND_HOST}:${PORT}`);
-  console.log(`[sparkDash] WebSocket endpoint ws://${BIND_HOST}:${PORT}/ws`);
+  console.log(`[sparkControl] server listening on http://${BIND_HOST}:${PORT}`);
+  console.log(`[sparkControl] WebSocket endpoint ws://${BIND_HOST}:${PORT}/ws`);
   const isLoopback =
     BIND_HOST === "localhost" || BIND_HOST === "::1" || /^127\./.test(BIND_HOST);
   if (isLoopback) {
-    console.log("[sparkDash] localhost-only; set BIND_HOST=0.0.0.0 (or a LAN IP) to allow remote access");
+    console.log("[sparkControl] localhost-only; set BIND_HOST=0.0.0.0 (or a LAN IP) to allow remote access");
   } else {
     console.warn(
-      `[sparkDash] WARNING: bound to ${BIND_HOST} — reachable on the LAN. This dashboard is unauthenticated and can SSH into and power off your Sparks; restrict access at the network/firewall layer.`
+      `[sparkControl] WARNING: bound to ${BIND_HOST} — reachable on the LAN. This dashboard is unauthenticated and can SSH into and power off your Sparks; restrict access at the network/firewall layer.`
     );
   }
   startAllMonitors();
@@ -2285,7 +2285,7 @@ let _shuttingDown = false;
 function shutdown(signal) {
   if (_shuttingDown) return;
   _shuttingDown = true;
-  console.log(`[sparkDash] ${signal} received, shutting down…`);
+  console.log(`[sparkControl] ${signal} received, shutting down…`);
   try {
     // Finalize in-flight benches before the process dies so clients polling
     // GET /llm/bench/:id do not hit "Benchmark not found" after --watch reload.
@@ -2296,12 +2296,12 @@ function shutdown(signal) {
       "Interrupted — server restarted while the benchmark was running"
     );
   } catch (err) {
-    console.error("[sparkDash] failed to finalize benchmarks:", err.message);
+    console.error("[sparkControl] failed to finalize benchmarks:", err.message);
   }
   try {
     llmDaily.flush();
   } catch (err) {
-    console.error("[sparkDash] failed to flush LLM daily history:", err.message);
+    console.error("[sparkControl] failed to flush LLM daily history:", err.message);
   }
   try {
     if (broadcastTimer) {
@@ -2311,12 +2311,12 @@ function shutdown(signal) {
     for (const m of monitors.values()) m.stop();
     monitors.clear();
   } catch (err) {
-    console.error("[sparkDash] error during shutdown:", err.message);
+    console.error("[sparkControl] error during shutdown:", err.message);
   }
   try {
     closeTraceStore();
   } catch (err) {
-    console.error("[sparkDash] failed to close trace store:", err.message);
+    console.error("[sparkControl] failed to close trace store:", err.message);
   }
   try {
     wss.clients.forEach((c) => {

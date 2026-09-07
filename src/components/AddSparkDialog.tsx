@@ -276,7 +276,7 @@ export function AddSparkDialog({ open, onClose, onAdded, defaultLlmPort = 8888 }
               </select>
               {config.ssh.auth === "key" && (
                 <p className="mt-1 text-[10px] text-muted">
-                  SSH runs on the sparkDash host (not your browser). In Docker, mount a private
+                  SSH runs on the sparkControl host (not your browser). In Docker, mount a private
                   key at /root/.ssh/id_ed25519 (see docker-compose.yml) or set SSH_IDENTITY_FILE.
                   IPs are from that host&apos;s network.
                 </p>

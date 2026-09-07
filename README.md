@@ -1,4 +1,4 @@
-# sparkDash ⚡ — Multi-unit monitoring dashboard for NVIDIA DGX Spark
+# sparkControl ⚡ — Multi-unit monitoring dashboard for NVIDIA DGX Spark
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-arm64-2d9d78?style=flat-square" alt="Platform: ARM64">
@@ -11,18 +11,18 @@
   <a href="https://x.com/MiaAI_lab" target="_blank" style="display:inline-block;margin:0 8px;vertical-align:middle;"><img src="https://img.shields.io/badge/Follow%20me%20on%20X-000000?style=for-the-badge&logo=x&logoColor=white" alt="Follow Mia on X" height="28" style="height:28px;width:auto;vertical-align:middle;border:0;" /></a>
 </p>
 
-sparkDash is a real-time web dashboard for one or more **NVIDIA DGX Spark (GB10)** machines in a single browser window. It streams GPU, CPU, unified memory, storage, network, and local LLM metrics — and lets you add, edit, reorder, or remove Sparks from the UI without restarts or code changes.
+sparkControl is a real-time web dashboard for one or more **NVIDIA DGX Spark (GB10)** machines in a single browser window. It streams GPU, CPU, unified memory, storage, network, and local LLM metrics — and lets you add, edit, reorder, or remove Sparks from the UI without restarts or code changes.
 
 It also supports **non-Spark units**: any Linux machine with an NVIDIA GPU (e.g. a workstation with a dedicated RTX/L-series card) can be added as a **dedicated GPU host** and monitored the same way via SSH and `nvidia-smi`. For these units the dashboard correctly separates **RAM** (system memory) from **VRAM** (discrete GPU memory).
 
-<img src="./assets/screenshot.jpg" alt="sparkDash Overview page with multiple DGX Spark units, GPU metrics, and LLM status">
+<img src="./assets/screenshot.jpg" alt="sparkControl Overview page with multiple DGX Spark units, GPU metrics, and LLM status">
 
 ## Fork notice — LocalAI Command Center
 
 This repository is a **fork of [MiaAI-Lab/sparkDash](https://github.com/MiaAI-Lab/sparkDash)** — the original
 multi-unit monitoring dashboard for NVIDIA DGX Spark by [Mia'a AI Lab](https://x.com/MiaAI_lab).
 All credit for the dashboard core (collectors, SSE architecture, benchmark suites, UI shell) belongs to the
-upstream project; this fork tracks upstream and extends it with the **LocalAI Command Center** feature set:
+upstream project; this fork tracks upstream and extends it with the **LocalAI Command Center** feature set (rebranded **sparkControl**):
 
 - **Analysis** — every inference request/response through a built-in reverse proxy, with payloads, timing, and tokens (SQLite, 1-week retention).
 - **modelctl integration** — NAS model store inventory, HF downloads, node sync/push over CX7, placement planning.
@@ -188,7 +188,7 @@ plus the `/agent-ws` WebSocket endpoint.
 
 ## ComfyUI monitoring
 
-sparkDash can **optionally** monitor a [ComfyUI](https://github.com/comfyanonymous/ComfyUI) instance on each Spark — the same way it probes local LLMs, but focused on **jobs and queue**, not a second copy of GPU/RAM bars (those stay on the GPU / CPU panels).
+sparkControl can **optionally** monitor a [ComfyUI](https://github.com/comfyanonymous/ComfyUI) instance on each Spark — the same way it probes local LLMs, but focused on **jobs and queue**, not a second copy of GPU/RAM bars (those stay on the GPU / CPU panels).
 
 ### What is supported
 
@@ -222,8 +222,8 @@ The Spark page **Services** section shows the ComfyUI card. On Overview, a small
 
 ### ComfyUI side requirements
 
-- ComfyUI must be reachable from the **sparkDash server** on the probe host:
-  - **Local Spark** (`isLocal`): sparkDash probes `127.0.0.1:{port}` (use Docker `network_mode: host` if the dashboard runs in a container).
+- ComfyUI must be reachable from the **sparkControl server** on the probe host:
+  - **Local Spark** (`isLocal`): sparkControl probes `127.0.0.1:{port}` (use Docker `network_mode: host` if the dashboard runs in a container).
   - **Remote Spark**: probe uses the Spark **LAN IP** (same as LLM probes).
 - For **Open** from another machine’s browser, Comfy should listen on a reachable interface (e.g. `--listen 0.0.0.0`), not only loopback, and the Spark’s **LAN IP** must be set correctly in Edit.
 
@@ -246,7 +246,7 @@ Env (optional): `COMFY_PORT` (default `8188`), `COMFY_PROBE_TIMEOUT_MS`, `POLL_I
 
 ## Hermes Agent monitoring
 
-sparkDash can **optionally** monitor [Hermes Agent](https://github.com/nousresearch/hermes-agent) (nousresearch/hermes-agent) on each unit and run one-click updates for you over SSH.
+sparkControl can **optionally** monitor [Hermes Agent](https://github.com/nousresearch/hermes-agent) (nousresearch/hermes-agent) on each unit and run one-click updates for you over SSH.
 
 ### What is supported
 
@@ -271,7 +271,7 @@ The **Update Hermes** button appears in the Spark header/mobile action row; it t
 
 ### Side requirements
 
-- **Hermes Agent must be installed on the target machine** — sparkDash only checks & updates; it does not install it. The binary is looked up in `~/.local/bin` and `/usr/local/bin`.
+- **Hermes Agent must be installed on the target machine** — sparkControl only checks & updates; it does not install it. The binary is looked up in `~/.local/bin` and `/usr/local/bin`.
 - SSH user must be able to run `hermes update --check` / `hermes update` non-interactively (key auth recommended).
 - An update can take a few minutes (repo pull + dependency reinstall); a stale `*.lock` file from a crashed run is cleared before each attempt.
 
@@ -298,7 +298,7 @@ Env (optional): `POLL_INTERVAL_HERMES` (default `600000` ms), `HERMES_UPDATE_TIM
 
 Opt-in per unit (default **off**). Runs `tailscale status --json` on the host and shows a **Tailnet** card under Resources.
 
-This closes a blind spot every LAN-based check shares, including sparkDash's own SSH liveness. When `tailscaled` loses its session with the coordination server, SSH/GPU/LLM can all stay healthy while the box is unreachable from off-LAN.
+This closes a blind spot every LAN-based check shares, including sparkControl's own SSH liveness. When `tailscaled` loses its session with the coordination server, SSH/GPU/LLM can all stay healthy while the box is unreachable from off-LAN.
 
 ### What is supported
 
@@ -334,8 +334,8 @@ Env (optional): `POLL_INTERVAL_TAILSCALE` (default `30000`), `TAILSCALE_PROBE_TI
 ## Quick start
 
 ```bash
-git clone https://github.com/MiaAI-Lab/sparkDash.git
-cd sparkDash
+git clone https://github.com/piresbruno/sparkControl.git
+cd sparkControl
 
 # Production (Docker)
 docker compose up --build -d
@@ -353,13 +353,13 @@ For development with Docker (source-mounted, HMR):
 docker compose -f docker-compose.dev.yml up --build
 ```
 
-**Remote units + SSH keys (Docker):** SSH is executed *inside* the container on the sparkDash host (typically the head DGX). Configured LAN IPs are from **that** host’s point of view, not your laptop. OpenSSH looks for keys under `/root/.ssh` in the container — the host user’s `~/.ssh` is not used unless you bind-mount it. Uncomment this volume in `docker-compose.yml` (and recreate the container):
+**Remote units + SSH keys (Docker):** SSH is executed *inside* the container on the sparkControl host (typically the head DGX). Configured LAN IPs are from **that** host’s point of view, not your laptop. OpenSSH looks for keys under `/root/.ssh` in the container — the host user’s `~/.ssh` is not used unless you bind-mount it. Uncomment this volume in `docker-compose.yml` (and recreate the container):
 
 ```yaml
 - ${HOME}/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro
 ```
 
-If the key file has a non-default name (e.g. `id_ed25519_shared`), mount it **as** `id_ed25519`, or set `SSH_IDENTITY_FILE` to the path inside the container. Keep the file mode `600`. The unit that runs sparkDash itself should be added with **This host (local collectors — no SSH for metrics)**.
+If the key file has a non-default name (e.g. `id_ed25519_shared`), mount it **as** `id_ed25519`, or set `SSH_IDENTITY_FILE` to the path inside the container. Keep the file mode `600`. The unit that runs sparkControl itself should be added with **This host (local collectors — no SSH for metrics)**.
 
 ---
 
@@ -368,7 +368,7 @@ If the key file has a non-default name (e.g. `id_ed25519_shared`), mount it **as
 Design principle: **one Spark model, N instances**. Every unit is a record in `config/sparks.json` with a `kind` field (`spark` or `host`). The same `SparkMonitor`, `SystemCollector`, and `LlmProbe` code runs for all of them. Adding a unit is a config change, not a code change.
 
 ```txt
-┌────────────────────── Docker container (sparkDash) ────────────────────────┐
+┌────────────────────── Docker container (sparkControl) ────────────────────┐
 │  Express (server/)                                                         │
 │  ├─ config/sparks.json        Spark registry (API read/write)              │
 │  ├─ SparkRegistry             load/persist Sparks; change events           │
@@ -411,7 +411,7 @@ Poll loops run in the background (even with no clients) so rate metrics — toke
 ## Repository layout
 
 ```txt
-sparkDash/
+sparkControl/
 ├── src/                 React + TypeScript SPA
 │   ├── api/             REST client + shared types
 │   ├── components/      Overview, Spark pages, dialogs, UI primitives
@@ -459,7 +459,7 @@ sparkDash/
 | PUT | `/api/settings` | Update global settings |
 | WS | `/ws` | Real-time metrics stream |
 
-There is no authentication on the HTTP/WebSocket API. Run sparkDash only on a trusted network (or behind your own reverse proxy with auth).
+There is no authentication on the HTTP/WebSocket API. Run sparkControl only on a trusted network (or behind your own reverse proxy with auth).
 
 ---
 
@@ -516,7 +516,7 @@ Copy `.env.example` to `.env` if needed:
 2. Choose **Unit type**:
    - **NVIDIA DGX Spark** — the default; hardware summary shows DGX Spark specs and the CX7 IP field is available.
    - **Dedicated GPU host** — any Linux machine with an NVIDIA GPU. It is monitored exactly like a Spark (SSH + `nvidia-smi`) but is **not** reported as a DGX Spark: the header shows a detected hardware summary (GPU model, CPU, RAM) instead of fixed GB10 specs, and the page shows separate **RAM** and **VRAM** panels (VRAM from `nvidia-smi`, RAM from system memory). On the unit page, RAM → Network → Storage stack in the right column with GPU filling the left column.
-3. Set **Name**, **LAN IP** (required), optional **CX7 IP** (Sparks only), **SSH user**, and auth (key or password). LAN IP is probed from the sparkDash host. Key auth in Docker needs a key mounted into the container (see Quick start). Wake-on-LAN MAC is auto-read from **enP7s7** when online (optional override in Edit).
+3. Set **Name**, **LAN IP** (required), optional **CX7 IP** (Sparks only), **SSH user**, and auth (key or password). LAN IP is probed from the sparkControl host. Key auth in Docker needs a key mounted into the container (see Quick start). Wake-on-LAN MAC is auto-read from **enP7s7** when online (optional override in Edit).
 4. **Test Connection** for SSH + LLM reachability.
 5. Save — a tab appears and metrics start streaming.
 

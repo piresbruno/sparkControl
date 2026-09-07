@@ -74,7 +74,7 @@ export interface SparkConfig {
   comfyPort?: number;
   /**
    * Opt-in: Hermes Agent CLI (nousresearch/hermes-agent) is installed on this
-   * machine. When enabled, sparkDash checks for Hermes updates and can run
+   * machine. When enabled, sparkControl checks for Hermes updates and can run
    * `hermes update` for you via SSH.
    */
   hermesMonitoring?: boolean;
