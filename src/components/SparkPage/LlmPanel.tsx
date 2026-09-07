@@ -19,7 +19,7 @@ interface LlmPanelProps {
   className?: string;
 }
 
-const VLLM_METRIC_INFO = {
+export const VLLM_METRIC_INFO = {
   kvCache:
     "Fraction of the engine’s KV cache memory currently in use (0–100%). High values (≥80%) mean little room for new or long contexts and often lead to queuing or preemptions.",
   requests:

@@ -293,6 +293,7 @@ function DashboardApp() {
               spark={displayActive}
               temperatureUnit={settings?.temperatureUnit ?? "celsius"}
               onEdit={() => setEditId(displayActive.id)}
+              onNavigate={navigate}
             />
           ) : (
             <div className="panel mx-auto mt-16 max-w-md p-8 text-center">
