@@ -53,6 +53,22 @@ test("patch of unrelated field does not disturb modelctl", () => {
   assert.equal(s.benchDebugTraces, true);
 });
 
+test("nasHostSparkId round-trips; empty/non-string clears to null", () => {
+  settings.loadSettings();
+  const s = settings.updateSettings({ modelctl: { nasHostSparkId: "nasvm", nasRoot: "/mnt/nas2" } });
+  assert.equal(s.modelctl.nasHostSparkId, "nasvm");
+  assert.equal(s.modelctl.nasRoot, "/mnt/nas2");
+  // The picker sends "" for Auto — clears to null; siblings carried in the
+  // same candidate survive, unsent ones fall back to defaults (merge is over
+  // DEFAULTS, and the UI always submits the full object).
+  const c = settings.updateSettings({ modelctl: { nasHostSparkId: "", nasRoot: "/mnt/nas2" } });
+  assert.equal(c.modelctl.nasHostSparkId, null);
+  assert.equal(c.modelctl.nasRoot, "/mnt/nas2");
+  assert.equal(c.modelctl.remoteBin, "modelctl");
+  const n = settings.updateSettings({ modelctl: { nasHostSparkId: 42 } });
+  assert.equal(n.modelctl.nasHostSparkId, null);
+});
+
 test("traceProxyAllowedOrigins filters non-http(s) entries and non-arrays reset", () => {
   settings.loadSettings();
   let s = settings.updateSettings({

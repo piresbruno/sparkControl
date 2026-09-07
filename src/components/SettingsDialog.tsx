@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { fetchSettings, updateSettings, rotateAgentToken } from "../api/client";
-import type { Settings } from "../api/types";
+import { fetchSettings, fetchSparks, updateSettings, rotateAgentToken } from "../api/client";
+import type { Settings, SparkConfig } from "../api/types";
 import { useModalPresence } from "../hooks/useModalPresence";
 import packageJson from "../../package.json";
 
@@ -33,6 +33,7 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  const [sparks, setSparks] = useState<SparkConfig[]>([]);
 
   useEscape(onClose);
 
@@ -45,9 +46,12 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
     }
     let cancelled = false;
     setLoading(true);
-    fetchSettings()
-      .then((s) => {
-        if (!cancelled) setSettings(s);
+    Promise.all([fetchSettings(), fetchSparks().catch(() => ({ sparks: [] as SparkConfig[] }))])
+      .then(([s, sp]) => {
+        if (!cancelled) {
+          setSettings(s);
+          setSparks(sp.sparks);
+        }
       })
       .catch((err: Error) => {
         if (!cancelled) setError(err.message);
@@ -292,6 +296,29 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
 
             {/* modelctl */}
             <div className="grid gap-2">
+              <label htmlFor="nas-host-spark" className="text-xs text-muted">
+                NAS host node (runs modelctl NAS operations)
+              </label>
+              <select
+                id="nas-host-spark"
+                value={settings.modelctl?.nasHostSparkId ?? ""}
+                onChange={(e) =>
+                  update({ modelctl: { ...settings.modelctl, nasHostSparkId: e.target.value || null } })
+                }
+                className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
+              >
+                <option value="">Auto (head → local → sole spark)</option>
+                {settings.modelctl?.nasHostSparkId && !sparks.some((s) => s.id === settings.modelctl?.nasHostSparkId) && (
+                  <option value={settings.modelctl.nasHostSparkId}>
+                    {settings.modelctl.nasHostSparkId} (not a registered Spark)
+                  </option>
+                )}
+                {sparks.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name || s.id} ({s.id}){s.modelctlEnabled ? "" : " — modelctl off"}
+                  </option>
+                ))}
+              </select>
               <label className="text-xs text-muted">modelctl NAS root (path on nodes)</label>
               <input
                 type="text"
