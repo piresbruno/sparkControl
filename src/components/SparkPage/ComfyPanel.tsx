@@ -235,7 +235,7 @@ export function ComfyPanel({
     (e: MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      // Force a real top-level navigation off the sparkDash SPA origin.
+      // Force a real top-level navigation off the sparkControl SPA origin.
       window.open(openUrl, "_blank", "noopener,noreferrer");
     },
     [openUrl]

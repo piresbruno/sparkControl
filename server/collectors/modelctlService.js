@@ -10,7 +10,8 @@
  *  - Inventory caches: NAS 60 s / node 30 s; last good result served stale
  *    for 5× TTL with stale:true; errors → { models: [], error }.
  *  - checkModelctl cached 5 min; probes bare name then ~/.local/bin fallback.
- *  - The dashboard NEVER calls `path`, `serve-command`, or NAS `delete`.
+ *  - NAS `delete` is opt-in from the Models catalog: dry-run by default,
+ *    then --apply --yes for the real removal (managed root store only).
  */
 import { shellQuote } from "../util/shellQuote.js";
 
@@ -20,7 +21,10 @@ export const VERSION_CACHE_TTL_MS = 5 * 60_000;
 const STALE_MULTIPLIER = 5;
 
 /** Model names validated here too (defense in depth; REST re-validates). */
-const MODEL_NAME_RE = /^[a-zA-Z0-9._-]+$/;
+// Leading '-' is rejected: shellQuote passes hyphenated names unquoted, so
+// "-apply"/"-v" would become modelctl *flags* (option injection on a
+// destructive command). Real store names never start with a dash.
+const MODEL_NAME_RE = /^(?!-)[a-zA-Z0-9._-]+$/;
 
 export function validModelName(name) {
   return typeof name === "string" && name.length > 0 && name.length <= 128 && MODEL_NAME_RE.test(name);
@@ -74,6 +78,16 @@ export function buildPushScript({ name, targetHost, remoteBin = "modelctl" }) {
 /** `modelctl delete-local <name>` (job script body). */
 export function buildDeleteLocalScript({ name, remoteBin = "modelctl" }) {
   return mctl(remoteBin, `delete-local ${shellQuote(name)}`);
+}
+
+/**
+ * `modelctl delete <name> --root <nasRoot> --apply --yes` (job script body).
+ * Destructive: permanently removes the model from the MANAGED ROOT STORE on
+ * the NAS (active ref → catalog → journals/staging/unreferenced objects).
+ * Non-interactive runs need --yes; dry-run (no --apply) never deletes.
+ */
+export function buildNasDeleteScript({ name, nasRoot, remoteBin = "modelctl" }) {
+  return mctl(remoteBin, `delete ${shellQuote(name)} --root ${shellQuote(nasRoot)} --apply --yes`);
 }
 
 /**
@@ -292,9 +306,11 @@ export function createModelctlService({ exec, getSettings, registry }) {
     versionCache.delete(sparkId);
   }
 
-  async function listNasModels() {
-    const cached = _cacheGet(nasCache.get("nas"), NAS_CACHE_TTL_MS);
-    if (cached) return cached;
+  async function listNasModels({ force = false } = {}) {
+    if (!force) {
+      const cached = _cacheGet(nasCache.get("nas"), NAS_CACHE_TTL_MS);
+      if (cached) return cached;
+    }
     const cfg = getSettings()?.modelctl || {};
     const spark = defaultNasSpark();
     if (!spark) {

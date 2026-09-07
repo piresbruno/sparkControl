@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile.dev
       platforms:
         - linux/arm64
-    container_name: sparkDash-dev
+    container_name: sparkControl-dev
     restart: unless-stopped
     # Host network: Vite :5173 + API :5555 bind on the host; local LLM
     # probes reach 127.0.0.1-bound servers (ds4-server / start.sh default).

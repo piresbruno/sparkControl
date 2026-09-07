@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to **sparkDash** are documented here.  
+All notable changes to **sparkControl** are documented here.  
 The README [Latest version changelog](./README.md#latest-version-changelog) always reflects only the current release; this file keeps the full history.
 
 Format: version sections are listed newest first.
@@ -8,6 +8,15 @@ Format: version sections are listed newest first.
 ---
 
 ## [Unreleased]
+
+### Added
+- **Instrument-console node detail page** — Spark pages are rebuilt as a four-channel console (Resources / Serving / Models / Tests) with a data-plate rack header, status-LED channel rail, derived engine-activity pill, direct + proxy endpoint cards, 12-stat serving readout, and armed stop; legacy expert panels remain behind disclosures. Workers navigate to their head.
+- **Worker card attribution** — Overview worker cards show, on the card: the head Spark's name, the model being served (head engine first, own detection probe as fallback), and the node's modelctl version (lazy probe of opt-in, online workers; "not installed" when absent/offline). The snapshot now mirrors `modelctlEnabled`.
+- **NAS catalog delete** — the Models tab (now NAS-catalog-only) gains a per-row Delete that queues the new `nas-delete` job kind: `modelctl delete NAME --root <nasRoot> --apply --yes` on the machine managing the NAS store (defaultNasSpark, same as downloads). Destructive by design; the button documents the exact command.
+
+### Changed
+- **Rebrand sparkDash → sparkControl** — title, favicon (four-point spark glyph, new `SparkIcon`), logo pills (app + showcase), version label, help texts, server log banners, README self-references, package description, Docker header + compose container names. Runtime identifiers are intentionally unchanged (`~/.sparkdash/`, `sparkdash-agent.mjs`, systemd unit, `sparkdash-theme` key, `SPARKDASH_*` env vars, package name) so bootstrapped nodes keep working.
+- **Models tab = NAS catalog only** — per the approved mockup: HF download form + Name/Runtime/Repository/Size/Delete table with a summary chip and stale/modelctl badges. The per-node matrix, node select, serving controls and active-jobs panel are removed — per-node model management lives on the node detail page (Models channel); a pointer note says so.
 
 ### Fixed
 - **Analysis table alignment** — header and rows now share one grid, so every column lines up with its data; numeric columns (Tok/s, TTFT, Duration) are right-aligned tabular figures and the status pill no longer stretches. Narrow viewports scroll the table horizontally instead of crushing columns.

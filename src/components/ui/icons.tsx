@@ -178,10 +178,11 @@ export function MemoryIcon({ className = "" }: { className?: string }) {
   );
 }
 
-export function BoltIcon({ className = "" }: { className?: string }) {
+/** Four-point spark — the sparkControl brand glyph (filled, accent-colored). */
+export function SparkIcon({ className = "" }: { className?: string }) {
   return (
-    <svg {...baseProps(className)}>
-      <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+    <svg {...baseProps(className)} fill="currentColor" stroke="none">
+      <path d="M12 2c.9 5.4 4.6 9.1 10 10-5.4.9-9.1 4.6-10 10-.9-5.4-4.6-9.1-10-10 5.4-.9 9.1-4.6 10-10Z" />
     </svg>
   );
 }

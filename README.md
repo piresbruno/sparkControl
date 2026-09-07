@@ -21,7 +21,7 @@ It also supports **non-Spark units**: any Linux machine with an NVIDIA GPU (e.g.
 This repository is a **fork of [MiaAI-Lab/sparkDash](https://github.com/MiaAI-Lab/sparkDash)** — the original
 multi-unit monitoring dashboard for NVIDIA DGX Spark by [Mia'a AI Lab](https://x.com/MiaAI_lab).
 All credit for the dashboard core (collectors, SSE architecture, benchmark suites, UI shell) belongs to the
-upstream project; this fork tracks upstream and extends it with the **LocalAI Command Center** feature set:
+upstream project; this fork tracks upstream and extends it with the **LocalAI Command Center** feature set (rebranded **sparkControl**):
 
 - **Analysis** — every inference request/response through a built-in reverse proxy, with payloads, timing, and tokens (SQLite, 1-week retention).
 - **modelctl integration** — NAS model store inventory, HF downloads, node sync/push over CX7, placement planning.

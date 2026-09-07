@@ -74,7 +74,7 @@ export interface SparkConfig {
   comfyPort?: number;
   /**
    * Opt-in: Hermes Agent CLI (nousresearch/hermes-agent) is installed on this
-   * machine. When enabled, sparkDash checks for Hermes updates and can run
+   * machine. When enabled, sparkControl checks for Hermes updates and can run
    * `hermes update` for you via SSH.
    */
   hermesMonitoring?: boolean;
@@ -486,6 +486,8 @@ export interface SparkSnapshot {
   agentVersion?: string | null;
   /** C1: agent opt-in flag mirrored onto the snapshot for UI badges. */
   agentEnabled?: boolean;
+  /** B1: modelctl integration opt-in, mirrored for overview cards. */
+  modelctlEnabled?: boolean;
   online: boolean;
   /** Uptime in seconds, or null when offline */
   uptime: number | null;
@@ -876,6 +878,7 @@ export type JobKind =
   | "sync"
   | "push"
   | "delete-local"
+  | "nas-delete"
   | "install-modelctl"
   | "install-agent"
   | "update-agent";

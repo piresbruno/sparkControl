@@ -1,136 +1,114 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ModelsPage } from "./ModelsPage";
 
 vi.mock("../../api/client", () => ({
   listNasModels: vi.fn(),
-  listNodeModels: vi.fn(),
-  modelctlStatus: vi.fn(),
-  startJob: vi.fn(),
   listJobs: vi.fn(),
-  cancelJob: vi.fn(),
-  listServingScripts: vi.fn(),
-  servingStart: vi.fn(),
-  servingStop: vi.fn(),
-  servingStatus: vi.fn(),
-  servingLog: vi.fn(),
+  startJob: vi.fn(),
+  modelctlStatus: vi.fn(),
   fetchSparks: vi.fn(),
 }));
 
-import {
-  listNasModels,
-  listNodeModels,
-  modelctlStatus,
-  startJob,
-  listJobs,
-  listServingScripts,
-  servingStatus,
-  servingLog,
-  servingStart,
-  fetchSparks,
-} from "../../api/client";
-
-const sparkCfg = (id: string, name: string) => ({
-  id,
-  name,
-  lanIp: "10.0.0.5",
-  isLocal: false,
-  ssh: { host: "10.0.0.5", user: "root", auth: "key" as const },
-  modelctlEnabled: true,
-  llmPorts: [8888],
-});
+import { listNasModels, listJobs, startJob, modelctlStatus, fetchSparks } from "../../api/client";
 
 beforeEach(() => {
-  vi.mocked(fetchSparks).mockResolvedValue({ sparks: [sparkCfg("a", "Alpha"), sparkCfg("b", "Beta")] });
-  vi.mocked(listNasModels).mockResolvedValue({
-    models: [{ name: "m1", runtime: "gguf", repository: "o/m1", bytes: 10 ** 9 }],
+  vi.mocked(fetchSparks).mockResolvedValue({
+    sparks: [
+      {
+        id: "nas",
+        name: "NASHost",
+        lanIp: "10.0.0.5",
+        isLocal: false,
+        ssh: { host: "10.0.0.5", user: "root", auth: "key" as const },
+        modelctlEnabled: true,
+      },
+    ],
   });
-  vi.mocked(listNodeModels).mockImplementation(async (sparkId: string) =>
-    sparkId === "a"
-      ? { models: [{ name: "m1", runtime: "gguf", repository: "o/m1", bytes: null }] }
-      : { models: [] }
-  );
+  vi.mocked(listNasModels).mockResolvedValue({
+    models: [
+      { name: "qwen3-32b-q4", runtime: "exl3", repository: "unquantized/Qwen3-32B", bytes: 1.2 * 1024 ** 3 * 1000 },
+      { name: "glm-4.5-air", runtime: "vllm", repository: "zai-org/GLM-4.5-Air", bytes: null },
+    ],
+  });
+  vi.mocked(listJobs).mockResolvedValue({ jobs: [] });
+  vi.mocked(startJob).mockResolvedValue({ jobId: "j1", kind: "download" } as never);
   vi.mocked(modelctlStatus).mockResolvedValue({
     installed: true,
     version: "0.13.0",
     uv: { installed: true, version: "0.5.0" },
   });
-  vi.mocked(listJobs).mockResolvedValue({ jobs: [] });
-  vi.mocked(listServingScripts).mockResolvedValue({
-    scripts: [{ id: "example-vllm", description: "vLLM", defaultPort: 8080 }],
-  });
-  vi.mocked(servingStatus).mockResolvedValue({ sparkId: "a", running: false });
-  vi.mocked(servingLog).mockResolvedValue({ sparkId: "a", scriptId: "example-vllm", log: "" });
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
-describe("ModelsPage", () => {
-  it("renders NAS catalog and node matrix badges", async () => {
+describe("ModelsPage — NAS catalog only", () => {
+  it("renders the catalog table with runtime chips, repo, size, and delete per row", async () => {
     render(<ModelsPage />);
-    await waitFor(() => expect(screen.getAllByText("m1").length).toBeGreaterThan(0));
-    expect(screen.getAllByText("0.9").length).toBeGreaterThan(0); // 1e9 bytes → 0.9 GB
-    await waitFor(() => expect(screen.getByText("present")).toBeTruthy());
-    expect(screen.getAllByText(/absent/).length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.getByText("qwen3-32b-q4")).toBeTruthy());
+    expect(screen.getByText("exl3")).toBeTruthy();
+    expect(screen.getByText("vllm")).toBeTruthy();
+    expect(screen.getByText("unquantized/Qwen3-32B")).toBeTruthy();
+    expect(screen.getByText("1200.0")).toBeTruthy(); // 1.2 TB
+    expect(screen.getAllByRole("button", { name: "Delete" }).length).toBe(2);
+    // Summary chip reflects the catalog
+    expect(screen.getByText(/2 models/)).toBeTruthy();
   });
 
-  it("Sync button in an absent cell queues a sync job via startJob", async () => {
+  it("download form posts a download job with repo/name/quant/revision", async () => {
     const user = userEvent.setup();
-    vi.mocked(startJob).mockResolvedValue({ jobId: "j1", kind: "sync", sparkId: "b" });
     render(<ModelsPage />);
-    await waitFor(() => expect(screen.getAllByText(/absent/).length).toBeGreaterThan(0));
-    await user.click(screen.getAllByRole("button", { name: "Sync" })[0]);
-    await waitFor(() => expect(startJob).toHaveBeenCalledWith(expect.objectContaining({ kind: "sync", sparkId: "b" })));
-  });
-
-  it("Push button sources from the peer that has the model", async () => {
-    const user = userEvent.setup();
-    vi.mocked(startJob).mockResolvedValue({ jobId: "j2", kind: "push", sparkId: "b" });
-    render(<ModelsPage />);
-    await waitFor(() => expect(screen.getAllByRole("button", { name: "Push from Alpha" }).length).toBeGreaterThan(0));
-    await user.click(screen.getAllByRole("button", { name: "Push from Alpha" })[0]);
+    const toggle = await screen.findByRole("button", { name: /Download from Hugging Face/ });
+    await user.click(toggle);
+    await user.type(screen.getByLabelText("HF repo (org/model)"), "org/newmodel");
+    await user.type(screen.getByLabelText("Name (optional)"), "newmodel-q4");
+    await user.type(screen.getByLabelText("Quantization"), "Q4_K_M");
+    await user.click(screen.getByRole("button", { name: /^Download$/ }));
     await waitFor(() =>
-      expect(startJob).toHaveBeenCalledWith(expect.objectContaining({ kind: "push", sparkId: "b", sourceSparkId: "a" }))
+      expect(startJob).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "download",
+          repo: "org/newmodel",
+          name: "newmodel-q4",
+          quantization: "Q4_K_M",
+        })
+      )
     );
   });
 
-  it("modelctl availability badge renders version", async () => {
+  it("delete runs on the NAS host machine via the nas-delete job kind", async () => {
+    const user = userEvent.setup();
+    vi.mocked(startJob).mockResolvedValue({ jobId: "j2", kind: "nas-delete" } as never);
     render(<ModelsPage />);
-    await waitFor(() => expect(screen.getAllByText("v0.13.0").length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getByText("qwen3-32b-q4")).toBeTruthy());
+    // Two-click armed destructive pattern (house convention, ScServing stop).
+    await user.click(screen.getAllByRole("button", { name: "Delete" })[0]);
+    expect(startJob).not.toHaveBeenCalled(); // arming click never posts
+    await user.click(await screen.findByRole("button", { name: "Confirm delete" }));
+    await waitFor(() =>
+      expect(startJob).toHaveBeenCalledWith(expect.objectContaining({ kind: "nas-delete", model: "qwen3-32b-q4" }))
+    );
   });
 
-  it("serving start posts script + port (defaultPort prefilled)", async () => {
-    const user = userEvent.setup();
-    vi.mocked(startJob).mockResolvedValue({ jobId: "j", kind: "sync", sparkId: "a" });
-    const { container } = render(<ModelsPage />);
-    // Wait for serving scripts + spark list to load, then pick the script.
-    await waitFor(() => expect((screen.getAllByRole("combobox", { name: "Runs on" })[0] as HTMLSelectElement).options.length).toBeGreaterThan(0), { timeout: 3000 });
-    const scriptSelect = await waitFor(() => {
-      const el = screen.getAllByRole("combobox", { name: "Script" })[0] as HTMLSelectElement;
-      const opts = Array.from(el.options).map((o) => o.value);
-      if (!opts.includes("example-vllm")) throw new Error("scripts not loaded yet");
-      return el;
-    }, { timeout: 3000 });
-    await user.selectOptions(scriptSelect, "example-vllm");
-    const portInput = await waitFor(() => {
-      const el = screen.getAllByPlaceholderText("port")[0] as HTMLInputElement;
-      if (el.value !== "8080") throw new Error("port not prefilled yet");
-      return el;
-    }, { timeout: 3000 });
-    await waitFor(() => {
-      const startBtns = screen.getAllByRole("button", { name: "Start" }) as HTMLButtonElement[];
-      expect(startBtns.some((b) => !b.disabled)).toBe(true);
-    });
-    const btn = await waitFor(() => {
-      const b = screen.getAllByRole("button", { name: "Start" }) as HTMLButtonElement[];
-      const enabled = b.filter((x) => !x.disabled);
-      if (enabled.length === 0) throw new Error("start still disabled");
-      return enabled[enabled.length - 1];
-    }, { timeout: 3000 });
-    await user.click(btn);
-    // modelName empty → servingStart called without model
-    await waitFor(() => expect(vi.mocked(servingStart).mock.calls.length).toBeGreaterThan(0), { timeout: 3000 });
-    expect(vi.mocked(servingStart).mock.calls[0][0]).toMatchObject({ scriptId: "example-vllm", port: 8080 });
+  it("no per-node matrix, no node select, no serving controls", async () => {
+    render(<ModelsPage />);
+    await waitFor(() => expect(screen.getByText(/NAS catalog/)).toBeTruthy());
+    expect(screen.queryByText(/present/)).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Runs on" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Script" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Sync" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Push from/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+  });
+
+  it("server-side inventory error surfaces in the empty state", async () => {
+    vi.mocked(listNasModels).mockResolvedValue({ models: [], error: "nasRoot not configured" });
+    render(<ModelsPage />);
+    await waitFor(() => expect(screen.getByText("nasRoot not configured")).toBeTruthy());
   });
 });

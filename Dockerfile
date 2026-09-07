@@ -1,5 +1,5 @@
 # ============================================================
-# sparkDash — Multi-DGX Spark Monitoring Dashboard
+# sparkControl — Multi-DGX Spark Monitoring Dashboard
 # Dockerfile for arm64 (DGX Spark GB10 platform)
 # ============================================================
 

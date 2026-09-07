@@ -494,7 +494,7 @@ export function EditSparkDialog({
                 <span>Hermes Agent</span>
                 <span
                   className="inline-flex shrink-0 cursor-help text-muted hover:text-text"
-                  title='Hermes Agent CLI is installed on this machine (nousresearch/hermes-agent). When enabled, sparkDash checks for updates (hermes update --check) and can run “hermes update” for you via SSH with one click.'
+                  title='Hermes Agent CLI is installed on this machine (nousresearch/hermes-agent). When enabled, sparkControl checks for updates (hermes update --check) and can run “hermes update” for you via SSH with one click.'
                   aria-label='Hermes Agent CLI is installed on this machine; enable update monitoring and one-click updates.'
                 >
                   <InfoIcon className="h-3.5 w-3.5" />
@@ -649,7 +649,7 @@ export function EditSparkDialog({
                     </select>
                     {config.ssh.auth === "key" && (
                       <p className="mt-1 text-[10px] text-muted">
-                        SSH runs on the sparkDash host. Docker: mount a key at /root/.ssh/id_ed25519
+                        SSH runs on the sparkControl host. Docker: mount a key at /root/.ssh/id_ed25519
                         (or SSH_IDENTITY_FILE). IPs are from that host, not your laptop.
                       </p>
                     )}

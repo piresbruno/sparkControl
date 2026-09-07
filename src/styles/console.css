@@ -1,0 +1,1611 @@
+/* ─── sparkControl v3 "instrument console" — node detail page ───────────
+   Ported from mockups/node-detail-v3.html (the accepted design).
+   EVERY selector is scoped under .spark-console so the console's redefined
+   primitives (.chip, .bench-status-pill, .analysis-table__*, .trace-body__pre,
+   .font-tabular) never clash with the app globals in index.css, and console
+   styles never leak into other pages. Design tokens (--color-*, --density-*)
+   come from index.css; only the v3 layout scale is defined here. */
+
+.spark-console {
+  /* v3 design system scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --card-pad: var(--density-card-pad, 14px);
+  --gap: var(--density-page-gap, 10px);
+  --fs-10: 10px;
+  --fs-11: 11px;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-15: 15px;
+  --fs-name: 21px; /* rack-plate node name */
+  --fs-dial: 30px; /* hero throughput figures */
+  --mono: "JetBrains Mono", "Fira Code", "SF Mono", ui-monospace, Menlo, monospace;
+  --ease: cubic-bezier(0.32, 0.72, 0.35, 1);
+  --mod-radius: 8px;
+  /* module face: subtle machined gradient (elevated → surface) */
+  --mod-face: linear-gradient(
+    180deg,
+    var(--color-surface-elevated) 0%,
+    color-mix(in srgb, var(--color-surface-elevated) 55%, var(--color-surface)) 100%
+  );
+  --inset-hi: inset 0 1px 0 color-mix(in srgb, var(--color-card-glass) 55%, transparent);
+
+  font-size: var(--fs-13);
+  line-height: 1.45;
+  color: var(--color-text);
+}
+
+/* ── Mono voice + layout utilities ─────────────────────────────────────── */
+.spark-console .mono {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.spark-console .font-tabular {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+}
+.spark-console .tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Micro-label: the console's silkscreen. Always mono + tracked caps. */
+.spark-console .mlabel {
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.spark-console .stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.spark-console .row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.spark-console .spread {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.spark-console .spread-end {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.spark-console .hairline {
+  height: 1px;
+  background: var(--color-border);
+  margin: 0 calc(-1 * var(--card-pad));
+  opacity: 0.7;
+}
+
+/* ── Console grid: sticky channel rail + content ───────────────────────── */
+.spark-console .console {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  gap: var(--gap);
+  align-items: start;
+}
+.spark-console .col-full {
+  grid-column: 1 / -1;
+}
+.spark-console .rail {
+  grid-column: 1;
+  position: sticky;
+  top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-self: start;
+  padding-bottom: var(--space-2);
+}
+.spark-console .rail__cap {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--color-muted);
+  text-align: center;
+  text-transform: uppercase;
+  user-select: none;
+}
+.spark-console .rail__ch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 0 8px;
+  width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: var(--mod-radius);
+  background: var(--mod-face);
+  color: var(--color-muted);
+  box-shadow: var(--inset-hi);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, transform 0.15s var(--ease);
+}
+.spark-console .rail__ch:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+  transform: translateY(-1px);
+}
+.spark-console .rail__num {
+  font-size: 11px;
+  color: var(--color-muted-strong);
+}
+.spark-console .rail__bus {
+  flex: 0 0 26px;
+  width: 1px;
+  margin: 2px auto;
+  background: linear-gradient(180deg, var(--color-border-strong), transparent);
+}
+.spark-console .console__body {
+  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  min-width: 0;
+}
+
+/* ── Module primitive (hard-edged instrument panel) ────────────────────── */
+.spark-console .module {
+  position: relative;
+  border: 1px solid var(--color-border);
+  border-radius: var(--mod-radius);
+  background: var(--mod-face);
+  padding: var(--card-pad);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  box-shadow: var(--inset-hi), 0 1px 2px color-mix(in srgb, var(--color-base) 30%, transparent);
+}
+/* corner ticks — machined-bracket motif, top corners only */
+.spark-console .module::before,
+.spark-console .module::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  width: 10px;
+  height: 10px;
+  pointer-events: none;
+  border-color: var(--color-border-strong);
+  border-style: solid;
+  border-width: 0;
+}
+.spark-console .module::before {
+  left: -1px;
+  border-top-width: 2px;
+  border-left-width: 2px;
+  border-top-left-radius: var(--mod-radius);
+}
+.spark-console .module::after {
+  right: -1px;
+  border-top-width: 2px;
+  border-right-width: 2px;
+  border-top-right-radius: var(--mod-radius);
+}
+
+/* ── Channel header (section heading): code block + title + dashed bus ─── */
+.spark-console .ch-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-2) 0 0;
+  min-width: 0;
+}
+.spark-console .ch-head__code {
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--color-accent-hover);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
+  background: var(--color-accent-soft);
+  border-radius: 5px;
+  padding: 2px 7px;
+  flex: none;
+  user-select: none;
+}
+.spark-console .ch-head__title {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--fs-15);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-strong);
+  flex: none;
+}
+.spark-console .ch-head__rule {
+  flex: 1 1 40px;
+  height: 2px;
+  min-width: 16px;
+  align-self: center;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--color-border-strong) 0 4px,
+    transparent 4px 9px
+  );
+  opacity: 0.65;
+}
+.spark-console .ch-head__note {
+  font-size: var(--fs-11);
+  color: var(--color-muted);
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.spark-console .ch-head__aside {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* ── LED signalling ─────────────────────────────────────────────────────── */
+.spark-console .led {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-border-strong);
+  flex: none;
+  display: inline-block;
+}
+.spark-console .led--success {
+  background: var(--color-success);
+}
+.spark-console .led--accent {
+  background: var(--color-accent);
+}
+.spark-console .led--danger {
+  background: var(--color-danger);
+}
+.spark-console .led--live {
+  position: relative;
+  background: var(--color-success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-success) 20%, transparent);
+}
+.spark-console .led--live::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: 50%;
+  background: var(--color-success);
+  opacity: 0;
+  animation: sc-breathe 2.4s var(--ease) infinite;
+}
+@keyframes sc-breathe {
+  0% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  70%,
+  100% {
+    opacity: 0;
+    transform: scale(2.6);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spark-console .led--live::after {
+    animation: none;
+  }
+  .spark-console *,
+  .spark-console *::before,
+  .spark-console *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
+/* ── Instrument keys (square, mono, labelled) ──────────────────────────── */
+.spark-console .key {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  border-radius: 7px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-elevated);
+  color: var(--color-text);
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  box-shadow: var(--inset-hi);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s var(--ease), border-color 0.15s, transform 0.08s,
+    box-shadow 0.15s;
+}
+.spark-console .key:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  border-color: var(--color-border-strong);
+}
+.spark-console .key:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: none;
+}
+.spark-console .key:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.spark-console .key--primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent-hover);
+  color: #1a1a18;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-accent) 45%, transparent);
+}
+.spark-console .key--primary:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+.spark-console .key--run {
+  background: var(--color-success);
+  border-color: color-mix(in srgb, var(--color-success) 70%, var(--color-border));
+  color: #fff;
+}
+.spark-console .key--run:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+.spark-console .key--danger {
+  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 40%, var(--color-border));
+}
+.spark-console .key--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  border-color: color-mix(in srgb, var(--color-danger) 60%, var(--color-border));
+}
+.spark-console .key--block {
+  width: 100%;
+  justify-content: center;
+  padding: 9px 13px;
+}
+.spark-console .select-inline {
+  width: auto;
+}
+.spark-console select,
+.spark-console input[type="text"],
+.spark-console input[type="number"] {
+  font-family: var(--mono);
+  font-size: var(--fs-12);
+  width: 100%;
+  color: var(--color-text);
+  background: var(--color-surface-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  padding: 7px 10px;
+  letter-spacing: -0.01em;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.spark-console select:focus,
+.spark-console input[type="text"]:focus,
+.spark-console input[type="number"]:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-soft);
+}
+
+/* ── Chips / pills (mono silkscreen tags) ──────────────────────────────── */
+.spark-console .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border-radius: 6px;
+  background: var(--color-surface-hover);
+  color: var(--color-muted-strong);
+  border: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+.spark-console .chip--accent {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-hover);
+  border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
+}
+.spark-console .chip--live {
+  background: color-mix(in srgb, var(--color-success) 12%, transparent);
+  color: var(--color-success);
+  border-color: color-mix(in srgb, var(--color-success) 34%, var(--color-border));
+}
+.spark-console .chip--err {
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 34%, var(--color-border));
+}
+.spark-console .bench-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 10px;
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border-radius: 6px;
+  background: var(--color-surface-hover);
+  color: var(--color-muted-strong);
+  white-space: nowrap;
+}
+.spark-console .bench-status-pill--running {
+  background: color-mix(in srgb, var(--color-success) 12%, transparent);
+  color: var(--color-success);
+}
+.spark-console .bench-status-pill--completed {
+  background: color-mix(in srgb, var(--color-success) 14%, transparent);
+  color: var(--color-success);
+}
+.spark-console .bench-status-pill--failed {
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  color: var(--color-danger);
+}
+.spark-console .bench-status-pill--interrupted {
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  color: var(--color-danger);
+}
+.spark-console .bench-status-pill--cancelled {
+  background: var(--color-surface-elevated);
+  color: var(--color-muted);
+}
+
+/* ── Info tooltip (hover + keyboard focus) ─────────────────────────────── */
+.spark-console .info {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  color: var(--color-muted);
+  opacity: 0.6;
+  cursor: help;
+  transition: opacity 0.15s;
+}
+.spark-console .info:hover,
+.spark-console .info:focus-visible {
+  opacity: 1;
+  outline: none;
+}
+.spark-console .info::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: -2px;
+  top: calc(100% + 8px);
+  z-index: 60;
+  width: max-content;
+  max-width: 260px;
+  background: var(--color-surface-elevated);
+  color: var(--color-text);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: var(--fs-11);
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: normal;
+  text-align: left;
+  box-shadow: var(--shadow-card-hover);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 0.16s var(--ease), transform 0.16s var(--ease);
+}
+.spark-console .info:hover::after,
+.spark-console .info:focus-visible::after {
+  opacity: 1;
+  transform: none;
+}
+.spark-console .info--end::after {
+  left: auto;
+  right: -2px;
+}
+.spark-console .info svg {
+  display: block;
+}
+
+/* ── Segmented LED meter ───────────────────────────────────────────────── */
+.spark-console .seg {
+  position: relative;
+  height: 10px;
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  box-shadow: inset 0 1px 2px var(--color-grid);
+}
+.spark-console .seg__fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--pct, 0%);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, #ffffff 22%, var(--fill-color, var(--color-border-strong))),
+    var(--fill-color, var(--color-border-strong))
+  );
+  transition: width 0.4s var(--ease);
+}
+/* LED segment sashes: track-coloured gaps punched over the fill */
+.spark-console .seg::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0 8px,
+    var(--color-surface) 8px 10px
+  );
+}
+.spark-console .fill--success {
+  --fill-color: var(--color-success);
+}
+.spark-console .fill--warning {
+  --fill-color: var(--color-warning);
+}
+.spark-console .fill--accent {
+  --fill-color: var(--color-accent);
+}
+.spark-console .fill--neutral {
+  --fill-color: var(--color-border-strong);
+}
+
+/* ── Histogram (live-signal motif; currentColor-tinted) ────────────────── */
+.spark-console .hist {
+  display: block;
+}
+.spark-console .hist svg {
+  display: block;
+}
+.spark-console .hist--accent {
+  color: var(--color-accent);
+}
+.spark-console .hist--success {
+  color: var(--color-success);
+}
+.spark-console .hist--warning {
+  color: var(--color-warning);
+}
+.spark-console .hist--neutral {
+  color: var(--color-border-strong);
+}
+
+/* ── Data plate: bordered inline field strip (rack readout) ────────────── */
+.spark-console .plate {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--color-surface);
+  box-shadow: inset 0 1px 2px var(--color-grid);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.spark-console .plate__f {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 12px;
+  border-left: 1px solid var(--color-border);
+  min-width: 0;
+}
+.spark-console .plate__f:first-child {
+  border-left: 0;
+}
+.spark-console .plate__k {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+.spark-console .plate__v {
+  font-family: var(--mono);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--color-text-strong);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Rack header (node identity) ───────────────────────────────────────── */
+.spark-console .rack {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  padding: calc(var(--card-pad) + 2px) var(--space-4);
+}
+.spark-console .rack__id {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.spark-console .rack__name {
+  font-family: var(--mono);
+  font-size: var(--fs-name);
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  color: var(--color-text-strong);
+  line-height: 1.1;
+}
+.spark-console .rack__back {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+.spark-console .node-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+.spark-console .node-back:hover {
+  color: var(--color-text);
+}
+.spark-console .rack__keys {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+/* Existing SparkActions buttons take the instrument-key face inside the plate. */
+.spark-console .rack__keys button {
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-radius: 7px;
+}
+
+/* ── Resources: gauge bank ─────────────────────────────────────────────── */
+.spark-console .gauge-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+.spark-console .gauge {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--mod-radius);
+  background: var(--color-surface);
+  box-shadow: inset 0 1px 2px var(--color-grid);
+}
+.spark-console .gauge__top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.spark-console .gauge__value {
+  font-family: var(--mono);
+  font-size: var(--fs-15);
+  font-weight: 800;
+  color: var(--color-text-strong);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+.spark-console .gauge__value small {
+  font-size: var(--fs-11);
+  font-weight: 600;
+  color: var(--color-muted);
+}
+.spark-console .gauge__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  color: var(--color-muted);
+  min-width: 0;
+}
+.spark-console .gauge--warn .gauge__value {
+  color: var(--color-warning);
+}
+.spark-console .gauge--danger .gauge__value {
+  color: var(--color-danger);
+}
+.spark-console .bus-strip {
+  display: grid;
+  grid-template-columns: 1.25fr 1.15fr 1fr;
+  gap: 0;
+  border-top: 1px solid var(--color-border);
+  margin-top: 2px;
+  padding-top: var(--space-3);
+}
+.spark-console .bus-strip > div {
+  padding: 0 var(--space-4);
+  border-left: 1px solid var(--color-border);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.spark-console .bus-strip > div:first-child {
+  border-left: 0;
+  padding-left: 2px;
+}
+.spark-console .bus-line {
+  font-family: var(--mono);
+  font-size: var(--fs-12);
+  color: var(--color-text-strong);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.spark-console .bus-hint {
+  font-size: var(--fs-11);
+  color: var(--color-muted);
+}
+
+/* ── Serving hero: asymmetric bay ──────────────────────────────────────── */
+.spark-console .hero {
+  padding: calc(var(--card-pad) + 2px) calc(var(--card-pad) + 6px) calc(var(--card-pad) + 4px);
+  gap: var(--space-3);
+}
+.spark-console .hero::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -1px;
+  height: 2px;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-accent) 80%, transparent),
+    transparent 62%
+  );
+  border-top-left-radius: var(--mod-radius);
+}
+.spark-console .hero__eyebrow {
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-accent-hover);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.spark-console .serving-identity__name {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--fs-name);
+  font-weight: 800;
+  color: var(--color-text-strong);
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.spark-console .hero__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.spark-console .hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: stretch;
+}
+
+.spark-console .dials {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.spark-console .dial {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--mod-radius);
+  background: var(--color-surface);
+  box-shadow: inset 0 1px 2px var(--color-grid);
+}
+.spark-console .dial .hist {
+  margin-top: auto;
+  align-self: stretch;
+  width: auto;
+}
+.spark-console .dial .hist svg {
+  width: 100%;
+}
+.spark-console .dial__main {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+.spark-console .dial__value {
+  font-family: var(--mono);
+  font-size: var(--fs-dial);
+  font-weight: 800;
+  color: var(--color-text-strong);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.035em;
+  line-height: 1;
+}
+.spark-console .dial__unit {
+  font-family: var(--mono);
+  font-size: var(--fs-12);
+  font-weight: 700;
+  color: var(--color-muted);
+  letter-spacing: 0.02em;
+}
+.spark-console .dial__split {
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* Right bay: links + controls, darker inset face */
+.spark-console .bay {
+  border: 1px solid var(--color-border);
+  border-radius: var(--mod-radius);
+  background: var(--color-surface);
+  box-shadow: inset 0 1px 3px var(--color-grid);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.spark-console .endpoint {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.spark-console .endpoint__box {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 5px 5px 5px 9px;
+  background: var(--color-surface-elevated);
+  box-shadow: inset 0 1px 2px var(--color-grid);
+  transition: border-color 0.15s;
+}
+.spark-console .endpoint__box:hover {
+  border-color: var(--color-border-strong);
+}
+.spark-console .endpoint__url {
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+  color: var(--color-text);
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: -0.03em;
+}
+.spark-console .copy-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  flex: none;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.spark-console .copy-btn:hover {
+  color: var(--color-text);
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-hover);
+}
+.spark-console .copy-btn.is-copied {
+  color: var(--color-success);
+  border-color: color-mix(in srgb, var(--color-success) 45%, var(--color-border));
+}
+.spark-console .bay__keys {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: auto;
+}
+
+/* ── 12-stat readout matrix (4×3, channel-coded) ───────────────────────── */
+.spark-console .readouts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid var(--color-border);
+  border-radius: var(--mod-radius);
+  background: var(--color-surface);
+  box-shadow: inset 0 1px 3px var(--color-grid);
+  overflow: hidden;
+}
+.spark-console .readout {
+  padding: 8px var(--space-3) 9px;
+  border-top: 1px solid var(--color-grid);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  transition: background 0.15s;
+}
+.spark-console .readout:hover {
+  background: var(--color-surface-hover);
+}
+.spark-console .readout:nth-child(-n + 4) {
+  border-top: 0;
+}
+.spark-console .readout:nth-child(4n + 2),
+.spark-console .readout:nth-child(4n + 3),
+.spark-console .readout:nth-child(4n + 4) {
+  border-left: 1px solid var(--color-grid);
+}
+.spark-console .readout__code {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--color-muted);
+  opacity: 0.75;
+}
+.spark-console .readout__label {
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.spark-console .readout__value {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--color-text-strong);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.025em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.spark-console .readout__value--success {
+  color: var(--color-success);
+}
+.spark-console .readout__value--warning {
+  color: var(--color-warning);
+}
+.spark-console .readout__value--danger {
+  color: var(--color-danger);
+}
+
+/* ── Models split ──────────────────────────────────────────────────────── */
+.spark-console .models-split {
+  display: grid;
+  grid-template-columns: 292px minmax(0, 1fr);
+  gap: var(--gap);
+  align-items: start;
+}
+.spark-console .model-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.spark-console .model-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 6px;
+  padding: 8px 10px 8px 12px;
+  cursor: pointer;
+  transition: background 0.15s var(--ease), border-color 0.15s;
+}
+.spark-console .model-row:hover {
+  background: var(--color-surface-hover);
+}
+.spark-console .model-row.is-selected {
+  background: var(--color-surface);
+  border-color: var(--color-border);
+  box-shadow: inset 0 1px 2px var(--color-grid);
+}
+.spark-console .model-row.is-selected::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: -1px;
+  bottom: -1px;
+  width: 3px;
+  background: var(--color-accent);
+  border-radius: 6px 0 0 6px;
+}
+.spark-console .model-row.is-nas .model-row__name,
+.spark-console .model-row.is-nas .model-row__meta {
+  opacity: 0.5;
+}
+.spark-console .model-row__name {
+  font-family: var(--mono);
+  font-size: var(--fs-12);
+  font-weight: 700;
+  color: var(--color-text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+  letter-spacing: -0.02em;
+}
+.spark-console .model-row__meta {
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  color: var(--color-muted);
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  letter-spacing: -0.01em;
+}
+.spark-console .model-row__size {
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+  color: var(--color-muted-strong);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.spark-console .tag-serving {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: lowercase;
+  color: var(--color-success);
+  background: color-mix(in srgb, var(--color-success) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-success) 30%, transparent);
+  border-radius: 4px;
+  padding: 0 5px;
+  line-height: 1.6;
+}
+.spark-console .legend {
+  font-size: var(--fs-11);
+  color: var(--color-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* ── Model detail pane ─────────────────────────────────────────────────── */
+.spark-console .detail-head__name {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--fs-15);
+  font-weight: 800;
+  color: var(--color-text-strong);
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.spark-console .detail-head__repo {
+  font-size: var(--fs-11);
+  color: var(--color-muted);
+  font-family: var(--mono);
+  margin-top: 2px;
+  letter-spacing: -0.02em;
+}
+.spark-console .xref {
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+  font-weight: 700;
+  color: var(--color-success);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  letter-spacing: -0.01em;
+}
+.spark-console .xref:hover {
+  text-decoration: underline;
+}
+.spark-console .subpanel {
+  border: 1px solid var(--color-border);
+  border-radius: var(--mod-radius);
+  background: var(--color-surface);
+  box-shadow: inset 0 1px 2px var(--color-grid);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.spark-console .subpanel__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-muted-strong);
+}
+.spark-console .saved-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  color: var(--color-success);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+.spark-console .launch-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) 96px minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  align-items: end;
+}
+.spark-console .field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.spark-console .field__label {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+@keyframes sc-flash-ring {
+  0%,
+  60% {
+    box-shadow: 0 0 0 2px var(--color-accent), inset 0 1px 2px var(--color-grid);
+    border-color: var(--color-accent);
+  }
+  100% {
+    box-shadow: inset 0 1px 2px var(--color-grid);
+  }
+}
+.spark-console .subpanel.is-flash {
+  animation: sc-flash-ring 2.4s var(--ease);
+}
+
+/* ── Terminal log (machine-room screen: stays dark in both themes) ─────── */
+.spark-console .logs-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  color: var(--color-muted);
+  letter-spacing: 0.04em;
+}
+.spark-console .logs-head__source {
+  font-family: var(--mono);
+  letter-spacing: -0.02em;
+  font-size: var(--fs-10);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+.spark-console .trace-body__pre {
+  margin: 0;
+  padding: var(--space-3);
+  border-radius: 7px;
+  border: 1px solid var(--color-border-strong);
+  background: #101010;
+  color: #d6d6d6;
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+  line-height: 1.6;
+  letter-spacing: -0.01em;
+  max-height: 218px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  box-shadow: inset 0 0 0 1px #000, inset 0 2px 10px rgba(0, 0, 0, 0.5);
+}
+.spark-console .log-ok {
+  color: #7dba8a;
+}
+.spark-console .log-warn {
+  color: #e0a838;
+}
+.spark-console .log-dim {
+  color: #7d7d7d;
+}
+.spark-console .log-accent {
+  color: #f0b840;
+}
+
+/* ── Traces table ──────────────────────────────────────────────────────── */
+.spark-console .bench-results {
+  border: 1px solid var(--color-border);
+  border-radius: var(--mod-radius);
+  background: var(--color-surface);
+  overflow: hidden;
+  box-shadow: inset 0 1px 2px var(--color-grid);
+}
+.spark-console .analysis-table__head,
+.spark-console .analysis-table__row {
+  display: grid;
+  grid-template-columns: 1.15fr 1.9fr 0.6fr 0.6fr 0.6fr 0.6fr;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+}
+.spark-console .analysis-table__head {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-surface-elevated) 60%, var(--color-surface));
+}
+.spark-console .analysis-table__row {
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+  border-top: 1px solid var(--color-grid);
+  transition: background 0.12s;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.spark-console .analysis-table__head + .analysis-table__row {
+  border-top: 0;
+}
+.spark-console .log-err {
+  color: #e5594d;
+}
+.spark-console .analysis-table__row:hover {
+  background: var(--color-surface-hover);
+}
+.spark-console .analysis-table__num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.spark-console .analysis-table__time {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.spark-console .http-st {
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-success) 12%, transparent);
+  color: var(--color-success);
+  border: 1px solid color-mix(in srgb, var(--color-success) 30%, transparent);
+}
+.spark-console .http-st--err {
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 34%, transparent);
+}
+.spark-console .empty-note {
+  font-size: var(--fs-12);
+  color: var(--color-muted);
+}
+.spark-console .empty-note a {
+  color: var(--color-accent-hover);
+}
+
+/* ── Jobs (modelctl job rows, rendered inside CH·03) ────────────────────── */
+.spark-console .job-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 8px 2px;
+  margin-top: 4px;
+  border-top: 1px solid var(--color-grid);
+  font-size: var(--fs-12);
+  flex-wrap: wrap;
+}
+.spark-console .job-row__name {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: var(--fs-11);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.spark-console .job-row__meta {
+  color: var(--color-muted);
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  letter-spacing: -0.01em;
+}
+.spark-console .job-row__pct {
+  margin-left: auto;
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+  color: var(--color-muted-strong);
+}
+.spark-console .job-row__log {
+  flex-basis: 100%;
+  margin: 2px 0 0;
+  padding: 6px var(--space-2);
+  border-radius: 6px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--color-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 4.6em;
+  overflow: hidden;
+}
+.spark-console .job-progress {
+  flex-basis: 100%;
+  height: 6px;
+  border-radius: 2px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  overflow: hidden;
+  position: relative;
+}
+.spark-console .job-progress__fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--pct, 0%);
+  background: var(--color-accent);
+  transition: width 0.4s var(--ease);
+}
+
+/* ── Tests: bench modules ──────────────────────────────────────────────── */
+.spark-console .test-card {
+  transition: border-color 0.18s, box-shadow 0.18s;
+  gap: var(--space-2);
+}
+.spark-console .test-card:hover {
+  border-color: var(--color-border-strong);
+  box-shadow: var(--inset-hi), var(--shadow-card-hover);
+}
+.spark-console .test-card__head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.spark-console .test-card__code {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: var(--color-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  background: var(--color-surface);
+}
+.spark-console .test-card__title {
+  font-family: var(--mono);
+  font-size: var(--fs-12);
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-text-strong);
+}
+.spark-console .test-card__desc {
+  font-size: var(--fs-12);
+  color: var(--color-muted);
+  margin: 0;
+  flex: 1;
+}
+.spark-console .test-card__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: 0 calc(-1 * var(--card-pad)) calc(-1 * var(--card-pad));
+  padding: var(--space-2) var(--card-pad);
+  border-top: 1px solid var(--color-border);
+  border-radius: 0 0 var(--mod-radius) var(--mod-radius);
+  background: color-mix(in srgb, var(--color-surface) 55%, transparent);
+  font-size: var(--fs-11);
+  color: var(--color-muted);
+}
+
+/* ── Expert disclosure ("full panels" legacy strip) ────────────────────── */
+.spark-console .sc-disclosure {
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--mod-radius);
+  background: transparent;
+  padding: 0 var(--space-3);
+  min-width: 0;
+}
+.spark-console .sc-disclosure > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0;
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+.spark-console .sc-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+.spark-console .sc-disclosure > summary:hover {
+  color: var(--color-text);
+}
+.spark-console .sc-disclosure[open] > summary {
+  border-bottom: 1px solid var(--color-border);
+}
+.spark-console .sc-disclosure__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  padding: var(--space-3) 0 var(--space-3);
+}
+
+/* ── Responsive ────────────────────────────────────────────────────────── */
+@media (max-width: 1180px) {
+  .spark-console .hero-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .spark-console .bay__keys {
+    margin-top: 0;
+    flex-direction: row;
+  }
+  .spark-console .bay__keys .key {
+    flex: 1;
+  }
+}
+@media (max-width: 1100px) {
+  .spark-console .gauge-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .spark-console .bus-strip {
+    grid-template-columns: 1fr;
+    gap: var(--space-3);
+  }
+  .spark-console .bus-strip > div {
+    border-left: 0;
+    padding-left: 2px;
+    padding-right: 2px;
+  }
+  .spark-console .readouts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .spark-console .readout:nth-child(-n + 4) {
+    border-top: 1px solid var(--color-grid);
+  }
+  .spark-console .readout:nth-child(-n + 2) {
+    border-top: 0;
+  }
+  .spark-console .readout:nth-child(4n + 2),
+  .spark-console .readout:nth-child(4n + 3),
+  .spark-console .readout:nth-child(4n + 4) {
+    border-left: 0;
+  }
+  .spark-console .readout:nth-child(2n) {
+    border-left: 1px solid var(--color-grid);
+  }
+  .spark-console .launch-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .spark-console .dials {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 950px) {
+  .spark-console .console {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .spark-console .rail {
+    display: none;
+  }
+  .spark-console .console__body {
+    grid-column: 1;
+  }
+  .spark-console .models-split {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 700px) {
+  .spark-console .readouts {
+    grid-template-columns: 1fr 1fr;
+  }
+  .spark-console .ch-head__note {
+    display: none;
+  }
+}

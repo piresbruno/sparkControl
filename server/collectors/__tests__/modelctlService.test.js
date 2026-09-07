@@ -7,6 +7,7 @@ import {
   buildSyncScript,
   buildPushScript,
   buildDeleteLocalScript,
+  buildNasDeleteScript,
   buildVersionProbeCommand,
   buildInstallModelctlScript,
   parseModelctlList,
@@ -42,6 +43,10 @@ test("command builders quote every caller-supplied value", () => {
   assert.match(push, /push m1 --host 10\.0\.0\.6 --jobs 4/);
   const del = buildDeleteLocalScript({ name: "m1" });
   assert.match(del, /delete-local m1/);
+  const nasDel = buildNasDeleteScript({ name: "m1", nasRoot: "/nas" });
+  assert.match(nasDel, /delete m1 --root \/nas --apply --yes/);
+  const nasDelQ = buildNasDeleteScript({ name: "a b", nasRoot: "/n x", remoteBin: "/opt/mc" });
+  assert.match(nasDelQ, /^\/opt\/mc delete 'a b' --root '\/n x' --apply --yes$/);
   // Injection attempts get single-quoted.
   const evil = buildSyncScript({ name: "a; rm -rf /", nasRoot: "/nas" });
   assert.match(evil, /'a; rm -rf \/'/);
@@ -120,6 +125,9 @@ test("validModelName enforces the REST-layer regex", () => {
   assert.ok(!validModelName("a b"));
   assert.ok(!validModelName(""));
   assert.ok(!validModelName("../escape"));
+  // option-injection: leading dash must not become a modelctl flag
+  assert.ok(!validModelName("-apply"));
+  assert.ok(!validModelName("--yes"));
 });
 
 // ─── Service caches / error shapes ────────────────────────

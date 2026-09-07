@@ -13,10 +13,10 @@ interface SparkActionsProps {
 }
 
 /**
- * Update Hermes / Shutdown·Wake / Edit action cluster.
- * Rendered twice: inline in the SparkHeader (desktop) and as a standalone row
- * just above "Resources" on mobile. Owning the shutdown dialog + transient
- * power message here keeps the two placements in sync.
+ * Update Hermes / Install agent / Shutdown·Wake / Edit action cluster.
+ * Rendered once, in the node-detail rack plate (className "rack__keys").
+ * Owning the shutdown dialog + transient power/agent messages here keeps the
+ * cluster self-contained.
  */
 export function SparkActions({ spark, onEdit, className }: SparkActionsProps) {
   const online = spark.online;
@@ -43,7 +43,7 @@ export function SparkActions({ spark, onEdit, className }: SparkActionsProps) {
     setAgentMsg(null);
     try {
       await startJob({ kind: "install-agent", sparkId: spark.id });
-      setAgentMsg({ text: "Agent install queued — watch the Models page job panel", tone: "ok" });
+      setAgentMsg({ text: "Agent install queued — watch the Jobs strip on this node's Models channel", tone: "ok" });
     } catch (err: unknown) {
       setAgentMsg({ text: err instanceof Error ? err.message : "Install failed", tone: "err" });
     } finally {

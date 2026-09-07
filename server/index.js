@@ -161,6 +161,7 @@ import {
   buildSyncScript,
   buildPushScript,
   buildDeleteLocalScript,
+  buildNasDeleteScript,
   buildInstallModelctlScript,
   planPlacement,
   validModelName,
@@ -184,6 +185,20 @@ const modelctl = createModelctlService({
   registry,
 });
 remoteJobs.startSweeper((id) => registry.getSpark(id));
+// A job reaching a terminal state may have changed the NAS store or a
+// node's modelctl install (download/sync/push/delete/install-modelctl).
+// Bust the affected caches so the next inventory read is fresh — otherwise
+// the client's post-completion refresh re-serves up to 60 s of stale data
+// (PR #5 review: just-deleted model kept rendering).
+remoteJobs.onJobTerminal = (job) => {
+  const caches = modelctl._caches;
+  if (!caches) return;
+  caches.nasCache.delete("nas");
+  if (job?.sparkId) {
+    caches.nodeCache.delete(job.sparkId);
+    caches.versionCache.delete(job.sparkId);
+  }
+};
 
 const agentRegistry = getAgentRegistry();
 
@@ -487,7 +502,7 @@ app.post("/api/sparks/:id/test", async (req, res) => {
 });
 
 // ─── Remote jobs + modelctl (B5 batch 1) ──────────────────
-const MODEL_JOB_KINDS = new Set(["download", "sync", "push", "delete-local", "install-modelctl", "install-agent", "update-agent"]);
+const MODEL_JOB_KINDS = new Set(["download", "sync", "push", "delete-local", "nas-delete", "install-modelctl", "install-agent", "update-agent"]);
 
 /** Shared job-poll context: registry spark lookup (may be gone mid-job). */
 function jobSpark(id) {
@@ -525,6 +540,16 @@ app.post("/api/jobs", async (req, res) => {
         remoteBin: cfg.remoteBin,
       });
       name = `download ${body.name || body.repo}`;
+    } else if (kind === "nas-delete") {
+      // Destructive NAS-store removal — runs on the machine that manages the
+      // NAS (defaultNasSpark), mirroring every other NAS op.
+      const m = body.model;
+      if (!validModelName(m)) return res.status(400).json({ error: "invalid or missing model name" });
+      if (!cfg.nasRoot) return res.status(400).json({ error: "modelctl.nasRoot not configured" });
+      spark = modelctl.defaultNasSpark();
+      if (!spark) return res.status(409).json({ error: "no spark available for NAS operations" });
+      script = buildNasDeleteScript({ name: m, nasRoot: cfg.nasRoot, remoteBin: cfg.remoteBin });
+      name = `delete ${m} (NAS)`;
     } else {
       const sparkId = body.sparkId;
       if (!sparkId) return res.status(400).json({ error: "sparkId is required" });
@@ -667,9 +692,9 @@ app.post("/api/jobs/:id/cancel", async (req, res) => {
 });
 
 // ─── Model inventories ────────────────────────────────────
-app.get("/api/models/nas", async (_req, res) => {
+app.get("/api/models/nas", async (req, res) => {
   try {
-    const r = await modelctl.listNasModels();
+    const r = await modelctl.listNasModels({ force: req.query.force === "1" });
     res.json(r);
   } catch (err) {
     res.json({ models: [], error: err.message });
@@ -2266,15 +2291,15 @@ markAgentTokenConfigured();
 startBroadcast();
 
 server.listen(PORT, BIND_HOST, () => {
-  console.log(`[sparkDash] server listening on http://${BIND_HOST}:${PORT}`);
-  console.log(`[sparkDash] WebSocket endpoint ws://${BIND_HOST}:${PORT}/ws`);
+  console.log(`[sparkControl] server listening on http://${BIND_HOST}:${PORT}`);
+  console.log(`[sparkControl] WebSocket endpoint ws://${BIND_HOST}:${PORT}/ws`);
   const isLoopback =
     BIND_HOST === "localhost" || BIND_HOST === "::1" || /^127\./.test(BIND_HOST);
   if (isLoopback) {
-    console.log("[sparkDash] localhost-only; set BIND_HOST=0.0.0.0 (or a LAN IP) to allow remote access");
+    console.log("[sparkControl] localhost-only; set BIND_HOST=0.0.0.0 (or a LAN IP) to allow remote access");
   } else {
     console.warn(
-      `[sparkDash] WARNING: bound to ${BIND_HOST} — reachable on the LAN. This dashboard is unauthenticated and can SSH into and power off your Sparks; restrict access at the network/firewall layer.`
+      `[sparkControl] WARNING: bound to ${BIND_HOST} — reachable on the LAN. This dashboard is unauthenticated and can SSH into and power off your Sparks; restrict access at the network/firewall layer.`
     );
   }
   startAllMonitors();
@@ -2285,7 +2310,7 @@ let _shuttingDown = false;
 function shutdown(signal) {
   if (_shuttingDown) return;
   _shuttingDown = true;
-  console.log(`[sparkDash] ${signal} received, shutting down…`);
+  console.log(`[sparkControl] ${signal} received, shutting down…`);
   try {
     // Finalize in-flight benches before the process dies so clients polling
     // GET /llm/bench/:id do not hit "Benchmark not found" after --watch reload.
@@ -2296,12 +2321,12 @@ function shutdown(signal) {
       "Interrupted — server restarted while the benchmark was running"
     );
   } catch (err) {
-    console.error("[sparkDash] failed to finalize benchmarks:", err.message);
+    console.error("[sparkControl] failed to finalize benchmarks:", err.message);
   }
   try {
     llmDaily.flush();
   } catch (err) {
-    console.error("[sparkDash] failed to flush LLM daily history:", err.message);
+    console.error("[sparkControl] failed to flush LLM daily history:", err.message);
   }
   try {
     if (broadcastTimer) {
@@ -2311,12 +2336,12 @@ function shutdown(signal) {
     for (const m of monitors.values()) m.stop();
     monitors.clear();
   } catch (err) {
-    console.error("[sparkDash] error during shutdown:", err.message);
+    console.error("[sparkControl] error during shutdown:", err.message);
   }
   try {
     closeTraceStore();
   } catch (err) {
-    console.error("[sparkDash] failed to close trace store:", err.message);
+    console.error("[sparkControl] failed to close trace store:", err.message);
   }
   try {
     wss.clients.forEach((c) => {

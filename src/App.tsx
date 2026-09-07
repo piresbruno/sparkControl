@@ -11,7 +11,7 @@ import { OverviewPage } from "./components/OverviewPage/OverviewPage";
 import { ShowcasePage } from "./components/ShowcasePage/ShowcasePage";
 import { ThemeSwitch } from "./components/ThemeSwitch";
 import { SettingsDialog } from "./components/SettingsDialog";
-import { GearIcon, BoltIcon } from "./components/ui/icons";
+import { GearIcon, SparkIcon } from "./components/ui/icons";
 import { OVERVIEW_ID, ANALYSIS_ID, MODELS_ID } from "./constants";
 
 /** Sentinel tab ids — refreshFromApi must never bounce these back to a spark. */
@@ -250,9 +250,9 @@ function DashboardApp() {
             onClick={() => navigate(OVERVIEW_ID)}
             className="logo-pill"
           >
-            <BoltIcon className="h-3.5 w-3.5 text-accent" />
+            <SparkIcon className="h-3.5 w-3.5 text-accent" />
             <span>
-              spark<span className="logo-pill-dash">Dash</span>
+              spark<span className="logo-pill-dash">Control</span>
             </span>
           </button>
           <SparkTabs
@@ -290,9 +290,14 @@ function DashboardApp() {
             <ModelsPage />
           ) : displayActive ? (
             <SparkPage
+              /* Full remount per node: resets every channel's node-scoped state
+                 (enrolled override, inventories, selection, armed buttons, drafts)
+                 so a switch can't render/act on the previous node's data. */
+              key={displayActive.id}
               spark={displayActive}
               temperatureUnit={settings?.temperatureUnit ?? "celsius"}
               onEdit={() => setEditId(displayActive.id)}
+              onNavigate={navigate}
             />
           ) : (
             <div className="panel mx-auto mt-16 max-w-md p-8 text-center">
