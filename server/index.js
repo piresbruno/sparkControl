@@ -161,7 +161,7 @@ import {
   buildSyncScript,
   buildPushScript,
   buildDeleteLocalScript,
-  buildInstallModelctlScript,
+  buildNasDeleteScript,
   planPlacement,
   validModelName,
 } from "./collectors/modelctlService.js";
@@ -487,7 +487,7 @@ app.post("/api/sparks/:id/test", async (req, res) => {
 });
 
 // ─── Remote jobs + modelctl (B5 batch 1) ──────────────────
-const MODEL_JOB_KINDS = new Set(["download", "sync", "push", "delete-local", "install-modelctl", "install-agent", "update-agent"]);
+const MODEL_JOB_KINDS = new Set(["download", "sync", "push", "delete-local", "nas-delete", "install-modelctl", "install-agent", "update-agent"]);
 
 /** Shared job-poll context: registry spark lookup (may be gone mid-job). */
 function jobSpark(id) {
@@ -525,6 +525,16 @@ app.post("/api/jobs", async (req, res) => {
         remoteBin: cfg.remoteBin,
       });
       name = `download ${body.name || body.repo}`;
+    } else if (kind === "nas-delete") {
+      // Destructive NAS-store removal — runs on the machine that manages the
+      // NAS (defaultNasSpark), mirroring every other NAS op.
+      const m = body.model;
+      if (!validModelName(m)) return res.status(400).json({ error: "invalid or missing model name" });
+      if (!cfg.nasRoot) return res.status(400).json({ error: "modelctl.nasRoot not configured" });
+      spark = modelctl.defaultNasSpark();
+      if (!spark) return res.status(409).json({ error: "no spark available for NAS operations" });
+      script = buildNasDeleteScript({ name: m, nasRoot: cfg.nasRoot, remoteBin: cfg.remoteBin });
+      name = `delete ${m} (NAS)`;
     } else {
       const sparkId = body.sparkId;
       if (!sparkId) return res.status(400).json({ error: "sparkId is required" });

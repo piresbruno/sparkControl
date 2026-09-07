@@ -1,37 +1,35 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  listNasModels,
-  listNodeModels,
-  modelctlStatus,
-  startJob,
-  listJobs,
-  cancelJob,
-  listServingScripts,
-  servingStart,
-  servingStop,
-  servingStatus as fetchServingStatus,
-  servingLog,
-  fetchSparks,
-} from "../../api/client";
+import { listJobs, listNasModels, modelctlStatus, startJob, fetchSparks } from "../../api/client";
 import type {
   InventoryResponse,
   ModelctlStatus,
   MctlJob,
   NasModel,
-  ServingScript,
-  ServingStatus,
   SparkConfig,
 } from "../../api/types";
 
-const JOBS_POLL_MS = 1000;
-const LOG_POLL_MS = 1000;
+/**
+ * Models tab = NAS catalog only (approved mockup mockups/models-page.html).
+ * Per-node model management (sync / push / serve / stop) lives on the node
+ * detail page's Models channel. The catalog polls the server's 60 s-cached
+ * NAS inventory; a download/delete job completing triggers a refresh.
+ */
 
-function gb(bytes: number | null | undefined): string {
-  if (bytes == null || !Number.isFinite(bytes)) return "—";
-  return `${(bytes / 1024 ** 3).toFixed(1)}`;
+const JOBS_POLL_MS = 4000;
+
+interface Toast {
+  id: number;
+  msg: string;
+  kind: "error" | "info";
 }
 
-function jobStatusClass(status: MctlJob["status"]): string {
+function gb(bytes: number | null | undefined): string {
+  if (bytes == null || !Number.isFinite(bytes)) return "-";
+  return `${(bytes / 1024 ** 3).toFixed(1)}`;
+}
+type MctlJobStatus = MctlJob["status"];
+
+function jobStatusClass(status: MctlJobStatus): string {
   switch (status) {
     case "running":
       return "bench-status-pill bench-status-pill--running";
@@ -45,33 +43,42 @@ function jobStatusClass(status: MctlJob["status"]): string {
   }
 }
 
-interface Toast {
-  id: number;
-  msg: string;
-  kind: "error" | "info";
+/** Active job row in the catalog (subset of MctlJob the bar renders). */
+type MctlJobLite = Pick<MctlJob, "jobId" | "kind" | "status" | "name">;
+
+/** Database-cylinder icon for the catalog title. */
+function DatabaseIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={className}
+    >
+      <ellipse cx="12" cy="5" rx="8" ry="3" />
+      <path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5" />
+      <path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" />
+    </svg>
+  );
 }
 
 export function ModelsPage() {
   const [nas, setNas] = useState<InventoryResponse | null>(null);
-  const [nodeInventories, setNodeInventories] = useState<Record<string, InventoryResponse>>({});
-  const [modelctl, setModelctl] = useState<Record<string, ModelctlStatus>>({});
-  const [sparks, setSparks] = useState<SparkConfig[]>([]);
-  const [jobs, setJobs] = useState<MctlJob[]>([]);
+  const [modelctl, setModelctl] = useState<ModelctlStatus | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  // Download form
+  const [dlOpen, setDlOpen] = useState(false);
   const [dlRepo, setDlRepo] = useState("");
   const [dlName, setDlName] = useState("");
   const [dlQuant, setDlQuant] = useState("");
   const [dlRev, setDlRev] = useState("");
   const [busy, setBusy] = useState(false);
-  const [scripts, setScripts] = useState<ServingScript[]>([]);
-  const [servingSparkId, setServingSparkId] = useState<string>("");
-  const [scriptId, setScriptId] = useState<string>("");
-  const [modelName, setModelName] = useState<string>("");
-  const [port, setPort] = useState<string>("");
-  const [extraArgs, setExtraArgs] = useState<string>("");
-  const [servingStatus, setServingStatus] = useState<ServingStatus | null>(null);
-  const [serveLog, setServeLog] = useState<string>("");
+  const [jobs, setJobs] = useState<MctlJobLite[]>([]);
   const toastSeq = useRef(0);
 
   const pushToast = useCallback((msg: string, kind: Toast["kind"] = "error") => {
@@ -80,55 +87,52 @@ export function ModelsPage() {
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4000);
   }, []);
 
-  const refreshAll = useCallback(async () => {
-    try {
-      const { sparks: configs } = await fetchSparks();
-      setSparks(configs);
-      const enabled = configs.filter((c) => (c as SparkConfig & { modelctlEnabled?: boolean }).modelctlEnabled);
-      setNas(await listNasModels().catch((e) => ({ models: [], error: String(e) })));
-      const invs: Record<string, InventoryResponse> = {};
-      const checks: Record<string, ModelctlStatus> = {};
-      for (const s of enabled) {
-        invs[s.id] = await listNodeModels(s.id).catch((e) => ({ models: [], error: String(e) }));
-        checks[s.id] = await modelctlStatus(s.id).catch((e) => ({ installed: false, version: null, uv: { installed: false, version: null }, error: String(e) }));
-      }
-      setNodeInventories(invs);
-      setModelctl(checks);
-    } catch (err) {
-      pushToast(String(err));
+  const refreshNas = useCallback(async () => {
+    setNas(await listNasModels().catch((e) => ({ models: [], error: String(e) })));
+  }, []);
+
+  const refreshModelctl = useCallback(async () => {
+    const { sparks } = await fetchSparks().catch(() => ({ sparks: [] as SparkConfig[] }));
+    const nasHost =
+      sparks.find((s) => s.modelctlEnabled) ?? sparks.find((s) => s.role === "head") ?? sparks.find((s) => s.isLocal);
+    if (!nasHost) {
+      setModelctl(null);
+      return;
     }
-  }, [pushToast]);
+    const st = await modelctlStatus(nasHost.id).catch(() => null);
+    setModelctl(st);
+  }, []);
 
   useEffect(() => {
-    void refreshAll();
-    listServingScripts()
-      .then(({ scripts }) => setScripts(scripts))
-      .catch(() => undefined);
-  }, [refreshAll]);
+    void refreshNas();
+    void refreshModelctl();
+  }, [refreshNas, refreshModelctl]);
 
-  // Active jobs poll (1 s) — also invalidates inventories when a job completes.
-  const prevRunning = useRef<string>("");
-  useEffect(() => {
-    const t = setInterval(async () => {
-      try {
-        const { jobs } = await listJobs();
-        setJobs(jobs);
-        const runningIds = jobs.filter((j) => j.status === "running").map((j) => j.jobId).sort().join(",");
-        if (prevRunning.current && prevRunning.current !== runningIds) {
-          void refreshAll(); // something finished → refresh inventories + badges
-        }
-        prevRunning.current = runningIds;
-      } catch {
-        /* poll errors non-fatal */
+  // Job poll: surface the running job; a finished job refreshes the catalog.
+  const prevRunning = useRef("");
+  const jobsPoll = useCallback(async () => {
+    try {
+      const { jobs } = await listJobs();
+      setJobs(jobs);
+      const runningIds = jobs
+        .filter((j) => j.status === "running")
+        .map((j) => j.jobId)
+        .sort()
+        .join(",");
+      if (prevRunning.current && prevRunning.current !== runningIds) {
+        void refreshNas();
       }
-    }, JOBS_POLL_MS);
-    return () => clearInterval(t);
-  }, [refreshAll]);
+      prevRunning.current = runningIds;
+    } catch {
+      /* poll errors non-fatal */
+    }
+  }, [refreshNas]);
 
-  const enabledSparks = useMemo(
-    () => sparks.filter((s) => (s as SparkConfig & { modelctlEnabled?: boolean }).modelctlEnabled),
-    [sparks]
-  );
+  useEffect(() => {
+    void jobsPoll();
+    const t = setInterval(() => void jobsPoll(), JOBS_POLL_MS);
+    return () => clearInterval(t);
+  }, [jobsPoll]);
 
   const handleDownload = useCallback(async () => {
     if (!dlRepo.trim()) return;
@@ -141,11 +145,12 @@ export function ModelsPage() {
         quantization: dlQuant.trim() || undefined,
         revision: dlRev.trim() || undefined,
       });
-      pushToast("Download job queued", "info");
+      pushToast("Download job queued — jobs appear on the NAS host node", "info");
       setDlRepo("");
       setDlName("");
       setDlQuant("");
       setDlRev("");
+      setDlOpen(false);
     } catch (err) {
       pushToast(String(err));
     } finally {
@@ -153,341 +158,195 @@ export function ModelsPage() {
     }
   }, [dlRepo, dlName, dlQuant, dlRev, pushToast]);
 
-  const handleCellAction = useCallback(
-    async (kind: "sync" | "push" | "delete-local", model: string, cellSparkId: string, sourceSparkId?: string) => {
+  const handleDelete = useCallback(
+    async (model: NasModel) => {
+      if (!model.name || busy) return;
       setBusy(true);
       try {
-        await startJob({
-          kind,
-          model,
-          sparkId: cellSparkId,
-          sourceSparkId,
-          targetSparkId: kind === "push" ? cellSparkId : undefined,
-        });
-        pushToast(`${kind} queued for ${model}`, "info");
-      } catch (err) {
-        pushToast(String(err)); // 409 single-flight surfaces here
-      } finally {
-        setBusy(false);
-      }
-    },
-    [pushToast]
-  );
-
-  const handleInstallModelctl = useCallback(
-    async (sparkId: string) => {
-      setBusy(true);
-      try {
-        await startJob({ kind: "install-modelctl", sparkId });
-        pushToast(`install-modelctl queued on ${sparkId}`, "info");
+        await startJob({ kind: "nas-delete", model: model.name });
+        pushToast(`NAS delete queued for ${model.name}`, "info");
       } catch (err) {
         pushToast(String(err));
       } finally {
         setBusy(false);
       }
     },
-    [pushToast]
+    [busy, pushToast]
   );
 
-  // Default serving node: first enabled spark (server computes its own default).
-  useEffect(() => {
-    if (!servingSparkId && enabledSparks.length > 0) setServingSparkId(enabledSparks[0].id);
-  }, [enabledSparks, servingSparkId]);
+  const models = nas?.models ?? [];
+  const error = nas?.error;
+  const stale = nas?.stale;
+  const totalBytes = useMemo(() => models.reduce((a, m) => a + (m.bytes ?? 0), 0), [models]);
+  const storeChip = `nas · ${models.length} model${models.length === 1 ? "" : "s"}${
+    totalBytes > 0 ? ` · ${(totalBytes / 1024 ** 3).toFixed(1)} GB store` : ""
+  }`;
 
-  // Serving status + log poll (1 s).
-  useEffect(() => {
-    if (!servingSparkId) return;
-    let alive = true;
-    const tick = async () => {
-      try {
-        const st: ServingStatus = await fetchServingStatus(servingSparkId, scriptId || undefined);
-        if (alive) setServingStatus(st);
-        const lg = await servingLog(servingSparkId, scriptId || undefined, 8000);
-        if (alive) setServeLog(lg.log || "");
-      } catch {
-        /* offline surfaces via status */
-      }
-    };
-    void tick();
-    const t = setInterval(tick, LOG_POLL_MS);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [servingSparkId, scriptId]);
-
-  const handleServeStart = useCallback(async () => {
-    if (!scriptId || !port) return;
-    setBusy(true);
-    try {
-      await servingStart({
-        sparkId: servingSparkId || undefined,
-        scriptId,
-        modelName: modelName || undefined,
-        port: Number(port),
-        extraArgs: extraArgs || undefined,
-      });
-      pushToast("Serving start issued", "info");
-    } catch (err) {
-      pushToast(String(err));
-    } finally {
-      setBusy(false);
-    }
-  }, [scriptId, port, servingSparkId, modelName, extraArgs, pushToast]);
-
-  const handleServeStop = useCallback(async () => {
-    setBusy(true);
-    try {
-      await servingStop({ sparkId: servingSparkId || undefined, scriptId: scriptId || undefined });
-      pushToast("Stop issued", "info");
-    } catch (err) {
-      pushToast(String(err));
-    } finally {
-      setBusy(false);
-    }
-  }, [servingSparkId, scriptId, pushToast]);
-
-  const selectedScript = scripts.find((s) => s.id === scriptId);
-  const selectedServingSpark = enabledSparks.find((s) => s.id === servingSparkId);
-  const selectedServingInv = nodeInventories[servingSparkId];
-
-  // Matrix rows: union of NAS ∪ node models.
-  const matrixModels = useMemo(() => {
-    const names = new Set<string>();
-    (nas?.models ?? []).forEach((m) => m.name && names.add(m.name));
-    Object.values(nodeInventories).forEach((inv) => inv.models.forEach((m) => m.name && names.add(m.name)));
-    return [...names].sort();
-  }, [nas, nodeInventories]);
-
-  const onScriptChange = useCallback(
-    (id: string) => {
-      setScriptId(id);
-      const s = scripts.find((x) => x.id === id);
-      if (s?.defaultPort) setPort(String(s.defaultPort));
-    },
-    [scripts]
-  );
+  const activeJob = jobs.find((j) => j.status === "running");
 
   return (
     <div className="models-page">
-      <header className="flex flex-wrap items-center gap-2 mb-3">
-        <h2 className="text-sm font-semibold text-text-strong m-0">Models</h2>
-        {toasts.map((t, i) => (
-          <span
-            key={i}
-            className={`text-xs rounded px-2 py-1 ${t.kind === "error" ? "bg-danger/10 text-danger" : "bg-accent-soft text-accent"}`}
-          >
-            {t.msg}
-          </span>
-        ))}
-      </header>
-
-      {/* 1. NAS catalog + download form */}
-      <section className="panel p-3 mb-4">
-        <div className="flex items-center gap-2 mb-2">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted m-0">NAS catalog</h3>
-          {nas?.stale && <span className="bench-status-pill bench-status-pill--cancelled">stale</span>}
-          {nas?.error && <span className="text-xs text-[var(--color-warning)]">{nas.error}</span>}
-        </div>
-        {nas && nas.models.length > 0 ? (
-          <div className="bench-results">
-            <div className="bench-results__head" aria-hidden="true">
-              <span>Name</span>
-              <span>Runtime</span>
-              <span>Repository</span>
-              <span>Size GB</span>
-            </div>
-            {nas.models.map((m: NasModel) => (
-              <div key={m.name} className="grid grid-cols-4 gap-2 px-3 py-1.5 text-xs">
-                <span>{m.name}</span>
-                <span className="text-muted">{m.runtime ?? "—"}</span>
-                <span className="text-muted truncate" title={m.repository ?? ""}>{m.repository ?? "—"}</span>
-                <span>{gb(m.bytes)}</span>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="text-xs text-muted">{nas?.error ? nas.error : "NAS catalog empty."}</p>
-        )}
-        <div className="flex flex-wrap items-center gap-2 mt-3">
-          <input
-            className="text-xs rounded border border-border bg-surface px-2 py-1 w-64"
-            placeholder="HF repo (org/model)"
-            value={dlRepo}
-            onChange={(e) => setDlRepo(e.target.value)}
-          />
-          <input className="text-xs rounded border border-border bg-surface px-2 py-1 w-40" placeholder="name (optional)" value={dlName} onChange={(e) => setDlName(e.target.value)} />
-          <input className="text-xs rounded border border-border bg-surface px-2 py-1 w-32" placeholder="quantization" value={dlQuant} onChange={(e) => setDlQuant(e.target.value)} />
-          <input className="text-xs rounded border border-border bg-surface px-2 py-1 w-32" placeholder="revision" value={dlRev} onChange={(e) => setDlRev(e.target.value)} />
-          <button type="button" className="bench-btn bench-btn--primary" disabled={busy || !dlRepo.trim()} onClick={() => void handleDownload()}>
-            Download from Hugging Face
-          </button>
-        </div>
-      </section>
-
-      {/* 2. Node matrix */}
-      <section className="panel p-3 mb-4">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted mb-2">Node matrix</h3>
-        {enabledSparks.length === 0 ? (
-          <p className="text-xs text-muted">No sparks have modelctl enabled (toggle it in Edit Spark).</p>
-        ) : (
-          <div className="bench-results overflow-x-auto">
-            <div className="bench-results__head" aria-hidden="true" style={{ gridTemplateColumns: `minmax(160px, 2fr) repeat(${enabledSparks.length}, 1fr)` }}>
-              <span>Model</span>
-              {enabledSparks.map((s) => (
-                <span key={s.id}>{s.name}</span>
-              ))}
-            </div>
-            {matrixModels.map((name) => (
-              <div key={name} className="grid gap-2 px-3 py-1.5 text-xs items-center" style={{ gridTemplateColumns: `minmax(160px, 2fr) repeat(${enabledSparks.length}, 1fr)` }}>
-                <span className="font-medium">{name}</span>
-                {enabledSparks.map((s) => {
-                  const present = nodeInventories[s.id]?.models.some((m) => m.name === name);
-                  const stale = nodeInventories[s.id]?.stale;
-                  return (
-                    <span key={s.id} className="flex items-center gap-1.5">
-                      {present ? (
-                        <span className="bench-status-pill bench-status-pill--completed">present</span>
-                      ) : (
-                        <span className="bench-status-pill bench-status-pill--cancelled">absent{stale ? " (stale)" : ""}</span>
-                      )}
-                      {!present && (
-                        <>
-                          <button type="button" className="text-[11px] rounded border border-border px-1.5 py-0.5" disabled={busy} onClick={() => void handleCellAction("sync", name, s.id)}>
-                            Sync
-                          </button>
-                          {(() => {
-                            const peer = enabledSparks.find((p) => p.id !== s.id && nodeInventories[p.id]?.models.some((m) => m.name === name));
-                            if (peer) {
-                              return (
-                                <button type="button" className="text-[11px] rounded border border-border px-1.5 py-0.5" disabled={busy} onClick={() => void handleCellAction("push", name, s.id, peer.id)}>
-                                  Push from {peer.name}
-                                </button>
-                              );
-                            }
-                            return null;
-                          })()}
-                          <button type="button" className="text-[11px] rounded border border-danger/40 text-danger px-1.5 py-0.5" disabled={busy} onClick={() => void handleCellAction("delete-local", name, s.id)}>
-                            Remove
-                          </button>
-                        </>
-                      )}
-                    </span>
-                  );
-                })}
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* 3. Active jobs */}
-      <section className="panel p-3 mb-4">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted mb-2">Active jobs</h3>
-        {jobs.length === 0 ? (
-          <p className="text-xs text-muted">No jobs yet.</p>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {jobs.slice(0, 8).map((j) => (
-              <div key={j.jobId} className="flex items-center gap-3 text-xs flex-wrap">
-                <span className={jobStatusClass(j.status)}>{j.status}</span>
-                <span className="font-medium">{j.kind}</span>
-                <span className="text-muted">{j.sparkId}</span>
-                <span>{j.name}</span>
-                {j.exitCode != null && <span className="text-muted">exit {j.exitCode}</span>}
-                <button type="button" className="text-[11px] rounded border border-border px-1.5 py-0.5" disabled={busy || j.status !== "running"} onClick={() => void cancelJob(j.jobId).catch((e) => pushToast(String(e)))}>
-                  Cancel
-                </button>
-                {j.logTail && (
-                  <pre className="trace-body__pre flex-1 min-w-48 max-h-24" style={{ maxHeight: "6rem" }}>
-                    {j.logTail.split("\n").slice(-4).join("\n")}
-                  </pre>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* 4. modelctl availability */}
-      <section className="panel p-3 mb-4">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted mb-2">modelctl availability</h3>
-        {enabledSparks.length === 0 ? (
-          <p className="text-xs text-muted">Nothing to check.</p>
-        ) : (
-          <div className="flex flex-wrap gap-3">
-            {enabledSparks.map((s) => {
-              const st = modelctl[s.id];
-              return (
-                <div key={s.id} className="flex items-center gap-2 text-xs">
-                  <span className="font-medium">{s.name}</span>
-                  {st?.installed ? (
-                    <span className="bench-status-pill bench-status-pill--completed">v{st.version ?? "?"}</span>
-                  ) : (
-                    <span className="bench-status-pill bench-status-pill--failed">not installed</span>
-                  )}
-                  <button type="button" className="text-[11px] rounded border border-border px-1.5 py-0.5" disabled={busy} onClick={() => void handleInstallModelctl(s.id)}>
-                    Install modelctl (uv)
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
-
-      {/* 5. Serving */}
-      <section className="panel p-3">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted mb-2">Serving</h3>
-        <div className="flex flex-wrap items-center gap-2 mb-2">
-          <select className="select-inline text-xs rounded border border-border bg-surface px-2 py-1" value={servingSparkId} onChange={(e) => setServingSparkId(e.target.value)} aria-label="Runs on">
-            {enabledSparks.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-          <select className="select-inline text-xs rounded border border-border bg-surface px-2 py-1" value={scriptId} onChange={(e) => onScriptChange(e.target.value)} aria-label="Script">
-            <option value="">Select script…</option>
-            {scripts.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.id}
-              </option>
-            ))}
-          </select>
-          <select className="select-inline text-xs rounded border border-border bg-surface px-2 py-1" value={modelName} onChange={(e) => setModelName(e.target.value)} aria-label="Model">
-            <option value="">No model</option>
-            {matrixModels.map((m) => {
-              const present = selectedServingInv?.models.some((x) => x.name === m);
-              return (
-                <option key={m} value={m}>
-                  {m}
-                  {present ? "" : " (not on node)"}
-                </option>
-              );
-            })}
-          </select>
-          <input className="text-xs rounded border border-border bg-surface px-2 py-1 w-24" placeholder="port" value={port} onChange={(e) => setPort(e.target.value)} />
-          <input className="text-xs rounded border border-border bg-surface px-2 py-1 w-56" placeholder="extra args" value={extraArgs} onChange={(e) => setExtraArgs(e.target.value)} />
-          <button type="button" className="bench-btn bench-btn--primary" disabled={busy || !scriptId || !port} onClick={() => void handleServeStart()}>
-            Start
-          </button>
-          <button type="button" className="bench-btn bench-btn--ghost" disabled={busy} onClick={() => void handleServeStop()}>
-            Stop
-          </button>
-          {servingStatus && (
-            <span className="text-xs text-muted">
-              {servingStatus.running === true
-                ? `running${servingStatus.startedAt ? ` since ${new Date(servingStatus.startedAt).toLocaleTimeString()}` : ""}`
-                : servingStatus.running === "unknown"
-                  ? `unknown (offline)`
-                  : "stopped"}
+      <section className="panel p-3" aria-label="NAS catalog">
+        <div className="models-toolbar">
+          <h2 className="panel-title m-0">
+            <DatabaseIcon />
+            NAS catalog
+          </h2>
+          <span className="chip">{storeChip}</span>
+          {stale && (
+            <span className="bench-status-pill bench-status-pill--cancelled" title="inventory older than 5× TTL">
+              stale
             </span>
           )}
+          {modelctl && !modelctl.installed && (
+            <span className="bench-status-pill bench-status-pill--failed">modelctl not installed</span>
+          )}
+          <div className="models-toolbar__spacer" />
+          <button
+            type="button"
+            className="bench-btn bench-btn--primary bench-btn--sm"
+            aria-expanded={dlOpen}
+            aria-controls="dl-form"
+            onClick={() => setDlOpen((v) => !v)}
+          >
+            ⤓ Download from Hugging Face
+          </button>
         </div>
-        {selectedScript?.description && <p className="text-xs text-muted mb-2">{selectedScript.description}</p>}
-        {serveLog && <pre className="trace-body__pre">{serveLog || "(no log yet)"}</pre>}
+
+        {dlOpen && (
+          <form
+            id="dl-form"
+            className="dl-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void handleDownload();
+            }}
+          >
+            <label className="field">
+              <span className="field__label">HF repo (org/model)</span>
+              <input
+                type="text"
+                value={dlRepo}
+                placeholder="org/model"
+                onChange={(e) => setDlRepo(e.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span className="field__label">Name (optional)</span>
+              <input
+                type="text"
+                value={dlName}
+                placeholder="custom store name"
+                onChange={(e) => setDlName(e.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span className="field__label">Quantization</span>
+              <input
+                type="text"
+                value={dlQuant}
+                placeholder="e.g. Q4_K_M"
+                onChange={(e) => setDlQuant(e.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span className="field__label">Revision</span>
+              <input
+                type="text"
+                value={dlRev}
+                placeholder="main"
+                onChange={(e) => setDlRev(e.target.value)}
+              />
+            </label>
+            <div className="flex gap-1.5 items-end">
+              <button
+                type="submit"
+                className="bench-btn bench-btn--run bench-btn--sm"
+                disabled={busy || !dlRepo.trim()}
+              >
+                Download
+              </button>
+              <button
+                type="button"
+                className="bench-btn bench-btn--ghost bench-btn--sm"
+                onClick={() => setDlOpen(false)}
+              >
+                Cancel
+              </button>
+            </div>
+            <p className="field__hint" style={{ gridColumn: "1 / -1", margin: 0 }}>
+              Streams into the NAS model store. Download and delete jobs run on the machine managing the NAS
+              (NAS host node) — follow them on that node's detail page → Jobs.
+            </p>
+          </form>
+        )}
+
+        {activeJob && (
+          <div className="mt-2 flex items-center gap-2 text-xs">
+            <span className={jobStatusClass(activeJob.status)}>running</span>
+            <span className="font-medium">{activeJob.kind}</span>
+            {activeJob.name && <span className="text-muted">{activeJob.name}</span>}
+          </div>
+        )}
+
+        <div className="bench-results mt-3">
+          <div className="nas-table__head" aria-hidden="true">
+            <span>Name</span>
+            <span>Runtime</span>
+            <span>Repository</span>
+            <span className="analysis-table__num">Size GB</span>
+            <span />
+          </div>
+          {models.length === 0 ? (
+            <div className="nas-table__empty">
+              {error ? error : "NAS catalog empty — download a model from Hugging Face."}
+            </div>
+          ) : (
+            models.map((m) => (
+              <div key={m.name ?? m.repository} className="nas-table__row">
+                <span className="font-medium" style={{ fontWeight: 600 }}>
+                  {m.name ?? "—"}
+                </span>
+                <span className="chip justify-self-start">{m.runtime ?? "—"}</span>
+                <span className="text-muted font-tabular truncate" title={m.repository ?? ""}>
+                  {m.repository ?? "—"}
+                </span>
+                <span className="analysis-table__num">{gb(m.bytes)}</span>
+                <span className="analysis-table__actions">
+                  <button
+                    type="button"
+                    className="bench-btn bench-btn--sm bench-btn--danger"
+                    disabled={busy || !m.name}
+                    title={
+                      m.name
+                        ? `Run \`modelctl delete ${m.name} --apply --yes\` on the NAS host (dry-run plan first, then apply)`
+                        : "Model has no store name"
+                    }
+                    onClick={() => void handleDelete(m)}
+                  >
+                    Delete
+                  </button>
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+
+        <p className="empty-note" style={{ margin: "10px 2px 0" }}>
+          To sync, push, serve or stop a model on a specific node, open that node from Overview →{" "}
+          <b>Models</b> channel.
+        </p>
       </section>
+
+      {toasts.map((t, i) => (
+        <span
+          key={t.id}
+          className={`text-xs rounded px-2 py-1 ${t.kind === "error" ? "bg-danger/10 text-danger" : "bg-accent-soft text-accent"}`}
+          style={{ position: "fixed", bottom: 16 + i * 34, right: 16, zIndex: 50 }}
+        >
+          {t.msg}
+        </span>
+      ))}
     </div>
   );
 }

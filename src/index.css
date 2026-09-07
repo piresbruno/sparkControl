@@ -2543,3 +2543,95 @@ html {
 .analysis-table__pill {
   justify-self: start;
 }
+
+/* ─── Models page (NAS catalog) ──────────────────────────── */
+.models-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--density-gap, 14px);
+}
+.models-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.models-toolbar__spacer {
+  flex: 1;
+}
+
+/* Download form — revealed by the toolbar CTA */
+.dl-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 0.9fr) minmax(0, 0.9fr) auto;
+  gap: 8px;
+  align-items: end;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-accent) 4%, transparent);
+}
+@media (max-width: 1100px) {
+  .dl-form {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.field__label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+.field__hint {
+  font-size: 10.5px;
+  color: var(--color-muted);
+}
+.field input[type="text"] {
+  width: 100%;
+}
+
+/* Catalog table — head + rows share one grid (5 columns) */
+.nas-table__head,
+.nas-table__row {
+  display: grid;
+  grid-template-columns: 1.5fr 0.8fr 1.4fr 0.6fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+}
+.nas-table__head {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+  border-bottom: 1px solid var(--color-border);
+}
+.nas-table__row {
+  font-size: 12px;
+  border-top: 1px solid var(--color-grid);
+}
+.nas-table__head + .nas-table__row {
+  border-top: 0;
+}
+.nas-table__row:hover {
+  background: var(--color-surface-hover);
+}
+.nas-table__empty {
+  padding: 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+.empty-note {
+  font-size: 12px;
+  color: var(--color-muted);
+}

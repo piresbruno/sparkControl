@@ -10,7 +10,8 @@
  *  - Inventory caches: NAS 60 s / node 30 s; last good result served stale
  *    for 5× TTL with stale:true; errors → { models: [], error }.
  *  - checkModelctl cached 5 min; probes bare name then ~/.local/bin fallback.
- *  - The dashboard NEVER calls `path`, `serve-command`, or NAS `delete`.
+ *  - NAS `delete` is opt-in from the Models catalog: dry-run by default,
+ *    then --apply --yes for the real removal (managed root store only).
  */
 import { shellQuote } from "../util/shellQuote.js";
 
@@ -74,6 +75,16 @@ export function buildPushScript({ name, targetHost, remoteBin = "modelctl" }) {
 /** `modelctl delete-local <name>` (job script body). */
 export function buildDeleteLocalScript({ name, remoteBin = "modelctl" }) {
   return mctl(remoteBin, `delete-local ${shellQuote(name)}`);
+}
+
+/**
+ * `modelctl delete <name> --root <nasRoot> --apply --yes` (job script body).
+ * Destructive: permanently removes the model from the MANAGED ROOT STORE on
+ * the NAS (active ref → catalog → journals/staging/unreferenced objects).
+ * Non-interactive runs need --yes; dry-run (no --apply) never deletes.
+ */
+export function buildNasDeleteScript({ name, nasRoot, remoteBin = "modelctl" }) {
+  return mctl(remoteBin, `delete ${shellQuote(name)} --root ${shellQuote(nasRoot)} --apply --yes`);
 }
 
 /**

@@ -57,6 +57,7 @@ const KIND_LABEL: Record<MctlJob["kind"], string> = {
   sync: "sync →",
   push: "push →",
   "delete-local": "delete",
+  "nas-delete": "nas delete",
   "install-modelctl": "install",
   "install-agent": "install agent",
   "update-agent": "update agent",

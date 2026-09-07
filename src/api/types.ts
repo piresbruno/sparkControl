@@ -876,6 +876,7 @@ export type JobKind =
   | "sync"
   | "push"
   | "delete-local"
+  | "nas-delete"
   | "install-modelctl"
   | "install-agent"
   | "update-agent";
