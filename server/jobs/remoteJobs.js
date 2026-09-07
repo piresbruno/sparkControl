@@ -150,7 +150,7 @@ export class RemoteJobManager {
    *   exec?: (spark: object, cmd: string, opts?: object) => Promise<string>,
    *   now?: () => number,
    *   statePath?: string,
-   *   sweepIntervalMs?: number,
+   *   onJobTerminal?: (job: object) => void,
    * }} [opts]
    */
   constructor(opts = {}) {
@@ -162,7 +162,8 @@ export class RemoteJobManager {
     this.jobs = new Map();
     /** @type {Map<string, Promise<object>>} jobId → in-flight poll */
     this._pollsInFlight = new Map();
-    this._sweepTimer = null;
+    /** @type {((job: object) => void) | null} cache-invalidation hook (set by server boot) */
+    this.onJobTerminal = opts.onJobTerminal || null;
     this._load();
   }
 
@@ -264,6 +265,7 @@ export class RemoteJobManager {
       job.exitCode = parsed.exitCode;
       job.endedAt = this._now();
       this._persist();
+      this._notifyTerminal(job);
     } else if (job.status === "running" && job.bootPending) {
       // First poll after boot: pid alive → still running (clear the flag).
       delete job.bootPending;
@@ -298,6 +300,7 @@ export class RemoteJobManager {
         job.endedAt = this._now();
         job.logTail = (job.logTail + "\n[install-agent] agent connected (hello verified)").slice(-4000);
         this._persist();
+        this._notifyTerminal(job);
       }
     }
   }
@@ -314,6 +317,7 @@ export class RemoteJobManager {
         job.error = "agent did not connect within 60s — check the journal: systemctl --user status sparkdash-agent (user unit) or journalctl -u sparkdash-agent (system unit)";
         job.endedAt = this._now();
         this._persist();
+        this._notifyTerminal(job);
       }
     }
   }
@@ -336,8 +340,23 @@ export class RemoteJobManager {
       job.status = "cancelled";
       job.endedAt = this._now();
       this._persist();
+      this._notifyTerminal(job);
     }
     return job;
+  }
+
+  /**
+   * Fire the boot-registered cache-invalidation hook after a job reaches a
+   * terminal state. Never lets a hook error break the poll/cancel path.
+   * @param {object} job
+   */
+  _notifyTerminal(job) {
+    if (!this.onJobTerminal) return;
+    try {
+      this.onJobTerminal(job);
+    } catch (err) {
+      console.error("[remoteJobs] onJobTerminal hook failed:", err.message);
+    }
   }
 
   /** All jobs (newest first). */

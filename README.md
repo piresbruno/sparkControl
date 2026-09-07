@@ -368,7 +368,7 @@ If the key file has a non-default name (e.g. `id_ed25519_shared`), mount it **as
 Design principle: **one Spark model, N instances**. Every unit is a record in `config/sparks.json` with a `kind` field (`spark` or `host`). The same `SparkMonitor`, `SystemCollector`, and `LlmProbe` code runs for all of them. Adding a unit is a config change, not a code change.
 
 ```txt
-┌────────────────────── Docker container (sparkControl) ────────────────────┐
+┌────────────────────── Docker container (sparkControl) ─────────────────────┐
 │  Express (server/)                                                         │
 │  ├─ config/sparks.json        Spark registry (API read/write)              │
 │  ├─ SparkRegistry             load/persist Sparks; change events           │

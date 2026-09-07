@@ -383,12 +383,6 @@
   background: color-mix(in srgb, var(--color-danger) 12%, transparent);
   border-color: color-mix(in srgb, var(--color-danger) 60%, var(--color-border));
 }
-.spark-console .key--warn {
-  color: var(--color-warning);
-}
-.spark-console .key--ok {
-  color: var(--color-success);
-}
 .spark-console .key--block {
   width: 100%;
   justify-content: center;
@@ -766,9 +760,6 @@
 }
 .spark-console .gauge--danger .gauge__value {
   color: var(--color-danger);
-}
-.spark-console .gauge--ok .gauge__value {
-  color: var(--color-text-strong);
 }
 .spark-console .bus-strip {
   display: grid;
@@ -1263,35 +1254,6 @@
   animation: sc-flash-ring 2.4s var(--ease);
 }
 
-/* ── Placement hint ────────────────────────────────────────────────────── */
-.spark-console .placement-hint {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  border: 1px solid color-mix(in srgb, var(--color-warning) 45%, var(--color-border));
-  background: color-mix(in srgb, var(--color-warning) 8%, transparent);
-  border-radius: var(--mod-radius);
-  padding: var(--space-3);
-  font-size: var(--fs-12);
-}
-.spark-console .placement-hint[hidden] {
-  display: none;
-}
-.spark-console .placement-hint__title {
-  font-family: var(--mono);
-  font-weight: 800;
-  font-size: var(--fs-12);
-  letter-spacing: -0.01em;
-  color: var(--color-warning);
-  text-transform: uppercase;
-}
-.spark-console .placement-hint__actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 6px;
-  flex-wrap: wrap;
-}
-
 /* ── Terminal log (machine-room screen: stays dark in both themes) ─────── */
 .spark-console .logs-head {
   display: flex;
@@ -1341,53 +1303,6 @@
 }
 .spark-console .log-accent {
   color: #f0b840;
-}
-.spark-console .switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  user-select: none;
-  font-family: var(--mono);
-  font-size: var(--fs-10);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--color-muted);
-  cursor: pointer;
-}
-.spark-console .switch__input {
-  position: absolute;
-  opacity: 0;
-  width: 0;
-  height: 0;
-}
-.spark-console .switch__track {
-  position: relative;
-  width: 26px;
-  height: 15px;
-  border-radius: 4px;
-  flex: none;
-  background: var(--toggle-track-off);
-  transition: background 0.18s var(--ease);
-}
-.spark-console .switch__dot {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 11px;
-  height: 11px;
-  border-radius: 3px;
-  background: var(--toggle-dot);
-  transition: transform 0.18s var(--ease);
-}
-.spark-console .switch__input:checked + .switch__track {
-  background: var(--toggle-track-on);
-}
-.spark-console .switch__input:checked + .switch__track .switch__dot {
-  transform: translateX(11px);
-}
-.spark-console .switch__input:focus-visible + .switch__track {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
 }
 
 /* ── Traces table ──────────────────────────────────────────────────────── */
@@ -1466,86 +1381,7 @@
   color: var(--color-accent-hover);
 }
 
-/* ── Jobs strip (console ticker + popover) ─────────────────────────────── */
-.spark-console .jobs-strip {
-  position: relative;
-  margin-left: auto;
-}
-.spark-console .jobs-strip__bar {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 4px 4px 4px 10px;
-  border-radius: 7px;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  box-shadow: inset 0 1px 2px var(--color-grid);
-  font-family: var(--mono);
-  font-size: var(--fs-11);
-  letter-spacing: -0.01em;
-  transition: border-color 0.15s;
-  color: var(--color-text);
-}
-.spark-console .jobs-strip__bar:hover {
-  border-color: var(--color-border-strong);
-}
-.spark-console .jobs-strip__toggle {
-  width: 22px;
-  height: 22px;
-  border-radius: 5px;
-  border: 1px solid var(--color-border);
-  background: var(--color-surface-elevated);
-  color: var(--color-muted);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s, transform 0.18s var(--ease);
-}
-.spark-console .jobs-strip__toggle:hover {
-  background: var(--color-border);
-  color: var(--color-text);
-}
-.spark-console .jobs-strip__toggle[aria-expanded="true"] {
-  transform: rotate(180deg);
-}
-.spark-console .jobs-pop {
-  position: absolute;
-  right: 0;
-  top: calc(100% + var(--space-2));
-  width: 440px;
-  max-width: 84vw;
-  z-index: 30;
-  border-radius: var(--mod-radius);
-  border: 1px solid var(--color-border-strong);
-  background: var(--color-surface-elevated);
-  box-shadow: var(--shadow-card-hover);
-  padding: var(--space-3);
-  display: none;
-}
-.spark-console .jobs-pop.is-open {
-  display: block;
-  animation: sc-pop-in 0.18s var(--ease);
-}
-@keyframes sc-pop-in {
-  from {
-    opacity: 0;
-    transform: translateY(-6px) scale(0.99);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-.spark-console .jobs-pop__title {
-  font-family: var(--mono);
-  font-size: var(--fs-10);
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--color-muted-strong);
-}
+/* ── Jobs (modelctl job rows, rendered inside CH·03) ────────────────────── */
 .spark-console .job-row {
   display: flex;
   align-items: center;
@@ -1611,11 +1447,6 @@
 }
 
 /* ── Tests: bench modules ──────────────────────────────────────────────── */
-.spark-console .tests-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--gap);
-}
 .spark-console .test-card {
   transition: border-color 0.18s, box-shadow 0.18s;
   gap: var(--space-2);
@@ -1751,9 +1582,6 @@
   }
   .spark-console .launch-grid {
     grid-template-columns: 1fr 1fr;
-  }
-  .spark-console .tests-grid {
-    grid-template-columns: 1fr;
   }
   .spark-console .dials {
     grid-template-columns: 1fr;

@@ -43,7 +43,7 @@ export function SparkActions({ spark, onEdit, className }: SparkActionsProps) {
     setAgentMsg(null);
     try {
       await startJob({ kind: "install-agent", sparkId: spark.id });
-      setAgentMsg({ text: "Agent install queued — watch the Models page job panel", tone: "ok" });
+      setAgentMsg({ text: "Agent install queued — watch the Jobs strip on this node's Models channel", tone: "ok" });
     } catch (err: unknown) {
       setAgentMsg({ text: err instanceof Error ? err.message : "Install failed", tone: "err" });
     } finally {

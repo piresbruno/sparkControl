@@ -2,9 +2,10 @@
  * CH·04 Tests — self-runs against the engine in CH·02.
  * Three instrument cards (Showcase / Decode bench / Prefill bench), each with
  * the Analysis source tag it stamps on its traces (traceMeta.source:
- * "showcase" / "bench" / "prefill-bench"). All keys are disabled while no
- * engine is up (or the port/model are unknown) so benchmarks can never fire
- * against a dead endpoint. Markup mirrors mockups/node-detail-v3.html CH·04.
+ * "showcase" / "bench" / "prefill-bench"). Showcase stays reachable without a
+ * live engine (legacy contract: view history / prepare a run); the benches
+ * require one. modelId is NOT required client-side — the server resolves it
+ * from the engine (index.js ~1514). Markup mirrors mockups/node-detail-v3.html CH·04.
  */
 import { useState, type CSSProperties } from "react";
 import { ScModule } from "./ScKit";
@@ -18,7 +19,6 @@ interface ScTestsProps {
   modelId: string | null;
   contextLength: number | null;
   llmAvailable: boolean;
-  hasServingScript: boolean;
 }
 
 /** Responsive card grid (stacks naturally on narrow viewports). */
@@ -30,8 +30,8 @@ const GRID_STYLE: CSSProperties = {
 };
 
 const CARD_STYLE: CSSProperties = { gap: "var(--space-2)" };
-
 const OFF_TITLE = "No engine running";
+const NO_PORT_TITLE = "No LLM port configured — enable LLM monitoring for this node";
 
 export function ScTests({
   sparkId,
@@ -42,9 +42,10 @@ export function ScTests({
 }: ScTestsProps) {
   const [benchOpen, setBenchOpen] = useState(false);
   const [prefillOpen, setPrefillOpen] = useState(false);
-
-  // Benches/dialogs need a concrete port + model id; nothing to run otherwise.
-  const engineUp = llmAvailable && primaryPort != null && modelId != null;
+  // Showcase: works offline to view history (legacy LlmPanel contract).
+  const showcaseUp = primaryPort != null;
+  // Benches: need a live endpoint; the server fills in the model id.
+  const engineUp = llmAvailable && primaryPort != null;
   const showcaseUrl = `/showcase/${encodeURIComponent(sparkId)}`;
 
   return (
@@ -60,7 +61,7 @@ export function ScTests({
             LLM prompt showcase with side-by-side model comparison streaming.
           </p>
           <div className="row">
-            {engineUp ? (
+            {showcaseUp ? (
               <a
                 className="key"
                 href={showcaseUrl}
@@ -73,7 +74,7 @@ export function ScTests({
               <span
                 className="key"
                 aria-disabled="true"
-                title={OFF_TITLE}
+                title={NO_PORT_TITLE}
                 style={{ opacity: 0.5, cursor: "not-allowed" }}
               >
                 Open Showcase →

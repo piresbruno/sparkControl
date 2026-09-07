@@ -185,6 +185,20 @@ const modelctl = createModelctlService({
   registry,
 });
 remoteJobs.startSweeper((id) => registry.getSpark(id));
+// A job reaching a terminal state may have changed the NAS store or a
+// node's modelctl install (download/sync/push/delete/install-modelctl).
+// Bust the affected caches so the next inventory read is fresh — otherwise
+// the client's post-completion refresh re-serves up to 60 s of stale data
+// (PR #5 review: just-deleted model kept rendering).
+remoteJobs.onJobTerminal = (job) => {
+  const caches = modelctl._caches;
+  if (!caches) return;
+  caches.nasCache.delete("nas");
+  if (job?.sparkId) {
+    caches.nodeCache.delete(job.sparkId);
+    caches.versionCache.delete(job.sparkId);
+  }
+};
 
 const agentRegistry = getAgentRegistry();
 
@@ -678,9 +692,9 @@ app.post("/api/jobs/:id/cancel", async (req, res) => {
 });
 
 // ─── Model inventories ────────────────────────────────────
-app.get("/api/models/nas", async (_req, res) => {
+app.get("/api/models/nas", async (req, res) => {
   try {
-    const r = await modelctl.listNasModels();
+    const r = await modelctl.listNasModels({ force: req.query.force === "1" });
     res.json(r);
   } catch (err) {
     res.json({ models: [], error: err.message });

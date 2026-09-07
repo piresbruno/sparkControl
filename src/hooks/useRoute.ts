@@ -106,14 +106,18 @@ export function useRoute(
   // Wrapped navigate function — updates URL + internal state
   const navigate = useCallback(
     (id: string | null) => {
+      // null means "overview" — activeId must become the OVERVIEW_ID
+      // sentinel, not plain null, or DashboardApp's displaySparks[0]
+      // fallback hijacks "/" until the next WS snapshot.
+      const nextId = id ?? OVERVIEW_ID;
       let url = "/";
-      if (id && id !== OVERVIEW_ID) {
-        if (id === ANALYSIS_ID) url = "/analysis";
-        else if (id === MODELS_ID) url = "/models";
-        else url = `/spark/${encodeURIComponent(id)}`;
+      if (nextId !== OVERVIEW_ID) {
+        if (nextId === ANALYSIS_ID) url = "/analysis";
+        else if (nextId === MODELS_ID) url = "/models";
+        else url = `/spark/${encodeURIComponent(nextId)}`;
       }
       window.history.pushState(null, "", url);
-      setActiveId(id);
+      setActiveId(nextId);
     },
     [setActiveId]
   );

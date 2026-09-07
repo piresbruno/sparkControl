@@ -190,8 +190,10 @@ function ServingHero({
     ? BACKEND_LABELS[llm.backend] ?? llm.backend
     : null;
   const title = llm?.modelId ? shortModelName(llm.modelId) : "No engine detected";
-  const loaded = loadedAgo(lifecycle.status);
-  const since = servingSince(lifecycle.status);
+  // The node-level serving status describes the *supervised* script, which
+  // serves the primary bay — extra bays must not show its loaded/stop state.
+  const loaded = isPrimary ? loadedAgo(lifecycle.status) : null;
+  const since = isPrimary ? servingSince(lifecycle.status) : "";
 
   // GPU busy while engine is down — the blind-spot pill (contract CH·02).
   const gpuSilent = !available && (gpuUsage ?? 0) >= 85;
@@ -436,7 +438,9 @@ function ServingHero({
             </ScChip>
             <ScChip>
               port {port}
-              {llmPorts.length > 1 ? (
+              {/* The server rejects primary-port removal (index.js ~1391) —
+                  legacy invariant: ✕ on non-primary bays only. */}
+              {llmPorts.length > 1 && !isPrimary ? (
                 <button
                   type="button"
                   title={`Remove port ${port}`}
@@ -501,7 +505,7 @@ function ServingHero({
             ) : null}
           </div>
           <div className="bay__keys">
-            {available ? (
+            {available && isPrimary ? (
               <button
                 type="button"
                 className="key key--danger key--block"

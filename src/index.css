@@ -2548,7 +2548,7 @@ html {
 .models-page {
   display: flex;
   flex-direction: column;
-  gap: var(--density-gap, 14px);
+  gap: var(--density-page-gap, 14px);
 }
 .models-toolbar {
   display: flex;
@@ -2558,6 +2558,47 @@ html {
 }
 .models-toolbar__spacer {
   flex: 1;
+}
+
+/* Variants ModelsPage uses; previously existed only inside .spark-console
+   (console.css), so the catalog rendered them as neutral full-size buttons. */
+.bench-btn--sm {
+  min-height: 1.75rem;
+  padding: 0.2rem 0.7rem;
+  font-size: 12px;
+}
+.bench-btn--run {
+  background: var(--color-success);
+  border-color: color-mix(in srgb, var(--color-success) 70%, var(--color-border));
+  color: #fff;
+}
+.bench-btn--run:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+.bench-btn--run:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.bench-btn--danger {
+  flex: 0 0 auto;
+  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 40%, var(--color-border));
+  background: transparent;
+  min-width: 0;
+}
+.bench-btn--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  border-color: color-mix(in srgb, var(--color-danger) 60%, var(--color-border));
+}
+.bench-status-pill--running {
+  background: color-mix(in srgb, var(--color-success) 12%, transparent);
+  color: var(--color-success);
+}
+.nas-table__actions {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* Download form — revealed by the toolbar CTA */

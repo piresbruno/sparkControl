@@ -38,6 +38,55 @@ interface SparkPageProps {
 const JOBS_POLL_ACTIVE_MS = 1000;
 const JOBS_POLL_IDLE_MS = 15000;
 
+/** Channel anchors, in document order. */
+const CHANNEL_ANCHORS = ["sec-resources", "sec-serving", "sec-models", "sec-tests"] as const;
+
+/**
+ * Scroll-spy: which channel header is above the viewport line, rAF-throttled.
+ * The console scrolls with the window (the rail is position:sticky).
+ */
+function useChannelSpy(): string {
+  const [active, setActive] = useState<string>(CHANNEL_ANCHORS[0]);
+  useEffect(() => {
+    let raf = 0;
+    const measure = () => {
+      raf = 0;
+      // Header band + sticky tab bar ≈ 96px; a channel is "current" once its
+      // anchor passed that line; last such anchor wins.
+      const line = 96;
+      let current: string = CHANNEL_ANCHORS[0];
+      for (const id of CHANNEL_ANCHORS) {
+        const el = document.getElementById(id);
+        if (el && el.getBoundingClientRect().top <= line) current = id;
+      }
+      // Bottom of page: short last channels can never cross the line —
+      // activate the bottom-most anchor that is on-screen at all.
+      if (window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2) {
+        for (let i = CHANNEL_ANCHORS.length - 1; i >= 0; i--) {
+          const el = document.getElementById(CHANNEL_ANCHORS[i]);
+          if (el && el.getBoundingClientRect().top < window.innerHeight) {
+            current = CHANNEL_ANCHORS[i];
+            break;
+          }
+        }
+      }
+      setActive((prev) => (prev === current ? prev : current));
+    };
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(measure);
+    };
+    measure();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+    };
+  }, []);
+  return active;
+}
+
 function dataField(k: string, v: string | null) {
   if (v == null || v === "" || v === "—") return null;
   return (
@@ -52,6 +101,7 @@ function dataField(k: string, v: string | null) {
 
 export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkPageProps) {
   const { metrics } = spark;
+  const activeChannel = useChannelSpy();
   const [disabledDevices, setDisabledDevices] = useState<string[]>(spark.disabledDevices || []);
   const [disabledInterfaces, setDisabledInterfaces] = useState<string[]>(
     spark.disabledInterfaces || []
@@ -450,6 +500,7 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
             short="Res"
             title="Resources"
             led={spark.online ? "accent" : "off"}
+            active={activeChannel === "sec-resources"}
           />
           <RailChannel
             target="sec-serving"
@@ -457,6 +508,7 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
             short="Srv"
             title="Serving"
             led={anyEngine ? "live" : "off"}
+            active={activeChannel === "sec-serving"}
           />
           <RailChannel
             target="sec-models"
@@ -464,8 +516,16 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
             short="Mdl"
             title="Models"
             led={jobsRunning ? "live" : modelctlEnabled ? "success" : "off"}
+            active={activeChannel === "sec-models"}
           />
-          <RailChannel target="sec-tests" num="04" short="Tst" title="Tests" led="off" />
+          <RailChannel
+            target="sec-tests"
+            num="04"
+            short="Tst"
+            title="Tests"
+            led="off"
+            active={activeChannel === "sec-tests"}
+          />
           <div className="rail__bus" aria-hidden="true" />
         </aside>
 
@@ -538,16 +598,12 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
             llmPorts={llmPorts}
             primaryPort={primaryPort}
             launchSignal={launchSignal}
-            storageFreeGb={
+            storageFreeGb={(() => {
               // Collectors report storage available in MB (SystemCollector statfs/df paths).
-              metrics.storage?.length
-                ? Math.round(
-                    Math.max(
-                      ...metrics.storage.filter((s) => !s.disabled).map((s) => s.available ?? 0)
-                    ) / 1024
-                  )
-                : null
-            }
+              const free = metrics.storage?.filter((s) => !s.disabled).map((s) => s.available ?? 0);
+              // Guard the FILTERED list — all devices disabled => empty spread => -Infinity.
+              return free && free.length > 0 ? Math.round(Math.max(...free) / 1024) : null;
+            })()}
             onNavigate={onNavigate}
           />
 
@@ -564,7 +620,6 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
             modelId={primaryLlm?.modelId ?? null}
             contextLength={primaryLlm?.contextLength ?? null}
             llmAvailable={Boolean(primaryLlm?.available)}
-            hasServingScript={true}
           />
         </div>
       </main>
@@ -578,18 +633,21 @@ function RailChannel({
   short,
   title,
   led,
+  active,
 }: {
   target: string;
   num: string;
   short: string;
   title: string;
   led: "off" | "live" | "success" | "accent";
+  active: boolean;
 }) {
   return (
     <button
-      className="rail__ch"
+      className={`rail__ch${active ? " rail__ch--active" : ""}`}
       type="button"
       title={title}
+      aria-current={active ? "true" : undefined}
       onClick={() =>
         document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "start" })
       }

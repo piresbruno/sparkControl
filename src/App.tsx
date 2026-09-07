@@ -290,6 +290,10 @@ function DashboardApp() {
             <ModelsPage />
           ) : displayActive ? (
             <SparkPage
+              /* Full remount per node: resets every channel's node-scoped state
+                 (enrolled override, inventories, selection, armed buttons, drafts)
+                 so a switch can't render/act on the previous node's data. */
+              key={displayActive.id}
               spark={displayActive}
               temperatureUnit={settings?.temperatureUnit ?? "celsius"}
               onEdit={() => setEditId(displayActive.id)}

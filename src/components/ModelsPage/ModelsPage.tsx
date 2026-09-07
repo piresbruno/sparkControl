@@ -11,11 +11,13 @@ import type {
 /**
  * Models tab = NAS catalog only (approved mockup mockups/models-page.html).
  * Per-node model management (sync / push / serve / stop) lives on the node
- * detail page's Models channel. The catalog polls the server's 60 s-cached
- * NAS inventory; a download/delete job completing triggers a refresh.
+ * detail page's Models channel. The catalog reads the server's 60 s-cached
+ * NAS inventory, refreshes when a job changes state (the server busts the
+ * cache on terminal), and re-reads on a 60 s backstop.
  */
 
 const JOBS_POLL_MS = 4000;
+const NAS_POLL_MS = 60_000;
 
 interface Toast {
   id: number;
@@ -87,14 +89,20 @@ export function ModelsPage() {
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4000);
   }, []);
 
-  const refreshNas = useCallback(async () => {
-    setNas(await listNasModels().catch((e) => ({ models: [], error: String(e) })));
+  const refreshNas = useCallback(async (force = false) => {
+    setNas(await listNasModels({ force }).catch((e) => ({ models: [], error: String(e) })));
   }, []);
 
-  const refreshModelctl = useCallback(async () => {
+  const refreshModelctl = useCallback(async (preferredId?: string | null) => {
     const { sparks } = await fetchSparks().catch(() => ({ sparks: [] as SparkConfig[] }));
+    // The inventory response carries the node the server actually used —
+    // trust it over the client-side heuristic (registry order can pick the
+    // wrong modelctlEnabled spark when several exist).
     const nasHost =
-      sparks.find((s) => s.modelctlEnabled) ?? sparks.find((s) => s.role === "head") ?? sparks.find((s) => s.isLocal);
+      (preferredId && sparks.find((s) => s.id === preferredId)) ||
+      sparks.find((s) => s.modelctlEnabled) ||
+      sparks.find((s) => s.role === "head") ||
+      sparks.find((s) => s.isLocal);
     if (!nasHost) {
       setModelctl(null);
       return;
@@ -106,23 +114,37 @@ export function ModelsPage() {
   useEffect(() => {
     void refreshNas();
     void refreshModelctl();
+    // Backstop: re-read on the server's cache TTL so the catalog self-heals
+    // even when a job transition was missed between polls.
+    const t = setInterval(() => void refreshNas(), NAS_POLL_MS);
+    return () => clearInterval(t);
   }, [refreshNas, refreshModelctl]);
 
-  // Job poll: surface the running job; a finished job refreshes the catalog.
-  const prevRunning = useRef("");
+  // Once the inventory resolves, the badge must describe THAT node.
+  useEffect(() => {
+    if (nas?.sparkId) void refreshModelctl(nas.sparkId);
+  }, [nas?.sparkId, refreshModelctl]);
+
+  // Job poll: surface the running job; a job reaching a TERMINAL state
+  // (anywhere in the list) refreshes the catalog. Keyed on the terminal set,
+  // not the running set — a job that starts and finishes between two 4 s
+  // polls never appears in runningIds but always grows the terminal set.
+  // force=true busts the server's 60 s NAS cache (the completion also busts
+  // it server-side via remoteJobs.onJobTerminal).
+  const prevTerminal = useRef<string | null>(null);
   const jobsPoll = useCallback(async () => {
     try {
       const { jobs } = await listJobs();
       setJobs(jobs);
-      const runningIds = jobs
-        .filter((j) => j.status === "running")
+      const terminalIds = jobs
+        .filter((j) => j.status !== "running")
         .map((j) => j.jobId)
         .sort()
         .join(",");
-      if (prevRunning.current && prevRunning.current !== runningIds) {
-        void refreshNas();
+      if (prevTerminal.current !== null && prevTerminal.current !== terminalIds) {
+        void refreshNas(true);
       }
-      prevRunning.current = runningIds;
+      prevTerminal.current = terminalIds;
     } catch {
       /* poll errors non-fatal */
     }
@@ -135,7 +157,7 @@ export function ModelsPage() {
   }, [jobsPoll]);
 
   const handleDownload = useCallback(async () => {
-    if (!dlRepo.trim()) return;
+    if (busy || !dlRepo.trim()) return;
     setBusy(true);
     try {
       await startJob({
@@ -158,9 +180,28 @@ export function ModelsPage() {
     }
   }, [dlRepo, dlName, dlQuant, dlRev, pushToast]);
 
+  // Destructive NAS-store removal: two-click armed, same pattern as the
+  // console's Stop key (ScServing). Arm → label flips to "Confirm delete" →
+  // second click posts; auto-disarms after 5 s; one row armed at a time.
+  const [armedDelete, setArmedDelete] = useState<string | null>(null);
+  const armTimer = useRef<number | null>(null);
+  const disarmDelete = useCallback(() => {
+    if (armTimer.current) window.clearTimeout(armTimer.current);
+    armTimer.current = null;
+    setArmedDelete(null);
+  }, []);
+  useEffect(() => disarmDelete, [disarmDelete]);
+
   const handleDelete = useCallback(
     async (model: NasModel) => {
       if (!model.name || busy) return;
+      if (armedDelete !== model.name) {
+        if (armTimer.current) window.clearTimeout(armTimer.current);
+        setArmedDelete(model.name);
+        armTimer.current = window.setTimeout(() => setArmedDelete(null), 5000);
+        return;
+      }
+      disarmDelete();
       setBusy(true);
       try {
         await startJob({ kind: "nas-delete", model: model.name });
@@ -171,7 +212,7 @@ export function ModelsPage() {
         setBusy(false);
       }
     },
-    [busy, pushToast]
+    [armedDelete, busy, disarmDelete, pushToast]
   );
 
   const models = nas?.models ?? [];
@@ -312,19 +353,21 @@ export function ModelsPage() {
                   {m.repository ?? "—"}
                 </span>
                 <span className="analysis-table__num">{gb(m.bytes)}</span>
-                <span className="analysis-table__actions">
+                <span className="nas-table__actions">
                   <button
                     type="button"
                     className="bench-btn bench-btn--sm bench-btn--danger"
                     disabled={busy || !m.name}
                     title={
                       m.name
-                        ? `Run \`modelctl delete ${m.name} --apply --yes\` on the NAS host (dry-run plan first, then apply)`
+                        ? armedDelete === m.name
+                          ? `Click again to delete ${m.name} from the NAS store NOW — modelctl delete --root … --apply --yes (removes it for every node)`
+                          : `Delete ${m.name} from the NAS store — two-step confirm; runs modelctl delete --root … --apply --yes on the NAS host`
                         : "Model has no store name"
                     }
                     onClick={() => void handleDelete(m)}
                   >
-                    Delete
+                    {armedDelete === m.name ? "Confirm delete" : "Delete"}
                   </button>
                 </span>
               </div>

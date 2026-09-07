@@ -103,6 +103,11 @@ export function ingestSnapshots(sparks: SparkSnapshot[]): void {
     if (m.ram) {
       pushHistory(`${s.id}:ram.percentage`, m.ram.percentage);
     }
+    if (m.unifiedMemory) {
+      // DGX Spark gauges render the unified pool — trend it as its own series
+      // so the Mem sparkline never plots a different metric than the number.
+      pushHistory(`${s.id}:unifiedMemory.percentage`, m.unifiedMemory.percentage);
+    }
     if (Array.isArray(m.llm)) {
       // Zip with snapshot.llmPorts so multi-port LLM series key distinctly.
       const ports = s.llmPorts ?? [];

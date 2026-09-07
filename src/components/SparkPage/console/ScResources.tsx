@@ -70,18 +70,22 @@ export function ScResources({
   const role = resolveSparkRole(spark);
 
   // Hist tails (metricsStore keys — appended on every WS ingest).
-  const memHist = useMetricsHistoryTail(spark.id, "ram.percentage");
   const gpuTempHist = useMetricsHistoryTail(spark.id, "gpu.temp");
   const cpuTempHist = useMetricsHistoryTail(spark.id, "cpu.temp");
   const usageHist = useMetricsHistoryTail(spark.id, "gpu.usage");
 
   // ── Mem gauge ──────────────────────────────────────────────────────────
   // DGX Spark reports the GB10 pool as unifiedMemory; plain hosts only have
-  // ram. Both carry { used, total, percentage } in MB.
+  // ram. Both carry { used, total, percentage } in MB. The sparkline trends
+  // whichever metric the gauge actually shows (they diverge on GB10 hosts).
   const um = metrics.unifiedMemory;
   const ram = metrics.ram;
-  const mem =
-    um != null && um.total > 0 ? um : ram != null && ram.total > 0 ? ram : null;
+  const memFromUm = um != null && um.total > 0;
+  const memHist = useMetricsHistoryTail(
+    spark.id,
+    memFromUm ? "unifiedMemory.percentage" : "ram.percentage"
+  );
+  const mem = memFromUm ? um : ram != null && ram.total > 0 ? ram : null;
   const memPct = mem?.percentage ?? null;
   const memWarn = memPct != null && memPct >= 85;
   const memUsedGb = mem ? fmtGB(mem.used * MB).replace(/ (GB|MB)$/, "") : "—";
@@ -269,7 +273,7 @@ export function ScResources({
             <ScSeg pct={stPct} tone={stPct >= 85 ? "warning" : "neutral"} />
             <span className="bus-hint">
               {roomiest
-                ? `${fmtGB((roomiest.available ?? 0) * MB)} free · ${shortMount(roomiest.label, roomiest.device)}`
+                ? `${fmtTBorGB((roomiest.available ?? 0) * MB)} free · ${shortMount(roomiest.label, roomiest.device)}`
                 : devices.length > 0
                   ? `${devices.length} devices`
                   : "no data"}

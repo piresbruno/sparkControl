@@ -85,7 +85,10 @@ describe("ModelsPage — NAS catalog only", () => {
     vi.mocked(startJob).mockResolvedValue({ jobId: "j2", kind: "nas-delete" } as never);
     render(<ModelsPage />);
     await waitFor(() => expect(screen.getByText("qwen3-32b-q4")).toBeTruthy());
+    // Two-click armed destructive pattern (house convention, ScServing stop).
     await user.click(screen.getAllByRole("button", { name: "Delete" })[0]);
+    expect(startJob).not.toHaveBeenCalled(); // arming click never posts
+    await user.click(await screen.findByRole("button", { name: "Confirm delete" }));
     await waitFor(() =>
       expect(startJob).toHaveBeenCalledWith(expect.objectContaining({ kind: "nas-delete", model: "qwen3-32b-q4" }))
     );

@@ -115,11 +115,13 @@ export function classifyActivity(
 export function tokenizeLogLine(line: string): Array<{ text: string; cls: string | null }> {
   const out: Array<{ text: string; cls: string | null }> = [];
   const lower = line.toLowerCase();
-  const level: string | null = /warn|deprecat/.test(lower)
+  // Word boundaries: unanchored /ok/ matched "token…" lines (the dominant
+  // vLLM/sgLang log voice) and tinted them green as successes.
+  const level: string | null = /\b(warn|warning|deprecat\w*)\b/.test(lower)
     ? "log-warn"
-    : /error|fail|exception|traceback/.test(lower)
+    : /\b(error|failed|failure|exception|traceback)\b/.test(lower)
       ? "log-err"
-      : /ok|ready|done|listening/.test(lower)
+      : /\b(ok|ready|done|listening)\b/.test(lower)
         ? "log-ok"
         : null;
   // leading timestamp (HH:MM:SS or ISO)

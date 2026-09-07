@@ -31,7 +31,7 @@ import {
   updateSpark,
 } from "../../../api/client";
 import { ScChip, ScModule, ScSubpanel } from "./ScKit";
-import { fmtGB, fmtInt, shortModelName, tokenizeLogLine } from "./consoleUtils";
+import { fmtGB, fmtInt, fmtSeconds, shortModelName, tokenizeLogLine } from "./consoleUtils";
 
 interface ScModelsProps {
   spark: SparkSnapshot;
@@ -86,10 +86,9 @@ function jobTime(ts: number | null): string {
   return Number.isFinite(d.getTime()) ? d.toLocaleTimeString([], { hour12: false }) : "";
 }
 
-/** House ms format (BenchmarkDialog convention): 380ms / 3.80s. */
+/** House ms format (shared with the console: 380ms / 3.80s / 1m 4s). */
 function fmtMs(ms: number | null | undefined): string {
-  if (ms == null || !Number.isFinite(ms)) return "—";
-  return ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${Math.round(ms)}ms`;
+  return fmtSeconds(ms == null ? null : ms / 1000);
 }
 
 function fmtTs(ts: number): string {
@@ -305,12 +304,15 @@ export function ScModels({
   const selectedOnNode = selectedName != null && nodeNames.includes(selectedName);
   const selectedOnNas = selectedName != null && (nasModels?.some((m) => m.name === selectedName) ?? false);
   const selectedModel = merged.find((m) => m.name === selectedName) ?? null;
+  // Token-exact match: job names are "sync m" / "push m → spark" /
+  // "delete-local m" and model names contain no whitespace — substring
+  // matching would disable "Foo-8B" while "Foo-8B-Instruct" runs.
   const modelJobBusy = useCallback(
     (name: string | null) =>
-      name != null && jobs.some((j) => j.status === "running" && j.name.includes(name)),
+      name != null &&
+      jobs.some((j) => j.status === "running" && j.name.split(/\s+/).includes(name)),
     [jobs]
   );
-
   /** Sync / delete-local / push all key on `model` (server/index.js ~604). */
   const runModelJob = useCallback(
     async (kind: MctlJob["kind"], name: string, extra?: { targetSparkId?: string }) => {

@@ -472,8 +472,8 @@ export function clearTraces(): Promise<{ success: boolean }> {
 }
 
 // ─── Model ops + serving (Part B) ─────────────────────────
-export function listNasModels(): Promise<InventoryResponse> {
-  return apiFetch("/api/models/nas");
+export function listNasModels(opts?: { force?: boolean }): Promise<InventoryResponse> {
+  return apiFetch(opts?.force ? "/api/models/nas?force=1" : "/api/models/nas");
 }
 
 export function listNodeModels(sparkId: string): Promise<InventoryResponse> {

@@ -357,13 +357,13 @@ function SparkCard({
                       <MiniStat
                         label="modelctl"
                         value={
-                          !spark.online
-                            ? "not installed"
-                            : modelctl === undefined
-                              ? "checking…"
-                              : modelctl === null || !modelctl.installed
-                                ? "not installed"
-                                : `v${modelctl.version ?? "?"}`
+                          // Card only renders stats when online (see the
+                          // "Host unreachable" gate) — no offline arm needed.
+                          modelctl === undefined
+                            ? "checking…"
+                            : modelctl === null || !modelctl.installed
+                              ? "not installed"
+                              : `v${modelctl.version ?? "?"}`
                         }
                         tone={modelctl?.installed ? "success" : "default"}
                         title={
@@ -456,17 +456,24 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
   >({});
   const mctlRequested = useRef<Set<string>>(new Set());
   useEffect(() => {
-    let cancelled = false;
     for (const id of workerIds) {
       if (mctlRequested.current.has(id)) continue;
       mctlRequested.current.add(id);
+      // No cancelled-guard: this effect re-runs on EVERY WS tick (sparks is
+      // a fresh array), so a per-run guard would discard every response that
+      // lands after the next tick — and the ref blocks a retry, stranding the
+      // card at "checking…". Writes are keyed by spark id (functional
+      // updater), so a late response can never clobber another node.
       void modelctlStatus(id)
-        .then((r) => !cancelled && setModelctlChecks((p) => ({ ...p, [id]: r })))
-        .catch(() => !cancelled && setModelctlChecks((p) => ({ ...p, [id]: null })));
+        .then((r) => setModelctlChecks((p) => ({ ...p, [id]: r })))
+        .catch(() => {
+          // Release the latch so a transient failure retries on the next
+          // tick; the server's 5-min cache absorbs the traffic. null keeps
+          // showing "not installed" until it succeeds.
+          mctlRequested.current.delete(id);
+          setModelctlChecks((p) => ({ ...p, [id]: null }));
+        });
     }
-    return () => {
-      cancelled = true;
-    };
   }, [workerIds]);
 
   const onlineShutdownCount = sparks.filter((s) => s.online).length;

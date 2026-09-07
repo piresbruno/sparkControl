@@ -1,5 +1,5 @@
 # ============================================================
-# sparkDash — Development Dockerfile with live reload
+# sparkControl — Development Dockerfile with live reload
 # ============================================================
 
 # See Dockerfile: avoid docker.io IPv6 auth failures on Sparks.

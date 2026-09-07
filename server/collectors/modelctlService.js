@@ -306,9 +306,11 @@ export function createModelctlService({ exec, getSettings, registry }) {
     versionCache.delete(sparkId);
   }
 
-  async function listNasModels() {
-    const cached = _cacheGet(nasCache.get("nas"), NAS_CACHE_TTL_MS);
-    if (cached) return cached;
+  async function listNasModels({ force = false } = {}) {
+    if (!force) {
+      const cached = _cacheGet(nasCache.get("nas"), NAS_CACHE_TTL_MS);
+      if (cached) return cached;
+    }
     const cfg = getSettings()?.modelctl || {};
     const spark = defaultNasSpark();
     if (!spark) {

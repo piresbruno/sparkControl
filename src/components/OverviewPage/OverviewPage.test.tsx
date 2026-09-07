@@ -10,7 +10,7 @@ vi.mock("../../api/client", () => ({
 }));
 
 import { modelctlStatus } from "../../api/client";
-import type { LlmMetrics, SparkSnapshot } from "../../api/types";
+import type { LlmMetrics, ModelctlStatus, SparkSnapshot } from "../../api/types";
 
 const llm = (
   over: Partial<LlmMetrics> & { modelId?: string; backend?: string; available?: boolean }
@@ -121,7 +121,7 @@ describe("OverviewPage worker attribution", () => {
     expect(screen.getByText("not installed")).toBeTruthy();
   });
 
-  it("offline worker does not claim an installed modelctl", async () => {
+  it("offline worker: card shows no stats and NO probe request is fired", async () => {
     const worker = snap("w3", {
       name: "Down",
       role: "worker",
@@ -131,8 +131,35 @@ describe("OverviewPage worker attribution", () => {
     });
     render(<OverviewPage sparks={[worker]} temperatureUnit="celsius" />);
     await waitFor(() => expect(screen.getByText("Host unreachable")).toBeTruthy());
-    expect(screen.queryByText("v0.13.0")).toBeNull();
-    expect(screen.queryByText("checking…")).toBeNull();
+    // The real offline contract: the probe effect must never fire for
+    // offline nodes (the stats grid isn't rendered at all, so asserting
+    // absent version text would be vacuous).
+    await new Promise((r) => setTimeout(r, 50));
+    expect(modelctlStatus).not.toHaveBeenCalled();
+  });
+
+  it("probe response survives the next WS tick (fresh sparks array)", async () => {
+    // Regression (PR #5 review): the effect's cleanup set cancelled=true on
+    // every re-run and the requested-set blocked retries, so a response
+    // landing after the next snapshot tick was permanently discarded —
+    // cards stuck at "checking…" forever.
+    let resolveProbe: (v: ModelctlStatus) => void = () => {};
+    vi.mocked(modelctlStatus).mockReturnValue(
+      new Promise((res) => {
+        resolveProbe = res;
+      })
+    );
+    const worker = snap("w4", { role: "worker", workerHeadId: "h1", modelctlEnabled: true });
+    const head = snap("h1", { role: "head" });
+    const { rerender } = render(
+      <OverviewPage sparks={[head, worker]} temperatureUnit="celsius" />
+    );
+    await waitFor(() => expect(modelctlStatus).toHaveBeenCalledWith("w4"));
+    // New tick: a brand-new array identity (what useSnapshot produces every
+    // ~2s) re-runs the effect; then the slow probe finally lands.
+    rerender(<OverviewPage sparks={[head, snap("w4", { role: "worker", workerHeadId: "h1", modelctlEnabled: true })]} temperatureUnit="celsius" />);
+    resolveProbe({ installed: true, version: "0.13.0", uv: { installed: true, version: "0.5.0" } });
+    await waitFor(() => expect(screen.getByText("v0.13.0")).toBeTruthy());
   });
 
   it("head card keeps showing its own served model and never fetches modelctl", async () => {

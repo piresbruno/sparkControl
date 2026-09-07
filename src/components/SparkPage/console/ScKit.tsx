@@ -191,6 +191,9 @@ export function ScCopy({ text, title }: { text: string; title: string }) {
   const timer = useRef<number | null>(null);
   useEffect(() => () => { if (timer.current) window.clearTimeout(timer.current); }, []);
   async function copy() {
+    // Honest feedback: with BOTH mechanisms failing (insecure context +
+    // denied execCommand) the checkmark must not lie.
+    let ok = true;
     try {
       await navigator.clipboard.writeText(text);
     } catch {
@@ -198,10 +201,10 @@ export function ScCopy({ text, title }: { text: string; title: string }) {
       ta.value = text;
       document.body.appendChild(ta);
       ta.select();
-      document.execCommand("copy");
+      ok = document.execCommand("copy");
       ta.remove();
     }
-    setCopied(true);
+    setCopied(ok);
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => setCopied(false), 1400);
   }

@@ -18,6 +18,11 @@ Format: version sections are listed newest first.
 - **Rebrand sparkDash → sparkControl** — title, favicon (four-point spark glyph, new `SparkIcon`), logo pills (app + showcase), version label, help texts, server log banners, README self-references, package description, Docker header + compose container names. Runtime identifiers are intentionally unchanged (`~/.sparkdash/`, `sparkdash-agent.mjs`, systemd unit, `sparkdash-theme` key, `SPARKDASH_*` env vars, package name) so bootstrapped nodes keep working.
 - **Models tab = NAS catalog only** — per the approved mockup: HF download form + Name/Runtime/Repository/Size/Delete table with a summary chip and stale/modelctl badges. The per-node matrix, node select, serving controls and active-jobs panel are removed — per-node model management lives on the node detail page (Models channel); a pointer note says so.
 
+### Fixed
+- **Analysis table alignment** — header and rows now share one grid, so every column lines up with its data; numeric columns (Tok/s, TTFT, Duration) are right-aligned tabular figures and the status pill no longer stretches. Narrow viewports scroll the table horizontally instead of crushing columns.
+- **Analysis TTFT/duration units** — values ≥ 1 s were rendered as `3.8kms`; they now format as `380ms` / `3.80s` / `1m 4s` (same convention as the bench dialogs), in the table and the trace detail sheet.
+- **Page-wide filter dropdowns** — the global `select { width: 100% }` rule wrapped the Analysis and Models serving filter bars onto their own full-width rows; toolbar selects now size to content (`.select-inline`).
+
 ---
 
 ## [1.8.6] — 2026-09-01
