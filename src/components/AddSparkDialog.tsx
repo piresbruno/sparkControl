@@ -237,12 +237,12 @@ export function AddSparkDialog({ open, onClose, onAdded, defaultLlmPort = 8888 }
               onChange={(e) => update({ agentEnabled: e.target.checked })}
               className="rounded border-border"
             />
-            sparkdash agent (outbound WS transport; SSH stays as fallback)
+            Spark Command Agent (outbound WS transport; SSH stays as fallback)
           </label>
 
           <div className="rounded border border-border bg-surface-elevated/40 p-2">
             <p className="mb-1 text-[10px] text-muted">
-              SSH credentials — also used to bootstrap the sparkdash agent on this node
+              SSH credentials — also used to bootstrap the Spark Command Agent on this node
               (required even for local units, since the dashboard may run in Docker).
             </p>
             <div className="mt-2">

@@ -173,7 +173,7 @@ export function SparkActions({ spark, onEdit, className }: SparkActionsProps) {
             type="button"
             onClick={() => void handleInstallAgent()}
             disabled={agentBusy || !online}
-            title="Bootstrap the sparkdash agent on this node over SSH (Node runtime → config → systemd → wait for first hello)"
+            title="Bootstrap the Spark Command Agent on this node over SSH (Node runtime → config → systemd → wait for first hello)"
             className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[11px] transition-colors disabled:opacity-50 ${
               agentMsg?.tone === "err"
                 ? "border-danger/40 text-danger"

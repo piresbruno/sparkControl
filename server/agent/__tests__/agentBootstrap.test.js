@@ -12,7 +12,7 @@ test("install script: node check → tarball → config 0600 → systemd ladder"
   const order = [
     ["NODE_BIN assignment", s.indexOf('NODE_BIN="$(command -v node || true)"')],
     ["curl tarball", s.indexOf("curl -fsSL https://nodejs.org")],
-    ["NODE_BIN HOME assignment", s.indexOf('NODE_BIN="$HOME/.sparkdash/agent/node/bin/node"')],
+    ["NODE_BIN HOME assignment", s.indexOf('NODE_BIN="$HOME/.sparkcontrol/agent/node/bin/node"')],
     ["exit on missing runtime", s.indexOf('ERROR: no usable node runtime found')],
     ["node --version run", s.indexOf('"$NODE_BIN" --version')],
     ["config.json write", s.indexOf("umask 077")],

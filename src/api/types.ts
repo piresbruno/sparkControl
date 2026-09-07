@@ -88,7 +88,7 @@ export interface SparkConfig {
    */
   modelctlEnabled?: boolean;
   /**
-   * C1: opt-in sparkdash agent transport (outbound WebSocket). Default false;
+   * C1: opt-in Spark Command Agent transport (outbound WebSocket). Default false;
    * SSH remains the fallback whenever the agent is absent or disconnected.
    */
   agentEnabled?: boolean;
@@ -221,6 +221,8 @@ export interface GpuMetrics {
   processes?: Array<{ pid: number; name: string; vramMB: number }>;
   /** NVIDIA clock throttle / thermal slowdown state from nvidia-smi. */
   throttle?: GpuThrottle | null;
+  /** Kernel NVRM NV_ERR_NO_MEMORY count since boot (cached ~60s). */
+  nvErrNoMemory?: number;
 }
 
 // ─── CPU metrics ─────────────────────────────────────────

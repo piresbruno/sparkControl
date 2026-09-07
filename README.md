@@ -1,14 +1,13 @@
-# sparkControl ⚡ — Multi-unit monitoring dashboard for NVIDIA DGX Spark
+# sparkControl ⚡ — LocalAI Command Center
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-arm64-2d9d78?style=flat-square" alt="Platform: ARM64">
   <img src="https://img.shields.io/badge/React-19-58c4dc?style=flat-square&logo=react" alt="React 19">
   <img src="https://img.shields.io/badge/Express-5-000000?style=flat-square&logo=express" alt="Express 5">
   <img src="https://img.shields.io/badge/license-MIT-2d9d78?style=flat-square" alt="MIT License">
+  <a href="https://github.com/MiaAI-Lab/sparkDash"><img src="https://img.shields.io/badge/fork-MiaAI--Lab%2FsparkDash-2d9d78?style=flat-square" alt="Fork of MiaAI-Lab/sparkDash"></a>
   <br>
-  <sub>by <a href="https://x.com/MiaAI_lab">Mia'a AI Lab</a></sub>
-  <br><br>
-  <a href="https://x.com/MiaAI_lab" target="_blank" style="display:inline-block;margin:0 8px;vertical-align:middle;"><img src="https://img.shields.io/badge/Follow%20me%20on%20X-000000?style=for-the-badge&logo=x&logoColor=white" alt="Follow Mia on X" height="28" style="height:28px;width:auto;vertical-align:middle;border:0;" /></a>
+  <sub>by <a href="https://github.com/piresbruno">piresbruno</a> · fork of <a href="https://github.com/MiaAI-Lab/sparkDash">sparkDash</a> by <a href="https://x.com/MiaAI_lab">Mia'a AI Lab</a></sub>
 </p>
 
 sparkControl is a real-time web dashboard for one or more **NVIDIA DGX Spark (GB10)** machines in a single browser window. It streams GPU, CPU, unified memory, storage, network, and local LLM metrics — and lets you add, edit, reorder, or remove Sparks from the UI without restarts or code changes.
@@ -17,7 +16,7 @@ It also supports **non-Spark units**: any Linux machine with an NVIDIA GPU (e.g.
 
 <img src="./assets/screenshot.jpg" alt="sparkControl Overview page with multiple DGX Spark units, GPU metrics, and LLM status">
 
-## Fork notice — LocalAI Command Center
+## About — fork of sparkDash
 
 This repository is a **fork of [MiaAI-Lab/sparkDash](https://github.com/MiaAI-Lab/sparkDash)** — the original
 multi-unit monitoring dashboard for NVIDIA DGX Spark by [Mia'a AI Lab](https://x.com/MiaAI_lab).
@@ -27,7 +26,7 @@ upstream project; this fork tracks upstream and extends it with the **LocalAI Co
 - **Analysis** — every inference request/response through a built-in reverse proxy, with payloads, timing, and tokens (SQLite, 1-week retention).
 - **modelctl integration** — NAS model store inventory, HF downloads, node sync/push over CX7, placement planning.
 - **Serving scripts** — user-authored bash scripts the dashboard supervises on any node (env contract, no generated serve commands).
-- **sparkdash agent** — an outbound-WebSocket daemon per node for push metrics, LLM probes, job execution, and serving supervision (SSH demoted to bootstrap + fallback).
+- **Spark Command Agent** — an outbound-WebSocket daemon per node for push metrics, LLM probes, job execution, and serving supervision (SSH demoted to bootstrap + fallback).
 - **Worker model identification** — Overview cards show the actually-running model on worker nodes.
 
 Upstream README follows, unchanged in structure. The upstream MIT license applies and is preserved in
@@ -36,11 +35,11 @@ Upstream README follows, unchanged in structure. The upstream MIT license applie
 
 ### LLM Prompt Showcase
 
-<a href="https://github.com/MiaAI-Lab/sparkDash/releases/download/media-showcase/llm-showcase.mp4">
+<a href="./assets/llm-showcase.mp4">
   <img src="./assets/llm-showcase.gif" alt="LLM Prompt Showcase — multi-terminal streaming demo (click for MP4)" width="100%">
 </a>
 
-<p align="center"><sub><a href="https://github.com/MiaAI-Lab/sparkDash/releases/download/media-showcase/llm-showcase.mp4">Download MP4</a> · also in <code>assets/llm-showcase.mp4</code></sub></p>
+<p align="center"><sub><a href="./assets/llm-showcase.mp4">Download MP4</a></sub></p>
 
 ---
 
@@ -151,15 +150,16 @@ with an env contract only — **no serve commands are generated**:
 - Start/Stop/Status/Log over SSH **or the agent**, with placement-aware start: a missing model returns 409 plus sync/push remediations.
 - Edit scripts directly on disk (config volume); they survive container restarts.
 
-### sparkdash agent
+### Spark Command Agent
 
 A small daemon on each node holding an **outbound WebSocket** to `ws://<dashboard>/agent-ws` (NAT/tailnet-friendly; SSH stays as bootstrap + fallback).
 
 - **Push metrics** (GPU/CPU/RAM/network/storage) at dashboard-configured cadences using the same collectors — snapshot shapes are identical, the UI cannot tell the transports apart. Snapshot gains `transport` + `agentVersion`.
 - **LLM probes on workers** at a 10 s detection cadence so Overview cards show the actually-running model.
 - **Job execution** (dashboard-supplied scripts, argv or shell mode, 100 KB output ring) and **serving supervision** (spawn, pidfile, 5 MB log rotation, process-group stop, reconnect re-attach).
-- **Bootstrap:** the spark detail page shows **Install agent** when enabled — chunked bundle upload over SSH, Node ≥18 tarball into `~/.sparkdash/agent/node`, `config.json` (token from the encrypted store), systemd system unit via `sudo -n` (user-unit + linger instructions in the job log as fallback).
+- **Bootstrap:** the spark detail page shows **Install agent** when enabled — chunked bundle upload over SSH, Node ≥18 tarball into `~/.sparkcontrol/agent/node`, `config.json` (token from the encrypted store), systemd system unit via `sudo -n` (user-unit + linger instructions in the job log as fallback).
 - **Token rotation:** Settings → Agent token → Regenerate pushes `config-update`; connected agents rewrite their config and re-auth. Disconnected agents must be re-bootstrapped.
+- **Upgrade note:** nodes bootstrapped before the agent rename keep the old `~/.sparkdash/agent` directory and `sparkdash-agent.service` unit; re-run **Install agent** once after upgrading to move them (old files can then be deleted manually).
 
 ### Worker model identification
 
@@ -175,8 +175,8 @@ Daily tok/s rollups stay gated to full-monitoring sparks.
 | `POLL_INTERVAL_LLM_DETECT` | Worker detection cadence (default 10000 ms) |
 | `SPARKDASH_JOBS_STATE_PATH` | Remote-job state file (default `config/modelctl-jobs.json`) |
 | `SPARKDASH_SERVING_CONFIG_DIR` / `SPARKDASH_SERVING_SOURCE_DIR` | Serving script dirs (runtime / seed source) |
-| `SPARKDASH_AGENT_BUNDLE` / `SPARKDASH_AGENT_CONFIG` | Agent bundle + node config overrides |
-| `npm run build:agent` | esbuild bundle → `agent/dist/sparkdash-agent.mjs` (required before install-agent) |
+| `SPARK_COMMAND_AGENT_BUNDLE` / `SPARK_COMMAND_AGENT_CONFIG` | Agent bundle + node config overrides |
+| `npm run build:agent` | esbuild bundle → `agent/dist/spark-command-agent.mjs` (required before install-agent) |
 | `npm run test:coverage` | c8 gate ≥ 75 % lines on `server/` + `agent/src` |
 | `npm run test:ui` | vitest + Testing Library (frontend behavior tests) |
 
@@ -225,7 +225,7 @@ The Spark page **Services** section shows the ComfyUI card. On Overview, a small
 - ComfyUI must be reachable from the **sparkControl server** on the probe host:
   - **Local Spark** (`isLocal`): sparkControl probes `127.0.0.1:{port}` (use Docker `network_mode: host` if the dashboard runs in a container).
   - **Remote Spark**: probe uses the Spark **LAN IP** (same as LLM probes).
-- For **Open** from another machine’s browser, Comfy should listen on a reachable interface (e.g. `--listen 0.0.0.0`), not only loopback, and the Spark’s **LAN IP** must be set correctly in Edit.
+- For **Open** from another machine's browser, Comfy should listen on a reachable interface (e.g. `--listen 0.0.0.0`), not only loopback, and the Spark's **LAN IP** must be set correctly in Edit.
 
 ### Config fields (persisted on the Spark)
 
@@ -496,6 +496,7 @@ Copy `.env.example` to `.env` if needed:
 | `POLL_INTERVAL_HERMES` | `600000` | Hermes Agent update check poll (ms) |
 | `POLL_INTERVAL_TAILSCALE` | `30000` | Tailnet probe poll (ms) |
 | `TAILSCALE_PROBE_TIMEOUT_MS` | `8000` | Timeout for `tailscale status --json` (ms) |
+| `POLL_INTERVAL_NVERR` | `60000` | Kernel journal scan for NVRM `NV_ERR_NO_MEMORY` (ms) |
 | `HERMES_UPDATE_TIMEOUT_MS` | `600000` | Hard timeout for running `hermes update` over SSH (ms) |
 | `POLL_INTERVAL_LIVENESS` | `5000` | Online/SSH liveness check (ms) |
 | `SPARKDASH_SECRETS_KEY` | _(auto)_ | Passphrase or 64-char hex for secret encryption |
@@ -614,7 +615,7 @@ Contributions are welcome. Conventions:
 
 ## License
 
-[MIT](./LICENSE) — Copyright (c) 2026 Mia'a AI Lab
+[MIT](./LICENSE) — Copyright (c) 2026 Mia'a AI Lab and piresbruno
 
 ---
 
