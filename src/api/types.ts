@@ -484,6 +484,8 @@ export interface SparkSnapshot {
   agentVersion?: string | null;
   /** C1: agent opt-in flag mirrored onto the snapshot for UI badges. */
   agentEnabled?: boolean;
+  /** B1: modelctl integration opt-in, mirrored for overview cards. */
+  modelctlEnabled?: boolean;
   online: boolean;
   /** Uptime in seconds, or null when offline */
   uptime: number | null;

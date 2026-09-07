@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
-import type { SparkSnapshot } from "../../api/types";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ModelctlStatus, SparkSnapshot } from "../../api/types";
 import { resolveSparkRole, isLlmDetectionEnabled } from "../../api/sparkRole";
-import { shutdownAllSparks, updateAllHermes, wakeAllSparks } from "../../api/client";
+import { shutdownAllSparks, updateAllHermes, wakeAllSparks, modelctlStatus } from "../../api/client";
 import { ConfirmShutdownDialog } from "../ConfirmShutdownDialog";
 import { MetricBar } from "../ui/MetricBar";
 import { ActivityIcon, PowerOffIcon, PowerOnIcon, RotateIcon } from "../ui/icons";
@@ -75,12 +75,15 @@ function MiniStat({
 
 function SparkCard({
   spark,
-  headSparkName,
+  headSpark,
+  modelctl,
   temperatureUnit,
   onSelect,
 }: {
   spark: SparkSnapshot;
-  headSparkName?: string | null;
+  headSpark?: SparkSnapshot | null;
+  /** Worker only: modelctl check (undefined = not fetched yet). */
+  modelctl?: ModelctlStatus | null;
   temperatureUnit: "celsius" | "fahrenheit";
   onSelect?: (id: string) => void;
 }) {
@@ -307,46 +310,72 @@ function SparkCard({
             {(() => {
               const role = resolveSparkRole(spark);
 
-              // Part D: workers run detection probes — render the live model
-              // when available; fall back to the static cluster label; show
-              // "no model running" when the probe reports nothing available.
+              // Part D / worker attribution: workers serve as part of a
+              // cluster — show who the head is, the model being served
+              // (head engine first, own detection probe as fallback), and
+              // the node's modelctl version when integration is enabled.
               if (role === "worker") {
-                const llmArr = spark.metrics.llm;
-                const llm = Array.isArray(llmArr) ? llmArr.find((l) => l.available) : null;
-                if (llm) {
-                  return (
-                    <MiniStat
-                      label={llm.backend === "vllm" ? "vLLM" : llm.backend ?? "LLM"}
-                      value={llm.modelId ?? "unknown"}
-                      tone="accent"
-                      title={llm.modelId ?? undefined}
-                      wrap
-                    />
-                  );
-                }
-                if (isLlmDetectionEnabled(spark)) {
-                  return (
-                    <MiniStat
-                      label="Worker"
-                      value="no model running"
-                      tone="default"
-                      title="Detection probe found no engine on the configured LLM ports"
-                      wrap
-                    />
-                  );
-                }
-                const label = spark.workerLabel?.trim() || "distributed";
-                const title = headSparkName
-                  ? `${label} · worker of ${headSparkName}`
-                  : `${label} · distributed LLM worker`;
+                const headLlm =
+                  headSpark && Array.isArray(headSpark.metrics.llm)
+                    ? headSpark.metrics.llm.find((l) => l.available)
+                    : null;
+                const ownLlm = Array.isArray(spark.metrics.llm)
+                  ? spark.metrics.llm.find((l) => l.available)
+                  : null;
+                const llm = headLlm ?? ownLlm;
+                const backendLabel =
+                  llm?.backend === "vllm" ? "vLLM" : llm?.backend ?? "Model";
                 return (
-                  <MiniStat
-                    label="Worker"
-                    value={label}
-                    tone="accent"
-                    title={title}
-                    wrap
-                  />
+                  <>
+                    <MiniStat
+                      label="Head"
+                      value={headSpark?.name ?? spark.workerLabel?.trim() ?? "unassigned"}
+                      tone="accent"
+                      wrap
+                      title={
+                        headSpark
+                          ? `Worker of ${headSpark.name}`
+                          : spark.workerHeadId
+                            ? `Head spark "${spark.workerHeadId}" is not registered`
+                            : "No head configured for this worker"
+                      }
+                    />
+                    <MiniStat
+                      label={backendLabel}
+                      value={llm?.modelId ?? (isLlmDetectionEnabled(spark) ? "no model serving" : "not monitored")}
+                      tone={llm ? "accent" : "default"}
+                      title={
+                        llm
+                          ? headLlm
+                            ? `Model served by head${headSpark ? ` ${headSpark.name}` : ""}`
+                            : "Model detected on this worker's LLM ports"
+                          : "No engine detected on the head or this worker"
+                      }
+                      wrap
+                    />
+                    {spark.modelctlEnabled && (
+                      <MiniStat
+                        label="modelctl"
+                        value={
+                          !spark.online
+                            ? "not installed"
+                            : modelctl === undefined
+                              ? "checking…"
+                              : modelctl === null || !modelctl.installed
+                                ? "not installed"
+                                : `v${modelctl.version ?? "?"}`
+                        }
+                        tone={modelctl?.installed ? "success" : "default"}
+                        title={
+                          modelctl?.installed
+                            ? `modelctl ${modelctl.version ?? "?"} on this node`
+                            : modelctl && typeof modelctl.error === "string"
+                              ? modelctl.error
+                              : undefined
+                        }
+                      />
+                    )}
+                  </>
                 );
               }
 
@@ -412,6 +441,33 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
   const [shutdownOpen, setShutdownOpen] = useState(false);
   /** Spark ids we started a batch Hermes update on; drives the live progress bar. */
   const [batchRun, setBatchRun] = useState<string[] | null>(null);
+
+  // Worker attribution: modelctl version per opt-in worker. The server caches
+  // version probes (5 min TTL), so one lazy fetch per node id is cheap.
+  const workerIds = useMemo(
+    () =>
+      sparks
+        .filter((s) => s.online && resolveSparkRole(s) === "worker" && s.modelctlEnabled)
+        .map((s) => s.id),
+    [sparks]
+  );
+  const [modelctlChecks, setModelctlChecks] = useState<
+    Record<string, ModelctlStatus | null | undefined>
+  >({});
+  const mctlRequested = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    let cancelled = false;
+    for (const id of workerIds) {
+      if (mctlRequested.current.has(id)) continue;
+      mctlRequested.current.add(id);
+      void modelctlStatus(id)
+        .then((r) => !cancelled && setModelctlChecks((p) => ({ ...p, [id]: r })))
+        .catch(() => !cancelled && setModelctlChecks((p) => ({ ...p, [id]: null })));
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [workerIds]);
 
   const onlineShutdownCount = sparks.filter((s) => s.online).length;
   const hermesMonitoredCount = sparks.filter((s) => s.hermes?.monitoring).length;
@@ -665,11 +721,12 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
           <SparkCard
             key={spark.id}
             spark={spark}
-            headSparkName={
+            headSpark={
               spark.workerHeadId
-                ? sparks.find((s) => s.id === spark.workerHeadId)?.name ?? null
+                ? sparks.find((s) => s.id === spark.workerHeadId) ?? null
                 : null
             }
+            modelctl={modelctlChecks[spark.id]}
             temperatureUnit={temperatureUnit}
             onSelect={onSelectSpark}
           />
