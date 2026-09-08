@@ -163,6 +163,15 @@ import {
   buildDeleteLocalScript,
   buildNasDeleteScript,
   buildInstallModelctlScript,
+  buildQueueScript,
+  buildCatalogRefreshScript,
+  buildRepairActiveScript,
+  buildCleanupQuarantineScript,
+  buildSyncCardsScript,
+  buildUpdateScript,
+  validateQueueRequest,
+  buildStagingAuditCommand,
+  buildObjectsAuditCommand,
   planPlacement,
   validModelName,
 } from "./collectors/modelctlService.js";
@@ -190,10 +199,18 @@ remoteJobs.startSweeper((id) => registry.getSpark(id));
 // Bust the affected caches so the next inventory read is fresh — otherwise
 // the client's post-completion refresh re-serves up to 60 s of stale data
 // (PR #5 review: just-deleted model kept rendering).
+/** NAS-store job kinds: run on the resolved NAS spark and bust store read caches on completion. */
+const NAS_STORE_JOB_KINDS = new Set(["queue", "catalog-refresh", "repair-active", "cleanup-quarantine", "sync-cards", "update"]);
 remoteJobs.onJobTerminal = (job) => {
   const caches = modelctl._caches;
   if (!caches) return;
   caches.nasCache.delete("nas");
+  // update / sync-cards can change the modelctl install state itself and the
+  // doctor verdict; store kinds also reshuffle catalog + per-model detail.
+  const bustDoctor = job?.kind === "update" || job?.kind === "sync-cards";
+  if (job?.kind && NAS_STORE_JOB_KINDS.has(job.kind)) {
+    modelctl.invalidateNasCaches({ doctor: bustDoctor });
+  }
   if (job?.sparkId) {
     caches.nodeCache.delete(job.sparkId);
     caches.versionCache.delete(job.sparkId);
@@ -297,12 +314,19 @@ app.post("/api/sparks/test", async (req, res) => {
     }
     const llmPort = resolveLlmPort(spark);
     const comfyPort = resolveComfyPort(spark);
+    // kind "nas" (from the add-node role picker): a store node serves nothing
+    // and never runs ComfyUI — both probes report as skipped.
+    const nasSkip = body.kind === "nas" ? "skipped (NAS node)" : null;
     const [sshResult, llmResult, comfyResult] = await Promise.all([
       spark.isLocal ? Promise.resolve({ ok: true, message: "local (skipped SSH)" }) : sshTest(spark),
-      llmTest(spark, llmPort),
-      spark.comfyMonitoring
-        ? comfyTest(spark, comfyPort)
-        : Promise.resolve({ ok: true, message: "disabled", skipped: true }),
+      nasSkip
+        ? Promise.resolve({ ok: true, message: nasSkip, skipped: true })
+        : llmTest(spark, llmPort),
+      nasSkip
+        ? Promise.resolve({ ok: true, message: nasSkip, skipped: true })
+        : spark.comfyMonitoring
+          ? comfyTest(spark, comfyPort)
+          : Promise.resolve({ ok: true, message: "disabled", skipped: true }),
     ]);
     res.json({
       id: spark.id,
@@ -481,12 +505,16 @@ app.post("/api/sparks/:id/test", async (req, res) => {
     const spark = registry.getSpark(req.params.id);
     if (!spark) return res.status(404).json({ error: "Spark not found" });
 
+    // A NAS node serves nothing: the LLM/Comfy probes are meaningless there.
+    const isNas = spark.kind === "nas";
     const [sshResult, llmResult, comfyResult] = await Promise.all([
       spark.isLocal ? Promise.resolve({ ok: true, message: "local (skipped SSH)" }) : sshTest(spark),
-      llmTest(spark, resolveLlmPort(spark)),
-      spark.comfyMonitoring
-        ? comfyTest(spark, resolveComfyPort(spark))
-        : Promise.resolve({ ok: true, message: "disabled", skipped: true }),
+      isNas
+        ? Promise.resolve({ ok: true, message: "skipped (NAS node)", skipped: true })
+        : llmTest(spark, resolveLlmPort(spark)),
+      isNas || !spark.comfyMonitoring
+        ? Promise.resolve({ ok: true, message: isNas ? "skipped (NAS node)" : "disabled", skipped: true })
+        : comfyTest(spark, resolveComfyPort(spark)),
     ]);
     res.json({
       id: req.params.id,
@@ -502,7 +530,11 @@ app.post("/api/sparks/:id/test", async (req, res) => {
 });
 
 // ─── Remote jobs + modelctl (B5 batch 1) ──────────────────
-const MODEL_JOB_KINDS = new Set(["download", "sync", "push", "delete-local", "nas-delete", "install-modelctl", "install-agent", "update-agent"]);
+const MODEL_JOB_KINDS = new Set([
+  "download", "sync", "push", "delete-local", "nas-delete", "install-modelctl", "install-agent", "update-agent",
+  // NAS-host store ops (run on the resolved NAS spark; NAS_STORE_JOB_KINDS).
+  "queue", "catalog-refresh", "repair-active", "cleanup-quarantine", "sync-cards", "update",
+]);
 
 /** Shared job-poll context: registry spark lookup (may be gone mid-job). */
 function jobSpark(id) {
@@ -527,13 +559,16 @@ app.post("/api/jobs", async (req, res) => {
       if (!body.repo || typeof body.repo !== "string" || body.repo.length > 200) {
         return res.status(400).json({ error: "repo is required (max 200 chars)" });
       }
-      if (!cfg.nasRoot) return res.status(400).json({ error: "modelctl.nasRoot not configured" });
       if (body.name && !validModelName(body.name)) return res.status(400).json({ error: "invalid model name" });
       spark = modelctl.defaultNasSpark();
       if (!spark) return res.status(409).json({ error: "no spark available for NAS operations" });
+      // Per-spark root (kind "nas" nodes carry their own nasRoot); falls back
+      // to the global settings.modelctl.nasRoot — unchanged for old setups.
+      const nasRoot = modelctl.nasRootFor(spark);
+      if (!nasRoot) return res.status(400).json({ error: "modelctl.nasRoot not configured" });
       script = buildDownloadScript({
         repo: body.repo,
-        nasRoot: cfg.nasRoot,
+        nasRoot,
         name: body.name,
         quantization: body.quantization,
         revision: body.revision,
@@ -545,11 +580,58 @@ app.post("/api/jobs", async (req, res) => {
       // NAS (defaultNasSpark), mirroring every other NAS op.
       const m = body.model;
       if (!validModelName(m)) return res.status(400).json({ error: "invalid or missing model name" });
-      if (!cfg.nasRoot) return res.status(400).json({ error: "modelctl.nasRoot not configured" });
       spark = modelctl.defaultNasSpark();
       if (!spark) return res.status(409).json({ error: "no spark available for NAS operations" });
-      script = buildNasDeleteScript({ name: m, nasRoot: cfg.nasRoot, remoteBin: cfg.remoteBin });
+      const nasRoot = modelctl.nasRootFor(spark);
+      if (!nasRoot) return res.status(400).json({ error: "modelctl.nasRoot not configured" });
+      script = buildNasDeleteScript({ name: m, nasRoot, remoteBin: cfg.remoteBin });
       name = `delete ${m} (NAS)`;
+    } else if (NAS_STORE_JOB_KINDS.has(kind)) {
+      // NAS-store operations run ON the resolved NAS spark (kind "nas" node
+      // wins; else the legacy chain) with that spark's per-node root.
+      // body.sparkId is accepted as an explicit target override (404/409 like
+      // the per-model else-branch today).
+      if (body.sparkId) {
+        spark = registry.getSpark(body.sparkId);
+        if (!spark) return res.status(404).json({ error: "Spark not found" });
+        if (!spark.modelctlEnabled) {
+          return res.status(409).json({ error: `modelctl is not enabled on ${body.sparkId}` });
+        }
+      } else {
+        spark = modelctl.defaultNasSpark();
+        if (!spark) return res.status(409).json({ error: "no spark available for NAS operations" });
+      }
+      const nasRoot = modelctl.nasRootFor(spark);
+      if (!nasRoot) return res.status(400).json({ error: "modelctl.nasRoot not configured" });
+      if (kind === "queue") {
+        const v = validateQueueRequest(body.entries, body.jobs);
+        if (v.error) return res.status(400).json({ error: v.error });
+        script = buildQueueScript({ entries: v.entries, jobs: v.jobs, nasRoot, remoteBin: cfg.remoteBin });
+        name = `queue downloads (${v.entries.length})`;
+      } else if (kind === "catalog-refresh") {
+        script = buildCatalogRefreshScript({ nasRoot, remoteBin: cfg.remoteBin });
+        name = "refresh catalog";
+      } else if (kind === "repair-active") {
+        if (body.model != null && body.model !== "" && !validModelName(body.model)) {
+          return res.status(400).json({ error: "invalid model name" });
+        }
+        script = buildRepairActiveScript({ model: body.model || null, nasRoot, remoteBin: cfg.remoteBin });
+        name = body.model ? `repair active ${body.model}` : "repair active refs";
+      } else if (kind === "cleanup-quarantine") {
+        if (!validModelName(body.model)) return res.status(400).json({ error: "invalid or missing model name" });
+        script = buildCleanupQuarantineScript({ model: body.model, nasRoot, remoteBin: cfg.remoteBin });
+        name = `cleanup-quarantine ${body.model}`;
+      } else if (kind === "sync-cards") {
+        if (body.model != null && body.model !== "" && !validModelName(body.model)) {
+          return res.status(400).json({ error: "invalid model name" });
+        }
+        script = buildSyncCardsScript({ model: body.model || null, nasRoot, remoteBin: cfg.remoteBin });
+        name = body.model ? `sync cards ${body.model}` : "sync cards";
+      } else if (kind === "update") {
+        if (!validModelName(body.model)) return res.status(400).json({ error: "invalid or missing model name" });
+        script = buildUpdateScript({ model: body.model, nasRoot, remoteBin: cfg.remoteBin });
+        name = `update ${body.model}`;
+      }
     } else {
       const sparkId = body.sparkId;
       if (!sparkId) return res.status(400).json({ error: "sparkId is required" });
@@ -720,6 +802,94 @@ app.get("/api/sparks/:id/modelctl", async (req, res) => {
   if (!spark) return res.status(404).json({ error: "Spark not found" });
   const r = await modelctl.checkModelctl(spark, { force: req.query.force === "1" });
   res.json(r);
+});
+
+// ─── NAS node read endpoints (/api/modelctl) ─────────────
+/** GitHub latest-release probe for the modelctl CLI (cached 15 min; never throws). */
+app.get("/api/modelctl/release", async (_req, res) => {
+  const r = await modelctl.checkRelease();
+  res.json(r);
+});
+
+/** `modelctl doctor --json` on the NAS spark (30 s exec, 60 s cache, stale 5×). */
+app.get("/api/modelctl/doctor", async (req, res) => {
+  try {
+    const r = await modelctl.runNasDoctor({ force: req.query.force === "1" });
+    res.json(r);
+  } catch (err) {
+    res.json({ report: null, checkedAt: Date.now(), stale: false, error: err.message });
+  }
+});
+
+/** catalog.json read on the NAS spark (schema/generation/models; parse error tolerated). */
+app.get("/api/modelctl/catalog", async (req, res) => {
+  try {
+    const r = await modelctl.fetchNasCatalog({ force: req.query.force === "1" });
+    res.json(r);
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
+/** path + serve-command + RUN.md excerpt for one active model in the NAS store. */
+app.get("/api/modelctl/nas/:model/detail", async (req, res) => {
+  const model = req.params.model;
+  if (!validModelName(model)) return res.status(400).json({ error: "invalid model name" });
+  try {
+    const r = await modelctl.fetchNasModelDetail(model, { force: req.query.force === "1" });
+    res.json(r);
+  } catch (err) {
+    res.json({ path: null, serveCommand: null, runMd: null, error: err.message });
+  }
+});
+
+/** Dry-run delete plan (live — never cached; the operator acts on this). */
+app.get("/api/modelctl/nas/:model/delete-plan", async (req, res) => {
+  const model = req.params.model;
+  if (!validModelName(model)) return res.status(400).json({ error: "invalid model name" });
+  try {
+    const r = await modelctl.fetchNasDeletePlan(model);
+    res.json(r);
+  } catch (err) {
+    res.json({ plan: "", error: err.message });
+  }
+});
+
+/** Read-only store audits (text output; run on the NAS spark, 30 s exec). */
+app.get("/api/modelctl/staging-audit", async (_req, res) => {
+  try {
+    const spark = modelctl.defaultNasSpark();
+    if (!spark) return res.json({ text: "", error: "no spark available for NAS operations" });
+    const nasRoot = modelctl.nasRootFor(spark);
+    if (!nasRoot) return res.json({ text: "", error: "nasRoot not configured" });
+    const cfg = getSettings().modelctl || {};
+    const out = await execOnSpark(
+      spark,
+      buildStagingAuditCommand({ nasRoot, remoteBin: cfg.remoteBin || "modelctl" }),
+      { timeoutMs: 30_000 }
+    );
+    res.json({ text: String(out || "") });
+  } catch (err) {
+    res.json({ text: "", error: err.message });
+  }
+});
+
+app.get("/api/modelctl/objects-audit", async (_req, res) => {
+  try {
+    const spark = modelctl.defaultNasSpark();
+    if (!spark) return res.json({ text: "", error: "no spark available for NAS operations" });
+    const nasRoot = modelctl.nasRootFor(spark);
+    if (!nasRoot) return res.json({ text: "", error: "nasRoot not configured" });
+    const cfg = getSettings().modelctl || {};
+    const out = await execOnSpark(
+      spark,
+      buildObjectsAuditCommand({ nasRoot, remoteBin: cfg.remoteBin || "modelctl" }),
+      { timeoutMs: 30_000 }
+    );
+    res.json({ text: String(out || "") });
+  } catch (err) {
+    res.json({ text: "", error: err.message });
+  }
 });
 
 /** GET /api/sparks/:id/agent — transport state for the UI badge. */

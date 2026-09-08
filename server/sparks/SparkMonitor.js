@@ -480,6 +480,7 @@ export class SparkMonitor {
       workerNode: Boolean(this.spark.workerNode),
       agentEnabled: Boolean(this.spark.agentEnabled),
       modelctlEnabled: Boolean(this.spark.modelctlEnabled),
+      nasRoot: this.spark.nasRoot || "",
       role: this.spark.role || (this.spark.workerNode ? "worker" : "standalone"),
       workerLabel: this.spark.workerLabel || null,
       workerHeadId: this.spark.workerHeadId || null,

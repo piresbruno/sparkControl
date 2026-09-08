@@ -107,3 +107,78 @@ test("config change listeners fire on add", () => {
   reg.addSpark(cfg("spark-f"));
   assert.ok(fired >= 1);
 });
+
+test("kind nas: forces monitoring off, standalone role, modelctl on; persists nasRoot", () => {
+  const reg = new SparkRegistry();
+  const nas = reg.addSpark(cfg("nas1", {
+    kind: "nas",
+    // Everything below must be coerced away by the registry:
+    role: "head",
+    llmMonitoring: true,
+    comfyMonitoring: true,
+    tailscaleMonitoring: true,
+    hermesMonitoring: true,
+    modelctlEnabled: false,
+    nasRoot: "  /mnt/nas/llm-models  ",
+  }));
+  assert.equal(nas.kind, "nas");
+  assert.equal(nas.role, "standalone");
+  assert.equal(nas.workerNode, false);
+  assert.equal(nas.workerHeadId, null);
+  assert.equal(nas.workerLabel, null);
+  assert.equal(nas.llmMonitoring, false);
+  assert.equal(nas.comfyMonitoring, false);
+  assert.equal(nas.tailscaleMonitoring, false);
+  assert.equal(nas.hermesMonitoring, false);
+  assert.equal(nas.modelctlEnabled, true, "NAS node always runs modelctl");
+  assert.equal(nas.agentEnabled, false, "agent stays opt-in");
+  assert.equal(nas.nasRoot, "/mnt/nas/llm-models", "trimmed, persisted");
+  const onDisk = JSON.parse(fs.readFileSync(process.env.SPARKS_JSON_PATH, "utf8"));
+  assert.equal(onDisk.sparks[0].nasRoot, "/mnt/nas/llm-models");
+  assert.equal(onDisk.sparks[0].kind, "nas");
+});
+
+test("kind nas: empty nasRoot persists as \"\" (= use global)", () => {
+  const reg = new SparkRegistry();
+  const nas = reg.addSpark(cfg("nas2", { kind: "nas", nasRoot: "   " }));
+  assert.equal(nas.nasRoot, "");
+});
+
+test("worker converted to nas via PATCH loses worker attribution", () => {
+  const reg = new SparkRegistry();
+  reg.addSpark(cfg("w2", { role: "worker", workerLabel: "Team", workerHeadId: "h1" }));
+  const upd = reg.updateSpark("w2", { kind: "nas" });
+  assert.equal(upd.kind, "nas");
+  assert.equal(upd.role, "standalone");
+  assert.equal(upd.workerNode, false);
+  assert.equal(upd.workerLabel, null);
+  assert.equal(upd.workerHeadId, null);
+  assert.equal(upd.modelctlEnabled, true);
+});
+
+test("kind host/spark unchanged by the nas coercion; unknown kind rejected", () => {
+  const reg = new SparkRegistry();
+  const host = reg.addSpark(cfg("h1", {
+    kind: "host",
+    comfyMonitoring: true,
+    tailscaleMonitoring: true,
+    hermesMonitoring: true,
+    modelctlEnabled: true,
+    nasRoot: "/ignored-but-persisted",
+  }));
+  assert.equal(host.kind, "host");
+  assert.equal(host.comfyMonitoring, true);
+  assert.equal(host.tailscaleMonitoring, true);
+  assert.equal(host.hermesMonitoring, true);
+  assert.equal(host.modelctlEnabled, true);
+  assert.equal(host.nasRoot, "/ignored-but-persisted");
+  const plain = reg.addSpark(cfg("s1", { kind: "spark" }));
+  assert.equal(plain.kind, "spark");
+  assert.equal(plain.modelctlEnabled, false);
+  assert.throws(() => reg.addSpark(cfg("x1", { kind: "bogus" })), /Invalid Spark kind/);
+  assert.throws(() => reg.updateSpark("s1", { kind: "nas2" }), /Invalid Spark kind/);
+  // A partial PATCH without kind never trips the check.
+  const ok = reg.updateSpark("s1", { name: "Renamed" });
+  assert.equal(ok.name, "Renamed");
+  assert.equal(ok.kind, "spark");
+});

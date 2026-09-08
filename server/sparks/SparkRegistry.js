@@ -2,7 +2,7 @@ import fs from "fs";
 import { SPARKS_JSON_PATH, LLM_PORT } from "../config.js";
 import { loadSecrets, saveSecrets } from "../secretsStore.js";
 import { atomicWrite } from "../util/atomicWrite.js";
-import { isValidSparkId } from "../validate.js";
+import { isValidSparkId, isValidSparkKind, SPARK_KINDS } from "../validate.js";
 
 /**
  * SparkRegistry — loads, persists, and emits change events for the Spark list.
@@ -71,6 +71,11 @@ export class SparkRegistry {
         "Invalid Spark id: allowed characters are a-z A-Z 0-9 . _ -, length 1–64, and reserved names are not allowed"
       );
     }
+    if (!isValidSparkKind(config.kind)) {
+      throw new Error(
+        `Invalid Spark kind: must be one of ${[...SPARK_KINDS].join(", ")}`
+      );
+    }
     if (this.getSpark(config.id)) throw new Error(`Spark ${config.id} already exists`);
     const spark = this._normalizeConfig(config);
     this._storePassword(spark.id, config?.ssh?.password);
@@ -114,6 +119,14 @@ export class SparkRegistry {
 
     /** @type {Record<string, unknown>} */
     const safeUpdates = { ...rawUpdates };
+
+    // Explicit kind changes are validated (a bad kind must not silently
+    // downgrade to "spark" through normalize).
+    if (Object.prototype.hasOwnProperty.call(safeUpdates, "kind") && !isValidSparkKind(safeUpdates.kind)) {
+      throw new Error(
+        `Invalid Spark kind: must be one of ${[...SPARK_KINDS].join(", ")}`
+      );
+    }
 
     // Null / invalid role must not clobber a persisted role. Otherwise
     // normalize falls through to workerNode and can flip worker → standalone
@@ -475,14 +488,24 @@ export class SparkRegistry {
       auth: sshIn.auth === "pass" ? "pass" : "key",
     };
     const llmPorts = this._normalizeLlmPorts(config.llmPorts ?? config.llmPort);
-    const role = this._normalizeRole(config);
+    // Unknown kinds are rejected at the REST edge (isValidSparkKind); a stale
+    // persisted value falls back to "spark" here rather than throwing on load.
+    const kind = SPARK_KINDS.has(config.kind) ? config.kind : "spark";
+    /**
+     * kind "nas": a node that manages a modelctl NAS store over SSH and serves
+     * nothing. Every GPU/serving/comfy/tailnet/hermes probe is meaningless on
+     * it, so monitoring is forced off and the role is pinned standalone
+     * (worker attribution is dropped). agentEnabled stays opt-in.
+     */
+    const isNas = kind === "nas";
+    const role = isNas ? "standalone" : this._normalizeRole(config);
     const isWorker = role === "worker";
     // Never keep password on the persisted object
     return {
       id: config.id,
       name: config.name || config.id,
-      /** Unit type: spark (DGX Spark) or host (dedicated GPU Linux box). */
-      kind: config.kind === "host" ? "host" : "spark",
+      /** Unit type: spark (DGX Spark), host (dedicated GPU Linux box), or nas (modelctl store node). */
+      kind,
       lanIp: config.lanIp || "",
       cx7Ip: config.cx7Ip || null,
       /** Optional user override for Wake-on-LAN. Empty → use detectedMacAddress. */
@@ -503,29 +526,39 @@ export class SparkRegistry {
         : null,
       /**
        * Standalone: probe/show local LLM (default true).
-       * Head always on; worker always off.
+       * Head always on; worker always off; NAS node always off (serves nothing).
        */
       llmMonitoring:
-        role === "worker" ? false : role === "head" ? true : config.llmMonitoring !== false,
+        isNas || role === "worker" ? false : role === "head" ? true : config.llmMonitoring !== false,
       /**
        * Probe local ComfyUI and show the ComfyUI card (default false; all roles).
+       * Forced off for NAS nodes.
        */
-      comfyMonitoring: Boolean(config.comfyMonitoring),
+      comfyMonitoring: isNas ? false : Boolean(config.comfyMonitoring),
       /** ComfyUI HTTP port (default 8188). */
       comfyPort: this._normalizeComfyPort(config.comfyPort),
       /**
        * Opt-in tailnet presence via `tailscale status --json` (default false).
+       * Forced off for NAS nodes (no tailnet story on a store box).
        */
-      tailscaleMonitoring: Boolean(config.tailscaleMonitoring),
+      tailscaleMonitoring: isNas ? false : Boolean(config.tailscaleMonitoring),
       /**
        * Opt-in: Hermes Agent CLI is installed on this machine. When enabled,
        * the SparkMonitor checks for updates and allows one-click `hermes update`.
+       * Forced off for NAS nodes.
        */
-      hermesMonitoring: Boolean(config.hermesMonitoring),
+      hermesMonitoring: isNas ? false : Boolean(config.hermesMonitoring),
       /**
        * B1: opt-in modelctl integration for this node (jobs/inventories/placement).
+       * A NAS node exists to run modelctl — forced on.
        */
-      modelctlEnabled: Boolean(config.modelctlEnabled),
+      modelctlEnabled: isNas ? true : Boolean(config.modelctlEnabled),
+      /**
+       * Per-node modelctl store root. Empty/absent → use the global
+       * settings.modelctl.nasRoot (nasRootFor handles the fallback). Kept for
+       * any kind (only consulted when this node resolves as the NAS spark).
+       */
+      nasRoot: this._normalizeNasRoot(config.nasRoot),
       /**
        * C1: opt-in Spark Command Agent (outbound WS transport). SSH remains the
        * fallback transport whenever this is false or the agent is disconnected.
@@ -542,6 +575,16 @@ export class SparkRegistry {
     const n = typeof value === "string" ? parseInt(value, 10) : Number(value);
     if (Number.isInteger(n) && n >= 1 && n <= 65535) return n;
     return 8188;
+  }
+
+  /**
+   * Normalize the per-node modelctl root: trim; empty/non-string → "" (meaning
+   * "use the global settings.modelctl.nasRoot"). No path validation — the
+   * value only ever reaches the remote shell through shellQuote.
+   */
+  _normalizeNasRoot(value) {
+    if (typeof value !== "string") return "";
+    return value.trim();
   }
 
   /** Normalize role; legacy workerNode=true → worker. */

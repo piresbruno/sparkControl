@@ -80,6 +80,19 @@ export function isValidSshUser(user) {
 export const RESERVED_SPARK_IDS = Object.freeze(new Set(["__overview__", "__analysis__", "__models__"]));
 
 /**
+ * Registered unit kinds: "spark" (DGX Spark), "host" (dedicated GPU Linux
+ * box), "nas" (node managing a modelctl NAS store). Whitelisted at the
+ * registry edge — unknown kinds are rejected with 400 rather than silently
+ * coerced.
+ */
+export const SPARK_KINDS = Object.freeze(new Set(["spark", "host", "nas"]));
+
+/** @param {unknown} kind undefined/null → default kind ("spark") is valid. */
+export function isValidSparkKind(kind) {
+  return kind == null || (typeof kind === "string" && SPARK_KINDS.has(kind));
+}
+
+/**
  * Validate a client-supplied Spark id. Same character class as the SSH user
  * regex (no path traversal, no shell metacharacters), 1–64 chars, and not a
  * reserved id. The registry stores the id as a JSON key (no path-injection),
