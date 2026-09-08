@@ -18,6 +18,7 @@ import { OVERVIEW_ID, ANALYSIS_ID, MODELS_ID } from "./constants";
 const SENTINEL_IDS = new Set([OVERVIEW_ID, ANALYSIS_ID, MODELS_ID]);
 import { AnalysisPage } from "./components/AnalysisPage/AnalysisPage";
 import { ModelsPage } from "./components/ModelsPage/ModelsPage";
+import { NasPage } from "./components/NasPage/NasPage";
 import type { Settings, SparkSnapshot } from "./api/types";
 
 function placeholderSnapshot(
@@ -35,7 +36,8 @@ function placeholderSnapshot(
     comfyMonitoring?: boolean;
     comfyPort?: number;
     tailscaleMonitoring?: boolean;
-    kind?: "spark" | "host";
+    kind?: "spark" | "host" | "nas";
+    nasRoot?: string | null;
   }
 ): SparkSnapshot {
   const role =
@@ -51,6 +53,7 @@ function placeholderSnapshot(
     id,
     name,
     kind: roleFields?.kind ?? "spark",
+    nasRoot: roleFields?.nasRoot ?? undefined,
     online: false,
     uptime: null,
     disabledDevices,
@@ -199,6 +202,7 @@ function DashboardApp() {
               llmPorts: c.llmPorts ?? existing.llmPorts,
               llmPort: c.llmPorts?.[0] ?? c.llmPort ?? existing.llmPort,
               kind: c.kind ?? existing.kind,
+              nasRoot: c.nasRoot ?? existing.nasRoot,
             };
           }
           return placeholderSnapshot(
@@ -217,6 +221,7 @@ function DashboardApp() {
               comfyPort: c.comfyPort,
               tailscaleMonitoring: c.tailscaleMonitoring,
               kind: c.kind,
+              nasRoot: c.nasRoot,
             }
           );
         })
@@ -288,6 +293,14 @@ function DashboardApp() {
             <AnalysisPage />
           ) : isModels ? (
             <ModelsPage />
+          ) : displayActive?.kind === "nas" ? (
+            <NasPage
+              key={displayActive.id}
+              spark={displayActive}
+              defaultNasRoot={settings?.modelctl?.nasRoot ?? ""}
+              onEdit={() => setEditId(displayActive.id)}
+              onNavigate={navigate}
+            />
           ) : displayActive ? (
             <SparkPage
               /* Full remount per node: resets every channel's node-scoped state

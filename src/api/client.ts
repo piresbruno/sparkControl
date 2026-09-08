@@ -26,6 +26,12 @@ import type {
   ServingScript,
   ServingStatus,
   InventoryResponse,
+  NasQueueEntry,
+  ModelctlRelease,
+  NasDoctorResponse,
+  NasCatalogResponse,
+  NasModelDetail,
+  NasDeletePlan,
 } from "./types";
 
 const BASE = "";
@@ -494,6 +500,10 @@ export function startJob(body: {
   model?: string;
   sourceSparkId?: string;
   targetSparkId?: string;
+  /** queue kind only: validated downloads.yaml entries (server builds the YAML) */
+  entries?: NasQueueEntry[];
+  /** queue kind only: parallel modelctl jobs (1|2|4) */
+  jobs?: number;
 }): Promise<{ jobId: string; kind: JobKind; sparkId: string }> {
   return apiFetch("/api/jobs", { method: "POST", body: JSON.stringify(body) });
 }
@@ -563,4 +573,30 @@ export function agentStatus(sparkId: string): Promise<{
 
 export function rotateAgentToken(): Promise<{ success: boolean; tokenConfigured: boolean; notified: number }> {
   return apiFetch("/api/agent/token/rotate", { method: "POST" });
+}
+
+// ─── NAS node (kind "nas") ─────────────────────────────────
+/** Latest modelctl GitHub release (server 15-min cache; never throws upstream). */
+export function fetchModelctlRelease(): Promise<ModelctlRelease> {
+  return apiFetch("/api/modelctl/release");
+}
+
+/** `modelctl doctor --json` on the NAS spark (server-cached 60 s; force=1 busts it). */
+export function runNasDoctor(force = false): Promise<NasDoctorResponse> {
+  return apiFetch(`/api/modelctl/doctor${force ? "?force=1" : ""}`);
+}
+
+/** catalog.json read on the NAS spark. */
+export function fetchNasCatalog(): Promise<NasCatalogResponse> {
+  return apiFetch("/api/modelctl/catalog");
+}
+
+/** path + serve-command + RUN.md excerpt for one active model. */
+export function fetchNasModelDetail(model: string): Promise<NasModelDetail> {
+  return apiFetch(`/api/modelctl/nas/${encodeURIComponent(model)}/detail`);
+}
+
+/** Dry-run delete plan (stdout of `modelctl delete NAME --root R`). */
+export function fetchNasDeletePlan(model: string): Promise<NasDeletePlan> {
+  return apiFetch(`/api/modelctl/nas/${encodeURIComponent(model)}/delete-plan`);
 }

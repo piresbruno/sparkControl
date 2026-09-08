@@ -1,0 +1,422 @@
+/* ─── NAS node page (kind "nas") — additions to the console kit ─────────
+   Ported from mockups/nas-node.html (the approved design). Everything the
+   instrument console already defines (module/key/chip/gauge/led/hairline/
+   plate/rack/xref/job-row/copy-btn/log tints) comes from console.css via
+   the shared .spark-console ancestor; this file adds ONLY the primitives
+   the store page needs that the console never had. Scoped under .nas-page
+   so nothing leaks into other pages. */
+
+.nas-page .kv {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.nas-page .kv__label {
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.nas-page .kv__value {
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--color-text-strong);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nas-page .kv__value--success {
+  color: var(--color-success);
+}
+.nas-page .kv__value--warning {
+  color: var(--color-warning);
+}
+.nas-page .kv__hint {
+  font-size: var(--fs-11);
+  color: var(--color-muted);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+.nas-page .kv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--space-3);
+}
+
+.nas-page .sub-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-elevated);
+  padding: var(--card-pad);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.nas-page .sub-card--inset {
+  background: var(--color-surface);
+  border-radius: var(--mod-radius);
+  box-shadow: inset 0 1px 2px var(--color-grid);
+}
+
+/* Muted command caption + inline code chip */
+.nas-page .cmd-cap {
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  color: var(--color-muted);
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 0;
+}
+.nas-page .cmd-cap code,
+.nas-page .cmdline {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: var(--color-muted-strong);
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.nas-page .cmd-cap .log-ok {
+  color: var(--color-success);
+}
+.nas-page .cmd-cap .log-warn {
+  color: var(--color-warning);
+}
+.nas-page .cmd-cap .log-dim {
+  color: var(--color-muted);
+  opacity: 0.85;
+}
+
+/* Terminal box with an inline copy button */
+.nas-page .code-box {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.nas-page .code-box__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding-right: 30px;
+}
+.nas-page .code-box:not(:has(.copy-btn)) .code-box__bar {
+  padding-right: 0;
+}
+.nas-page .code-box .copy-btn {
+  position: absolute;
+  top: 24px;
+  right: 7px;
+  z-index: 2;
+}
+
+/* Dry-run / delete plan */
+.nas-page .plan-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--space-3);
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--color-danger) 38%, var(--color-border));
+  background: color-mix(in srgb, var(--color-danger) 8%, transparent);
+  border-radius: var(--mod-radius);
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+  letter-spacing: -0.01em;
+}
+.nas-page .plan-box[hidden] {
+  display: none;
+}
+.nas-page .plan-box__title {
+  font-size: var(--fs-10);
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-danger);
+}
+.nas-page .plan-box__line {
+  display: block;
+  color: var(--color-muted-strong);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Amber notice strip (doctor finding / staging) */
+.nas-page .notice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  border: 1px solid color-mix(in srgb, var(--color-warning) 45%, var(--color-border));
+  background: color-mix(in srgb, var(--color-warning) 8%, transparent);
+  border-radius: var(--mod-radius);
+  padding: var(--space-3);
+  font-size: var(--fs-12);
+}
+.nas-page .notice[hidden] {
+  display: none;
+}
+.nas-page .notice__title {
+  font-family: var(--mono);
+  font-weight: 800;
+  font-size: var(--fs-12);
+  letter-spacing: -0.01em;
+  color: var(--color-warning);
+  text-transform: uppercase;
+}
+.nas-page .notice__actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* Segmented switch (Single | Queue) */
+.nas-page .seg-switch {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 10px;
+  background: var(--color-surface-hover);
+  border: 1px solid var(--color-border);
+}
+.nas-page .seg-switch__opt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-muted);
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.15s var(--ease), color 0.15s;
+}
+.nas-page .seg-switch__opt:hover:not(.is-on) {
+  color: var(--color-text);
+}
+.nas-page .seg-switch__opt.is-on {
+  background: var(--color-surface-elevated);
+  color: var(--color-text-strong);
+  box-shadow: var(--shadow-card);
+}
+.nas-page .seg-switch--tight {
+  max-width: 260px;
+}
+
+/* Queue builder */
+.nas-page .q-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.nas-page .q-row {
+  display: grid;
+  grid-template-columns: 1.7fr 1.25fr 0.7fr 0.95fr auto;
+  gap: var(--space-2);
+  align-items: end;
+}
+.nas-page .q-del {
+  width: 30px;
+  height: 31px;
+  border-radius: 7px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-elevated);
+  color: var(--color-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  cursor: pointer;
+}
+.nas-page .q-del:hover:not(:disabled) {
+  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 45%, var(--color-border));
+  background: color-mix(in srgb, var(--color-danger) 10%, transparent);
+}
+
+/* Keys: small + warn variants (console.css owns .key / --primary / --run / --danger) */
+.nas-page .key--sm {
+  padding: 4px 9px;
+  font-size: var(--fs-10);
+  border-radius: 6px;
+}
+.nas-page .key--warn {
+  color: var(--color-warning);
+  border-color: color-mix(in srgb, var(--color-warning) 45%, var(--color-border));
+}
+.nas-page .key--warn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-warning) 12%, transparent);
+  border-color: color-mix(in srgb, var(--color-warning) 65%, var(--color-border));
+}
+
+/* Chips: warn variant (console.css owns .chip / --accent / --live / --err) */
+.nas-page .chip--warn {
+  background: color-mix(in srgb, var(--color-warning) 12%, transparent);
+  color: var(--color-warning);
+  border-color: color-mix(in srgb, var(--color-warning) 34%, var(--color-border));
+}
+
+.nas-page .xref--accent {
+  color: var(--color-accent-hover);
+}
+
+/* Catalog table: 6-col override + row states (base grid lives in index.css) */
+.nas-page .nas-table__head,
+.nas-page .nas-table__row {
+  grid-template-columns: 1.4fr 0.78fr 1.3fr 0.48fr auto;
+  font-family: var(--mono);
+  letter-spacing: -0.02em;
+}
+.nas-page .nas-table__row {
+  text-align: left;
+  width: 100%;
+  background: transparent;
+  border-left: 0;
+  border-right: 0;
+  border-bottom: 0;
+  cursor: pointer;
+  color: var(--color-text);
+}
+.nas-page .nas-table__row.is-selected {
+  background: var(--color-surface-elevated);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+.nas-page .nas-name {
+  font-weight: 800;
+  color: var(--color-text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nas-page .nas-repo {
+  color: var(--color-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nas-page .nas-table__num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.nas-page .nas-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--fs-10);
+  color: var(--color-accent-hover);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/* Store gauge bank: 2 wide gauges */
+.nas-page .gauge-grid--store {
+  grid-template-columns: 1.6fr 1fr;
+}
+
+/* Rack plate: horizontal value field (icons + path) */
+.nas-page .plate__v--row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-direction: row;
+}
+
+/* System hairline footer */
+.nas-page .sys-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+.nas-page .sys-foot .kv {
+  gap: 1px;
+}
+.nas-page .sys-foot__note {
+  margin-left: auto;
+  font-size: var(--fs-11);
+  color: var(--color-muted);
+}
+
+/* Job card wrapper (console.css owns .job-row / .job-progress) */
+.nas-page .job-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* Required marker in field labels */
+.nas-page .field__req {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--color-danger);
+  text-transform: uppercase;
+}
+.nas-page .field__hint {
+  font-size: var(--fs-11);
+  color: var(--color-muted);
+  line-height: 1.55;
+  margin: 0;
+}
+.nas-page .field__hint code {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: var(--color-muted-strong);
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+}
+
+/* Detail-pane header extras (console.css owns .detail-head__name/__repo) */
+.nas-page .detail-head__manifest {
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  color: var(--color-muted);
+}
+
+@media (max-width: 900px) {
+  .nas-page .q-row {
+    grid-template-columns: 1fr 1fr;
+  }
+  .nas-page .nas-table__head,
+  .nas-page .nas-table__row {
+    grid-template-columns: 1.5fr 0.78fr auto;
+  }
+  .nas-page .nas-table__col-hide,
+  .nas-page .nas-table__head .nas-table__col-hide {
+    display: none;
+  }
+  .nas-page .gauge-grid--store {
+    grid-template-columns: 1fr;
+  }
+}

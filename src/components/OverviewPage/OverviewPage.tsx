@@ -1,10 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ModelctlStatus, SparkSnapshot } from "../../api/types";
+import type {
+  ModelctlRelease,
+  ModelctlStatus,
+  MctlJob,
+  NasCatalogResponse,
+  SparkSnapshot,
+} from "../../api/types";
 import { resolveSparkRole, isLlmDetectionEnabled } from "../../api/sparkRole";
-import { shutdownAllSparks, updateAllHermes, wakeAllSparks, modelctlStatus } from "../../api/client";
+import {
+  fetchModelctlRelease,
+  fetchNasCatalog,
+  listJobs,
+  listNasModels,
+  modelctlStatus,
+  shutdownAllSparks,
+  updateAllHermes,
+  wakeAllSparks,
+} from "../../api/client";
 import { ConfirmShutdownDialog } from "../ConfirmShutdownDialog";
-import { MetricBar } from "../ui/MetricBar";
 import { ActivityIcon, PowerOffIcon, PowerOnIcon, RotateIcon } from "../ui/icons";
+import { MetricBar } from "../ui/MetricBar";
+import { agoLabel, fmtStore, matchStoreMount, versionIsNewer } from "../NasPage/nasUtils";
+import { fmtUptimeShort } from "../SparkPage/console/consoleUtils";
 
 interface OverviewPageProps {
   sparks: SparkSnapshot[];
@@ -434,6 +451,160 @@ function SparkCard({
   );
 }
 
+/** Lazy-fetched extras for the NAS overview card (all optional, error-tolerant).
+ *  The read endpoints resolve to the NAS node server-side, so one shared
+ *  snapshot feeds every NAS card; jobs are filtered per node client-side. */
+interface NasCardData {
+  modelCount: number | null;
+  release: ModelctlRelease | null;
+  catalog: NasCatalogResponse | null;
+  jobs: MctlJob[];
+}
+
+/**
+ * Overview card for a model-store node (kind "nas"): store capacity instead
+ * of VRAM, catalog/model count, modelctl version + update affordance and the
+ * running job — no GPU/temperature/usage bars (this node has none).
+ */
+function NasSparkCard({
+  spark,
+  data,
+  modelctl,
+  onSelect,
+}: {
+  spark: SparkSnapshot;
+  data: NasCardData | null;
+  modelctl: ModelctlStatus | null | undefined;
+  onSelect?: (id: string) => void;
+}) {
+  const online = spark.online;
+  const root = spark.nasRoot || "";
+  const mount = matchStoreMount(spark.metrics?.storage ?? [], root);
+  const used = mount?.used ?? 0;
+  const total = mount?.total ?? 0;
+  const installed = modelctl?.version ? `v${modelctl.version}` : null;
+  const latest = data?.release?.latest ?? null;
+  const updateAvailable = versionIsNewer(latest, modelctl?.version ?? null);
+  const runningJob =
+    (data?.jobs ?? []).filter((j) => j.sparkId === spark.id).find((j) => j.status === "running") ?? null;
+  const modelCount = data?.modelCount ?? null;
+
+  return (
+    <div
+      className="overview-card flex flex-col"
+      style={{
+        padding: "var(--density-card-pad)",
+        gap: "var(--density-card-gap)",
+        ...(online ? {} : { opacity: 0.6 }),
+      }}
+    >
+      {/* Card header */}
+      <div className="flex items-center gap-2.5">
+        <span
+          className={`h-2 w-2 shrink-0 rounded-full ${online ? "bg-success dot-glow-success" : "bg-danger"}`}
+        />
+        <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-text-strong">
+          {onSelect ? (
+            <button
+              type="button"
+              onClick={() => onSelect(spark.id)}
+              className="text-left font-inherit text-inherit hover:underline"
+            >
+              {spark.name}
+            </button>
+          ) : (
+            spark.name
+          )}
+        </span>
+        <span
+          className="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-accent"
+          title="Model-store node — serves nothing"
+        >
+          NAS
+        </span>
+        <span className="text-[10px] uppercase tracking-wide text-muted">
+          {online ? "online" : "offline"}
+        </span>
+      </div>
+
+      {/* Hero: store capacity, not VRAM */}
+      <MetricBar
+        label="Store"
+        value={used}
+        max={total}
+        color="bg-accent"
+        caption={
+          mount
+            ? `${fmtStore(used)} / ${fmtStore(total)}`
+            : root
+              ? "— / —"
+              : "no store path"
+        }
+        subCaption={mount ? `${fmtStore(mount.available)} free` : undefined}
+      />
+
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="chip" title="modelctl list — published entries">
+          {modelCount == null ? "…" : `${modelCount} model${modelCount === 1 ? "" : "s"}`}
+        </span>
+        <span
+          className="chip"
+          style={installed ? { color: "var(--color-success)" } : undefined}
+          title="modelctl --version"
+        >
+          {installed ? `modelctl ${installed}` : modelctl ? "modelctl missing" : "modelctl …"}
+        </span>
+        {updateAvailable && onSelect ? (
+          <button
+            type="button"
+            onClick={() => onSelect(spark.id)}
+            className="chip"
+            style={{ color: "var(--color-warning)", cursor: "pointer", textDecoration: "underline" }}
+            title="A modelctl update is available — open the node page to run the update job"
+          >
+            {latest} · update →
+          </button>
+        ) : null}
+      </div>
+
+      <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-2.5 border-t border-border pt-3">
+        <MiniStat label="Store path" value={root || "—"} bold={false} title={root || undefined} wrap />
+        <MiniStat
+          label="Catalog"
+          value={
+            data?.catalog && !data.catalog.error
+              ? `gen ${data.catalog.generation ?? "—"} · ${agoLabel(data.catalog.generatedAt)}`
+              : data?.catalog?.error
+                ? "unreadable"
+                : "…"
+          }
+          tone={data?.catalog && !data.catalog.error ? "success" : "default"}
+          bold={false}
+          title={data?.catalog?.error ?? undefined}
+        />
+      </div>
+
+      {runningJob ? (
+        <div className="flex items-center gap-2" title={`${runningJob.name || runningJob.kind}`}>
+          <span className="bench-status-pill bench-status-pill--running">running</span>
+          <span className="min-w-0 flex-1 truncate text-[11px] text-muted">
+            {runningJob.name || runningJob.kind}
+          </span>
+        </div>
+      ) : null}
+
+      <div className="mt-auto border-t border-border pt-2 text-[10px] text-muted">
+        <span className="font-tabular">{spark.lanIp || "—"}</span>
+        <span> · </span>
+        <span>up {online ? fmtUptimeShort(spark.uptime) : "—"}</span>
+        {spark.hardware?.device ? (
+          <span className="ml-2 truncate">{spark.hardware.device}</span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "celsius", onSelectSpark }: OverviewPageProps) {
   const visibleSparks = hideOffline ? sparks.filter((s) => s.online) : sparks;
   const [batchLoading, setBatchLoading] = useState(false);
@@ -442,12 +613,15 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
   /** Spark ids we started a batch Hermes update on; drives the live progress bar. */
   const [batchRun, setBatchRun] = useState<string[] | null>(null);
 
-  // Worker attribution: modelctl version per opt-in worker. The server caches
-  // version probes (5 min TTL), so one lazy fetch per node id is cheap.
-  const workerIds = useMemo(
+  // modelctl version per opt-in node (workers + NAS store nodes). The server
+  // caches version probes (5 min TTL), so one lazy fetch per node id is cheap.
+  const probeIds = useMemo(
     () =>
       sparks
-        .filter((s) => s.online && resolveSparkRole(s) === "worker" && s.modelctlEnabled)
+        .filter(
+          (s) =>
+            s.online && s.modelctlEnabled && (resolveSparkRole(s) === "worker" || s.kind === "nas")
+        )
         .map((s) => s.id),
     [sparks]
   );
@@ -456,7 +630,7 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
   >({});
   const mctlRequested = useRef<Set<string>>(new Set());
   useEffect(() => {
-    for (const id of workerIds) {
+    for (const id of probeIds) {
       if (mctlRequested.current.has(id)) continue;
       mctlRequested.current.add(id);
       // No cancelled-guard: this effect re-runs on EVERY WS tick (sparks is
@@ -474,7 +648,41 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
           setModelctlChecks((p) => ({ ...p, [id]: null }));
         });
     }
-  }, [workerIds]);
+  }, [probeIds]);
+
+  // NAS overview extras: one shared lazy fetch (the endpoints resolve to the
+  // NAS node server-side), refreshed on a slow cadence while a store node is
+  // visible. Every failure is tolerated — the card degrades to "…".
+  const hasNas = useMemo(
+    () => sparks.some((s) => s.kind === "nas" && s.online),
+    [sparks]
+  );
+  const [nasData, setNasData] = useState<NasCardData | null>(null);
+  useEffect(() => {
+    if (!hasNas) return;
+    let cancelled = false;
+    const tick = async () => {
+      const [inv, jobs, rel, cat] = await Promise.allSettled([
+        listNasModels(),
+        listJobs(),
+        fetchModelctlRelease(),
+        fetchNasCatalog(),
+      ]);
+      if (cancelled) return;
+      setNasData({
+        modelCount: inv.status === "fulfilled" ? inv.value.models.length : null,
+        release: rel.status === "fulfilled" ? rel.value : null,
+        catalog: cat.status === "fulfilled" ? cat.value : null,
+        jobs: jobs.status === "fulfilled" ? jobs.value.jobs : [],
+      });
+    };
+    void tick();
+    const t = window.setInterval(() => void tick(), 60000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [hasNas]);
 
   const onlineShutdownCount = sparks.filter((s) => s.online).length;
   const hermesMonitoredCount = sparks.filter((s) => s.hermes?.monitoring).length;
@@ -724,20 +932,30 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
         confirmLabel="Shut down all"
       />
       <div className="overview-page grid sm:grid-cols-2 lg:grid-cols-3" style={{ gap: "var(--density-page-gap)" }}>
-        {visibleSparks.map((spark) => (
-          <SparkCard
-            key={spark.id}
-            spark={spark}
-            headSpark={
-              spark.workerHeadId
-                ? sparks.find((s) => s.id === spark.workerHeadId) ?? null
-                : null
-            }
-            modelctl={modelctlChecks[spark.id]}
-            temperatureUnit={temperatureUnit}
-            onSelect={onSelectSpark}
-          />
-        ))}
+        {visibleSparks.map((spark) =>
+          spark.kind === "nas" ? (
+            <NasSparkCard
+              key={spark.id}
+              spark={spark}
+              data={nasData}
+              modelctl={modelctlChecks[spark.id]}
+              onSelect={onSelectSpark}
+            />
+          ) : (
+            <SparkCard
+              key={spark.id}
+              spark={spark}
+              headSpark={
+                spark.workerHeadId
+                  ? sparks.find((s) => s.id === spark.workerHeadId) ?? null
+                  : null
+              }
+              modelctl={modelctlChecks[spark.id]}
+              temperatureUnit={temperatureUnit}
+              onSelect={onSelectSpark}
+            />
+          )
+        )}
       </div>
     </div>
   );

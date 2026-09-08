@@ -7,8 +7,10 @@ export interface SparkConfig {
    * - spark: NVIDIA DGX Spark (default) — DGX Spark specs shown in the header.
    * - host: any Linux box with an NVIDIA GPU (still monitored via nvidia-smi,
    *   just not a Spark). Real hardware is auto-detected once online.
+   * - nas: model-store node (Ubuntu VM managing a modelctl NAS root over SSH).
+   *   Serves nothing: no LLM ports, no cluster role — modelctl ops only.
    */
-  kind?: "spark" | "host";
+  kind?: "spark" | "host" | "nas";
   lanIp: string;
   cx7Ip?: string | null;
   /**
@@ -94,6 +96,11 @@ export interface SparkConfig {
   agentEnabled?: boolean;
   /** When true, storage is only updated on manual refresh, not auto-polled. */
   storagePollDisabled?: boolean;
+  /**
+   * NAS store root as mounted on THIS node (kind "nas"). Empty/absent =
+   * use the global settings.modelctl.nasRoot.
+   */
+  nasRoot?: string;
 }
 
 export type SparkRole = "head" | "worker" | "standalone";
@@ -479,8 +486,10 @@ export interface SparkMetrics {
 export interface SparkSnapshot {
   id: string;
   name: string;
-  /** Unit type: spark (DGX Spark) or host (dedicated GPU Linux box). */
-  kind?: "spark" | "host";
+  /** Unit type: spark (DGX Spark), host (dedicated GPU Linux box), nas (model store). */
+  kind?: "spark" | "host" | "nas";
+  /** NAS store root on this node (kind "nas"); ""/absent = global settings.modelctl.nasRoot. */
+  nasRoot?: string;
   /** C3: metrics transport — agent (WS) or ssh fallback. */
   transport?: "agent" | "ssh";
   agentVersion?: string | null;
@@ -881,7 +890,13 @@ export type JobKind =
   | "nas-delete"
   | "install-modelctl"
   | "install-agent"
-  | "update-agent";
+  | "update-agent"
+  | "queue"
+  | "catalog-refresh"
+  | "repair-active"
+  | "cleanup-quarantine"
+  | "sync-cards"
+  | "update";
 
 export interface TraceEntry {
   seq: number;
@@ -973,4 +988,57 @@ export interface ServingStatus {
 export interface Placement {
   status: "present" | "sync" | "push" | "unavailable";
   remediations: Array<{ kind: "sync" | "push"; sparkId: string; targetSparkId?: string }>;
+}
+
+// ─── NAS node (kind "nas") ─────────────────────────────────
+/** GitHub release probe for the modelctl CLI (never throws to the caller). */
+export interface ModelctlRelease {
+  latest: string | null;
+  publishedAt: string | null;
+  checkedAt: number;
+  error?: string;
+}
+
+/** `modelctl doctor --json` pass-through; unparsable output arrives as { raw }. */
+export interface NasDoctorResponse {
+  report: Record<string, unknown> | { raw: string } | null;
+  checkedAt: number;
+  stale: boolean;
+  error?: string;
+}
+
+/** catalog.json read on the NAS node. */
+export interface NasCatalogResponse {
+  schema?: number;
+  generation?: number;
+  generatedAt?: string | number | null;
+  count?: number;
+  models?: NasModel[];
+  error?: string;
+}
+
+/** `modelctl path` + `serve-command` + RUN.md excerpt for one active model. */
+export interface NasModelDetail {
+  path: string | null;
+  serveCommand: string | null;
+  runMd: string | null;
+  error?: string;
+}
+
+/** Dry-run stdout of `modelctl delete NAME --root R` (no --apply). */
+export interface NasDeletePlan {
+  plan: string;
+  error?: string;
+}
+
+/** One queue-builder entry for `modelctl queue downloads.yaml` (server validates). */
+export interface NasQueueEntry {
+  source: string;
+  name?: string;
+  revision?: string;
+  quantization?: string;
+  runtime?: "auto" | "vllm" | "llama.cpp";
+  mmproj?: string;
+  mtp?: string;
+  force?: boolean;
 }

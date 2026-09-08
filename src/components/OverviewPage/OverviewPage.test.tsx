@@ -7,9 +7,19 @@ vi.mock("../../api/client", () => ({
   updateAllHermes: vi.fn(),
   wakeAllSparks: vi.fn(),
   modelctlStatus: vi.fn(),
+  listNasModels: vi.fn(),
+  listJobs: vi.fn(),
+  fetchModelctlRelease: vi.fn(),
+  fetchNasCatalog: vi.fn(),
 }));
 
-import { modelctlStatus } from "../../api/client";
+import {
+  fetchModelctlRelease,
+  fetchNasCatalog,
+  listJobs,
+  listNasModels,
+  modelctlStatus,
+} from "../../api/client";
 import type { LlmMetrics, ModelctlStatus, SparkSnapshot } from "../../api/types";
 
 const llm = (
@@ -61,6 +71,14 @@ beforeEach(() => {
     version: "0.13.0",
     uv: { installed: true, version: "0.5.0" },
   });
+  vi.mocked(listNasModels).mockResolvedValue({ models: [] });
+  vi.mocked(listJobs).mockResolvedValue({ jobs: [] });
+  vi.mocked(fetchModelctlRelease).mockResolvedValue({
+    latest: null,
+    publishedAt: null,
+    checkedAt: Date.now(),
+  });
+  vi.mocked(fetchNasCatalog).mockResolvedValue({ error: "no catalog" });
 });
 
 afterEach(() => {
@@ -171,5 +189,91 @@ describe("OverviewPage worker attribution", () => {
     render(<OverviewPage sparks={[head]} temperatureUnit="celsius" />);
     await waitFor(() => expect(screen.getByText("Llama-70B")).toBeTruthy());
     expect(modelctlStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe("OverviewPage NAS card", () => {
+  const nasSnap = () =>
+    snap("nas1", {
+      name: "vault",
+      kind: "nas",
+      nasRoot: "/mnt/nas/llm-models",
+      modelctlEnabled: true,
+      metrics: {
+        gpu: null,
+        storage: [
+          {
+            device: "cifs",
+            label: "/mnt/nas",
+            used: 10 * 1024 * 1024, // MB → 10 TB
+            total: 16.5 * 1024 * 1024,
+            available: 6.5 * 1024 * 1024,
+            percentage: 61,
+            readSpeed: 0,
+            writeSpeed: 0,
+          },
+        ],
+      } as unknown as SparkSnapshot["metrics"],
+    });
+
+  it("shows store capacity + model count and NO VRAM bars", async () => {
+    vi.mocked(listNasModels).mockResolvedValue({
+      models: [
+        { name: "a", runtime: "vllm", repository: "x/a", bytes: 1 },
+        { name: "b", runtime: null, repository: null, bytes: null },
+        { name: "c", runtime: null, repository: null, bytes: null },
+      ],
+    });
+    render(<OverviewPage sparks={[nasSnap()]} temperatureUnit="celsius" />);
+    await waitFor(() => expect(screen.getByText("3 models")).toBeTruthy());
+    // Store gauge in TB voice from the mount matching nasRoot
+    expect(screen.getByText("10.0 TB / 16.5 TB")).toBeTruthy();
+    expect(screen.getByText("6.5 TB free")).toBeTruthy();
+    expect(screen.getByTitle("Model-store node — serves nothing")).toBeTruthy();
+    // No GPU/VRAM language anywhere on a store card
+    expect(screen.queryByText(/VRAM/i)).toBeNull();
+    expect(screen.queryByText(/Temperature/i)).toBeNull();
+    expect(screen.queryByText(/Usage/i)).toBeNull();
+    // the store node gets a modelctl probe
+    await waitFor(() => expect(modelctlStatus).toHaveBeenCalledWith("nas1"));
+  });
+
+  it("amber update affordance navigates to the node page", async () => {
+    vi.mocked(fetchModelctlRelease).mockResolvedValue({
+      latest: "v0.18.0",
+      publishedAt: null,
+      checkedAt: Date.now(),
+    });
+    const onSelect = vi.fn();
+    render(<OverviewPage sparks={[nasSnap()]} temperatureUnit="celsius" onSelectSpark={onSelect} />);
+    const link = await screen.findByTitle(
+      "A modelctl update is available — open the node page to run the update job"
+    );
+    expect(link.textContent).toContain("v0.18.0 · update →");
+    link.click();
+    expect(onSelect).toHaveBeenCalledWith("nas1");
+  });
+
+  it("running queue job surfaces on the card", async () => {
+    vi.mocked(listJobs).mockResolvedValue({
+      jobs: [
+        {
+          jobId: "j1",
+          kind: "queue",
+          name: "queue downloads (2)",
+          sparkId: "nas1",
+          status: "running",
+          createdAt: Date.now(),
+          startedAt: Date.now(),
+          endedAt: null,
+          exitCode: null,
+          logTail: "staging deepseek 41%",
+        },
+      ] as never,
+    });
+    render(<OverviewPage sparks={[nasSnap()]} temperatureUnit="celsius" />);
+    const pill = await screen.findByText("running");
+    expect(pill.className).toContain("bench-status-pill--running");
+    expect(screen.getByText("queue downloads (2)")).toBeTruthy();
   });
 });

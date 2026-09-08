@@ -29,6 +29,7 @@ const defaultConfig: Omit<SparkConfig, "id"> = {
   isLocal: false,
   llmPorts: [8888],
   ssh: { host: "", user: "zurih", auth: "key" },
+  nasRoot: "",
 };
 
 export function AddSparkDialog({ open, onClose, onAdded, defaultLlmPort = 8888 }: AddSparkDialogProps) {
@@ -60,6 +61,8 @@ export function AddSparkDialog({ open, onClose, onAdded, defaultLlmPort = 8888 }
 
   if (!mounted) return null;
 
+  const isNas = config.kind === "nas";
+
   const update = (patch: Partial<Omit<SparkConfig, "id">>) => {
     setConfig((prev) => ({ ...prev, ...patch }));
   };
@@ -74,8 +77,13 @@ export function AddSparkDialog({ open, onClose, onAdded, defaultLlmPort = 8888 }
     if (!config.isLocal && auth === "pass" && !config.ssh.password) {
       throw new Error("Password is required when SSH auth is Password");
     }
+    if (isNas && !config.nasRoot?.trim()) {
+      throw new Error("NAS LLM models path is required for a model-store node");
+    }
+    const { nasRoot, ...rest } = config;
     return {
-      ...config,
+      ...rest,
+      ...(isNas ? { nasRoot: nasRoot?.trim() ?? "", modelctlEnabled: true } : {}),
       id,
       ssh: {
         ...config.ssh,
@@ -148,11 +156,19 @@ export function AddSparkDialog({ open, onClose, onAdded, defaultLlmPort = 8888 }
             <label className="mb-1 block text-xs text-muted">Unit type</label>
             <select
               value={config.kind ?? "spark"}
-              onChange={(e) => update({ kind: e.target.value as "spark" | "host" })}
+              onChange={(e) => {
+                const kind = e.target.value as "spark" | "host" | "nas";
+                update(
+                  kind === "nas"
+                    ? { kind, modelctlEnabled: true, isLocal: false }
+                    : { kind }
+                );
+              }}
               className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
             >
               <option value="spark">NVIDIA DGX Spark</option>
               <option value="host">Dedicated GPU host (Linux, nvidia-smi, not a Spark)</option>
+              <option value="nas">NAS model store (manages the modelctl root over SSH — serves nothing)</option>
             </select>
           </div>
 
@@ -178,7 +194,7 @@ export function AddSparkDialog({ open, onClose, onAdded, defaultLlmPort = 8888 }
             />
           </div>
 
-          {config.kind !== "host" && (
+          {config.kind !== "host" && config.kind !== "nas" && (
             <div>
               <label className="mb-1 block text-xs text-muted">CX7 IP (optional)</label>
               <input
@@ -191,44 +207,80 @@ export function AddSparkDialog({ open, onClose, onAdded, defaultLlmPort = 8888 }
             </div>
           )}
 
-          <div>
-            <label className="mb-1 block text-xs text-muted">LLM Ports (optional, comma-separated)</label>
-            <input
-              type="text"
-              value={(config.llmPorts ?? [defaultLlmPort]).join(", ")}
-              onChange={(e) => {
-                const ports = e.target.value
-                  .split(",")
-                  .map((s) => parseInt(s.trim(), 10))
-                  .filter((n) => Number.isInteger(n) && n >= 1 && n <= 65535);
-                if (ports.length > 0) update({ llmPorts: ports });
-              }}
-              className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
-              placeholder={String(defaultLlmPort)}
-            />
-            <p className="mt-1 text-[10px] text-muted">
-              Default: {defaultLlmPort}
-            </p>
-          </div>
+          {!isNas && (
+            <div>
+              <label className="mb-1 block text-xs text-muted">LLM Ports (optional, comma-separated)</label>
+              <input
+                type="text"
+                value={(config.llmPorts ?? [defaultLlmPort]).join(", ")}
+                onChange={(e) => {
+                  const ports = e.target.value
+                    .split(",")
+                    .map((s) => parseInt(s.trim(), 10))
+                    .filter((n) => Number.isInteger(n) && n >= 1 && n <= 65535);
+                  if (ports.length > 0) update({ llmPorts: ports });
+                }}
+                className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
+                placeholder={String(defaultLlmPort)}
+              />
+              <p className="mt-1 text-[10px] text-muted">
+                Default: {defaultLlmPort}
+              </p>
+            </div>
+          )}
 
+          {isNas && (
+            <div>
+              <label className="mb-1 block text-xs text-muted">
+                NAS LLM models path{" "}
+                <span className="font-mono text-[9px] font-extrabold uppercase tracking-wider text-danger">required</span>
+              </label>
+              <input
+                type="text"
+                value={config.nasRoot ?? ""}
+                onChange={(e) => update({ nasRoot: e.target.value })}
+                className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
+                placeholder="/mnt/nas/llm-models"
+                aria-label="NAS LLM models path"
+              />
+              <p className="mt-1 text-[10px] text-muted">
+                Path as mounted on the node itself — modelctl runs there via SSH (CIFS mounts may need{" "}
+                <code className="rounded bg-surface-elevated px-1">mfsymlinks</code>). This becomes{" "}
+                <code className="rounded bg-surface-elevated px-1">--root</code> for every store command.
+              </p>
+            </div>
+          )}
+
+          {!isNas && (
+
+            <label className="flex items-center gap-2 text-xs text-muted">
+              <input
+                type="checkbox"
+                checked={config.isLocal}
+                onChange={(e) => update({ isLocal: e.target.checked })}
+                className="rounded border-border"
+              />
+              This host (local collectors — no SSH for metrics)
+            </label>
+          )}
           <label className="flex items-center gap-2 text-xs text-muted">
             <input
               type="checkbox"
-              checked={config.isLocal}
-              onChange={(e) => update({ isLocal: e.target.checked })}
-              className="rounded border-border"
-            />
-            This host (local collectors — no SSH for metrics)
-          </label>
-          <label className="flex items-center gap-2 text-xs text-muted">
-            <input
-              type="checkbox"
-              checked={config.modelctlEnabled ?? false}
+              checked={isNas ? true : config.modelctlEnabled ?? false}
+              disabled={isNas}
               onChange={(e) => update({ modelctlEnabled: e.target.checked })}
               className="rounded border-border"
             />
-            modelctl integration (inventory, placement, serving on this node)
+            {isNas
+              ? "modelctl integration — required for a store node (inventory, downloads, health)"
+              : "modelctl integration (inventory, placement, serving on this node)"}
           </label>
+          {isNas && (
+            <p className="text-[10px] text-muted">
+              The Spark Command Agent carries metrics only. Every modelctl operation still needs SSH from the
+              machine running sparkControl — make sure this node is SSH-reachable from there.
+            </p>
+          )}
 
           <label className="flex items-center gap-2 text-xs text-muted">
             <input
@@ -332,7 +384,7 @@ export function AddSparkDialog({ open, onClose, onAdded, defaultLlmPort = 8888 }
             <button
               type="button"
               onClick={handleSave}
-              disabled={saving || !config.name || !config.lanIp}
+              disabled={saving || !config.name || !config.lanIp || (isNas && !config.nasRoot?.trim())}
               className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50"
             >
               {saving ? "Saving..." : "Save"}

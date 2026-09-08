@@ -61,6 +61,12 @@ const KIND_LABEL: Record<MctlJob["kind"], string> = {
   "install-modelctl": "install",
   "install-agent": "install agent",
   "update-agent": "update agent",
+  queue: "queue ⤓",
+  "catalog-refresh": "catalog refresh",
+  "repair-active": "repair",
+  "cleanup-quarantine": "cleanup quarantine",
+  "sync-cards": "sync cards",
+  update: "update ↧",
 };
 
 /** Progress % — parsed from the newest `NN%` in logTail (no pct field on MctlJob). */

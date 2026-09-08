@@ -104,6 +104,7 @@ export function EditSparkDialog({
   if (!mounted) return null;
 
   const role: SparkRole = resolveSparkRole(config ?? {});
+  const isNas = config?.kind === "nas";
 
   const update = (patch: Partial<SparkConfig>) => {
     setConfig((prev) => (prev ? { ...prev, ...patch } : prev));
@@ -226,6 +227,11 @@ export function EditSparkDialog({
       setError("Password required for password-auth Sparks (saved encrypted, host can be offline).");
       return;
     }
+    const nas = config.kind === "nas";
+    if (nas && !config.nasRoot?.trim()) {
+      setError("NAS LLM models path is required for a model-store node.");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -262,6 +268,19 @@ export function EditSparkDialog({
           auth: config.ssh.auth,
         },
       };
+      if (nas) {
+        // Store nodes manage the NAS over SSH and serve nothing — same coercion the server applies.
+        patch.nasRoot = config.nasRoot?.trim() ?? "";
+        patch.modelctlEnabled = true;
+        patch.role = "standalone";
+        patch.workerNode = false;
+        patch.workerLabel = null;
+        patch.workerHeadId = null;
+        patch.llmMonitoring = false;
+        patch.comfyMonitoring = false;
+        patch.hermesMonitoring = false;
+        patch.tailscaleMonitoring = false;
+      }
       await updateSpark(config.id, patch);
       onSaved();
       onClose();
@@ -314,11 +333,19 @@ export function EditSparkDialog({
                 <label className="mb-1 block text-xs text-muted">Unit type</label>
                 <select
                   value={config.kind ?? "spark"}
-                  onChange={(e) => update({ kind: e.target.value as "spark" | "host" })}
+                  onChange={(e) => {
+                    const kind = e.target.value as "spark" | "host" | "nas";
+                    update(
+                      kind === "nas"
+                        ? { kind, modelctlEnabled: true, isLocal: false }
+                        : { kind }
+                    );
+                  }}
                   className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
                 >
                   <option value="spark">NVIDIA DGX Spark</option>
                   <option value="host">Dedicated GPU host (Linux, nvidia-smi, not a Spark)</option>
+                  <option value="nas">NAS model store (manages the modelctl root over SSH — serves nothing)</option>
                 </select>
               </div>
 
@@ -342,7 +369,7 @@ export function EditSparkDialog({
                 />
               </div>
 
-              {config.kind !== "host" && (
+              {config.kind !== "host" && !isNas && (
                 <div>
                   <label className="mb-1 block text-xs text-muted">CX7 IP (optional)</label>
                   <input
@@ -354,6 +381,8 @@ export function EditSparkDialog({
                 </div>
               )}
 
+              {!isNas && (
+              <>
               <div>
                 <label className="mb-1 block text-xs text-muted">
                   MAC Address (Wake-on-LAN override)
@@ -375,7 +404,32 @@ export function EditSparkDialog({
                     : "Leave blank to use enP7s7 once the Spark has been online and detected."}
                 </p>
               </div>
+              </>
+              )}
 
+              {isNas && (
+                <div>
+                  <label className="mb-1 block text-xs text-muted">
+                    NAS LLM models path{" "}
+                    <span className="font-mono text-[9px] font-extrabold uppercase tracking-wider text-danger">required</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={config.nasRoot ?? ""}
+                    onChange={(e) => update({ nasRoot: e.target.value })}
+                    placeholder="/mnt/nas/llm-models"
+                    aria-label="NAS LLM models path"
+                    className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
+                  />
+                  <p className="mt-1 text-[10px] text-muted">
+                    Path as mounted on the node itself — becomes{" "}
+                    <code className="rounded bg-surface-elevated px-1">--root</code> for every modelctl store command.
+                  </p>
+                </div>
+              )}
+
+              {!isNas && (
+              <>
               <label className="flex items-center gap-2 text-xs text-muted">
                 <input
                   type="checkbox"
@@ -506,23 +560,34 @@ export function EditSparkDialog({
                 <code className="rounded bg-surface-elevated px-1">hermes update</code> on this
                 machine via SSH.
               </p>
+              </>
+              )}
 
               <label className="flex items-center gap-2 text-xs text-muted">
                 <input
                   type="checkbox"
-                  checked={Boolean(config.modelctlEnabled)}
+                  checked={isNas ? true : Boolean(config.modelctlEnabled)}
+                  disabled={isNas}
                   onChange={(e) => update({ modelctlEnabled: e.target.checked })}
                   className="rounded border-border"
                 />
-                <span>modelctl integration</span>
-                <span
-                  className="inline-flex shrink-0 cursor-help text-muted hover:text-text"
-                  title="modelctl model inventory, placement (sync/push), and serving scripts on this node."
-                  aria-label="Enable modelctl integration for this node."
-                >
-                  <InfoIcon className="h-3.5 w-3.5" />
-                </span>
+                <span>{isNas ? "modelctl integration — required for a store node" : "modelctl integration"}</span>
+                {!isNas && (
+                  <span
+                    className="inline-flex shrink-0 cursor-help text-muted hover:text-text"
+                    title="modelctl model inventory, placement (sync/push), and serving scripts on this node."
+                    aria-label="Enable modelctl integration for this node."
+                  >
+                    <InfoIcon className="h-3.5 w-3.5" />
+                  </span>
+                )}
               </label>
+              {isNas && (
+                <p className="text-[10px] text-muted">
+                  The Spark Command Agent carries metrics only. Every modelctl operation still needs SSH from
+                  the machine running sparkControl — this node must be SSH-reachable from there.
+                </p>
+              )}
 
               <label className="flex items-center gap-2 text-xs text-muted">
                 <input
@@ -541,6 +606,7 @@ export function EditSparkDialog({
                 </span>
               </label>
 
+              {!isNas && (
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
                 <label className="flex min-w-0 items-center gap-2">
                   <input
@@ -559,8 +625,9 @@ export function EditSparkDialog({
                   </span>
                 </label>
               </div>
+              )}
 
-              {role === "worker" && (
+              {role === "worker" && !isNas && (
                 <div className="space-y-3">
                   <div>
                     <label className="mb-1 block text-xs text-muted">
