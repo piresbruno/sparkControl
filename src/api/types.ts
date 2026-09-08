@@ -1001,7 +1001,7 @@ export interface ModelctlRelease {
 
 /** `modelctl doctor --json` pass-through; unparsable output arrives as { raw }. */
 export interface NasDoctorResponse {
-  report: Record<string, unknown> | { raw: string } | null;
+  report: unknown[] | Record<string, unknown> | { raw: string } | null;
   checkedAt: number;
   stale: boolean;
   error?: string;

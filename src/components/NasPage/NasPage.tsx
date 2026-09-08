@@ -1,15 +1,15 @@
 /**
  * NAS node page (spark kind "nas") — replaces the instrument console for
- * model-store nodes. Ported from mockups/nas-node.html §B: STORE (capacity,
+ * model-store nodes. Ported from mockups/nas-node.html §A–C: STORE (capacity,
  * catalog.json health, doctor), MODELS (NAS catalog + master–detail card),
- * DOWNLOAD (single pull or validated queue), MODELCTL (package vs release),
- * JOBS (this node only) and a SYSTEM hairline footer.
+ * DOWNLOAD (single pull or validated queue), JOBS (this node only) and a
+ * SYSTEM hairline footer.
  *
  * Reuses the console kit (.spark-console tokens from console.css) plus the
  * scoped additions in src/styles/nas.css (.nas-page). GPU/serving/benchmarks
  * are intentionally absent — this node has none.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import type {
   InventoryResponse,
   MctlJob,
@@ -47,18 +47,23 @@ import { fmtTBorGB, fmtUptimeShort } from "../SparkPage/console/consoleUtils";
 import {
   agoLabel,
   buildQueuePreview,
+  busyDownloadJob,
   doctorSummary,
+  doctorStats,
   fmtStore,
   isModelBusyDownloading,
+  jobPct,
   matchStoreMount,
   modelDownloadState,
   versionIsNewer,
 } from "./nasUtils";
 import "../../styles/console.css";
 import "../../styles/nas.css";
-
+import { ToastStack, useToasts } from "../../ui/Toasts";
+import { Pager } from "../../ui/Pager";
 const JOBS_POLL_MS = 4000;
 const BACKSTOP_POLL_MS = 60000;
+const PAGE_SIZE = 10;
 
 interface NasPageProps {
   spark: SparkSnapshot;
@@ -94,12 +99,6 @@ function dataField(k: string, v: string | null) {
   );
 }
 
-interface Toast {
-  id: number;
-  msg: string;
-  kind: "error" | "info";
-}
-
 /** One editable queue-builder row ("" = unset; trimmed before submit). */
 interface QueueRow {
   source: string;
@@ -132,14 +131,14 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
   const [status, setStatus] = useState<ModelctlStatus | null>(null);
   const [jobs, setJobs] = useState<MctlJob[]>([]);
 
-  const [toasts, setToasts] = useState<Toast[]>([]);
-  const toastSeq = useRef(0);
-  const pushToast = useCallback((msg: string, kind: Toast["kind"] = "error") => {
-    const id = ++toastSeq.current;
-    setToasts((prev) => [...prev, { id, msg, kind }]);
-    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4000);
-  }, []);
+  const { toasts, pushToast } = useToasts();
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [doctorBusy, setDoctorBusy] = useState(false);
 
+  // Derived per-poll: one job runs at a time per node (server 409s otherwise).
+  const running = jobs.filter((j) => j.status === "running");
+  const nodeJobRunning = running.length > 0;
+  const queueRunning = running.some((j) => j.kind === "queue");
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -205,13 +204,18 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
   }, [spark.id, refreshAll]);
 
   const submitJob = useCallback(
-    async (body: Parameters<typeof startJob>[0], okMsg: string) => {
+    async (body: Parameters<typeof startJob>[0], okMsg: string, key?: string) => {
+      if (key) setPendingAction(key);
       try {
         await startJob(body);
-        pushToast(okMsg, "info");
+        pushToast(okMsg, "ok");
         void refreshAll(false);
+        return true;
       } catch (err: unknown) {
         pushToast(err instanceof Error ? err.message : String(err));
+        return false;
+      } finally {
+        if (key) setPendingAction(null);
       }
     },
     [pushToast, refreshAll]
@@ -255,7 +259,7 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
 
   const handleDeleteClick = useCallback(
     (model: string) => {
-      if (!model) return;
+      if (!model || nodeJobRunning || pendingAction !== null) return;
       if (armedDelete !== model) {
         if (armTimer.current) window.clearTimeout(armTimer.current);
         setArmedDelete(model);
@@ -274,9 +278,9 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
         return;
       }
       disarmDelete();
-      void submitJob({ kind: "nas-delete", model, sparkId: spark.id }, `NAS delete queued for ${model}`);
+      void submitJob({ kind: "nas-delete", model, sparkId: spark.id }, `NAS delete queued for ${model}`, `delete:${model}`);
     },
-    [armedDelete, disarmDelete, spark.id, submitJob]
+    [armedDelete, disarmDelete, spark.id, submitJob, nodeJobRunning, pendingAction]
   );
 
   // Doctor repair is two-click armed too (kind repair-active runs --apply).
@@ -289,6 +293,7 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
     []
   );
   const handleRepairClick = useCallback(() => {
+    if (nodeJobRunning || pendingAction !== null) return;
     if (!armedRepair) {
       setArmedRepair(true);
       if (repairTimer.current) window.clearTimeout(repairTimer.current);
@@ -297,8 +302,8 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
     }
     if (repairTimer.current) window.clearTimeout(repairTimer.current);
     setArmedRepair(false);
-    void submitJob({ kind: "repair-active", sparkId: spark.id }, "Repair job started · repair-active --apply");
-  }, [armedRepair, spark.id, submitJob]);
+    void submitJob({ kind: "repair-active", sparkId: spark.id }, "Repair job started · repair-active --apply", "repair");
+  }, [armedRepair, spark.id, submitJob, nodeJobRunning, pendingAction]);
 
   // ── DOWNLOAD ─────────────────────────────────────────────────────────
   const [mode, setMode] = useState<"single" | "queue">("single");
@@ -307,9 +312,8 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
   const [dlQuant, setDlQuant] = useState("");
   const [dlRev, setDlRev] = useState("");
   const [busy, setBusy] = useState(false);
-
   const handleSingleDownload = useCallback(async () => {
-    if (busy || !dlRepo.trim()) return;
+    if (busy || nodeJobRunning || pendingAction !== null || !dlRepo.trim()) return;
     setBusy(true);
     try {
       await startJob({
@@ -319,7 +323,7 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
         quantization: dlQuant.trim() || undefined,
         revision: dlRev.trim() || undefined,
       });
-      pushToast("Download job queued — follow it in CH·05 below", "info");
+      pushToast("Download job queued — follow it in CH·04 below", "ok");
       setDlRepo("");
       setDlName("");
       setDlQuant("");
@@ -330,7 +334,7 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
     } finally {
       setBusy(false);
     }
-  }, [busy, dlRepo, dlName, dlQuant, dlRev, pushToast, refreshAll]);
+  }, [busy, dlRepo, dlName, dlQuant, dlRev, pushToast, refreshAll, nodeJobRunning, pendingAction]);
 
   const [qRows, setQRows] = useState<QueueRow[]>([emptyRow(), emptyRow()]);
   const [qJobs, setQJobs] = useState(2);
@@ -338,6 +342,7 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
     setQRows((prev) => prev.map((r, k) => (k === i ? { ...r, ...patch } : r)));
   const entries = toEntries(qRows);
   const handleQueue = useCallback(() => {
+    if (nodeJobRunning || pendingAction !== null) return;
     if (entries.length === 0) {
       pushToast("Queue needs at least one entry with a source");
       return;
@@ -354,9 +359,10 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
     }
     void submitJob(
       { kind: "queue", entries, jobs: qJobs, sparkId: spark.id },
-      `Queue job started — ${entries.length} downloads, ${qJobs} parallel`
+      `Queue job started — ${entries.length} downloads, ${qJobs} parallel`,
+      "queue"
     );
-  }, [entries, pushToast, qJobs, spark.id, submitJob]);
+  }, [entries, pushToast, qJobs, spark.id, submitJob, nodeJobRunning, pendingAction]);
 
   // Derived chips ────────────────────────────────────────────────────────
   const installed = status?.version ? `v${status.version}` : null;
@@ -364,12 +370,22 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
   // A stale release tag that is OLDER than the installed version must not
   // advertise a "vX available" update (string inequality would).
   const updateAvailable = versionIsNewer(latest, status?.version ?? null);
-
-  const running = jobs.filter((j) => j.status === "running");
-  const queueRunning = running.some((j) => j.kind === "queue");
   const selectedModel = models.find((m) => m.name === selected) ?? null;
   const selectedBusy = selected ? isModelBusyDownloading(selected, jobs) : false;
   const selectedState = selected ? modelDownloadState(selected, jobs) : null;
+  const selectedBusyJob = selected ? busyDownloadJob(selected, jobs) : null;
+  const selectedBusyPct = selectedBusyJob ? jobPct(selectedBusyJob) : null;
+  const selectedBusyLastLine =
+    selectedBusyJob?.logTail.trim().split("\n").slice(-1)[0]?.slice(0, 90) ?? "";
+  const doctorStatsData = doctorStats(doctor?.report ?? null);
+  const doctorClean =
+    doctorStatsData != null && doctorStatsData.findings === 0 && doctorStatsData.repairable === 0;
+
+  // Pagination — the detail card renders outside the slice (selection persists).
+  const [page, setPage] = useState(0);
+  const pageCount = Math.max(1, Math.ceil(models.length / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount - 1);
+  const pagedModels = models.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
 
   const cmdSinglePreview = ["modelctl download", dlRepo.trim() || "org/model"]
     .concat(dlName.trim() ? ["--name", dlName.trim()] : [])
@@ -378,7 +394,7 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
     .concat(root ? ["--root", root] : [])
     .join(" ");
 
-  const hw = spark.hardware?.device ?? null;
+
 
   return (
     <div
@@ -411,7 +427,7 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
           </div>
         </div>
         <div className="plate" role="group" aria-label="Node data plate">
-          {dataField("HW", hw)}
+
           {dataField("Store", root || null)}
           {dataField("Addr", spark.lanIp ?? null)}
           {dataField("Up", spark.online ? fmtUptimeShort(spark.uptime) : "offline")}
@@ -434,11 +450,13 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
                 <button
                   type="button"
                   className="key key--sm key--primary"
-                  title="Runs the install-modelctl job: uv tool install --force <source>"
+                  disabled={nodeJobRunning}
+                  title={nodeJobRunning ? "— one job runs at a time on this node" : "Runs the install-modelctl job: uv tool install --force <source>"}
                   onClick={() =>
                     void submitJob(
                       { kind: "install-modelctl", sparkId: spark.id },
-                      "modelctl update job started"
+                      "modelctl update job started",
+                      "update-mctl"
                     )
                   }
                 >
@@ -455,16 +473,7 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
           >
             ssh
           </span>
-          <span
-            className="chip"
-            title={
-              spark.transport === "agent"
-                ? "Spark Command Agent connected"
-                : "Spark Command Agent not installed on this node"
-            }
-          >
-            {spark.transport === "agent" ? "agent · on" : "agent · off"}
-          </span>
+
           <button type="button" className="key key--primary" onClick={onEdit}>
             ✎ Edit
           </button>
@@ -541,8 +550,9 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
               <button
                 type="button"
                 className="key key--sm"
-                title={`modelctl catalog refresh --root ${root || "—"}`}
-                onClick={() => void submitJob({ kind: "catalog-refresh", sparkId: spark.id }, "Catalog refresh job started")}
+                disabled={nodeJobRunning}
+                title={nodeJobRunning ? "— one job runs at a time on this node" : `modelctl catalog refresh --root ${root || "—"}`}
+                onClick={() => void submitJob({ kind: "catalog-refresh", sparkId: spark.id }, "Catalog refresh job started", "catalog")}
               >
                 ⟳ Refresh catalog
               </button>
@@ -572,27 +582,57 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
         {/* doctor */}
         <div className="sub-card sub-card--inset">
           <div className="spread">
-            <span className="mlabel">
-              Last doctor run · {agoLabel(doctor?.checkedAt)}
-              {doctor?.stale ? " · stale" : ""}
-            </span>
+            <div className="row">
+              {doctor?.error ? (
+                <ScChip tone="err" title={doctor.error}>unreachable</ScChip>
+              ) : doctorStatsData ? (
+                doctorStatsData.findings > 0 ? (
+                  <ScChip tone="warn" title={`${doctorStatsData.findings} non-benign status(es), ${doctorStatsData.repairable} repairable`}>
+                    {doctorStatsData.findings} finding{doctorStatsData.findings === 1 ? "" : "s"}
+                  </ScChip>
+                ) : (
+                  <ScChip tone="live">ok</ScChip>
+                )
+              ) : (
+                <ScChip>…</ScChip>
+              )}
+              <span className="mlabel">
+                Last doctor run · {agoLabel(doctor?.checkedAt)}
+                {doctor?.stale ? " · stale" : ""}
+              </span>
+            </div>
             <div className="row">
               <button
                 type="button"
                 className="key key--sm key--primary"
-                title={`modelctl doctor --json --root ${root || "—"}`}
-                onClick={() =>
+                disabled={doctorBusy || nodeJobRunning}
+                title={nodeJobRunning ? "— one job runs at a time on this node" : `modelctl doctor --json --root ${root || "—"}`}
+                onClick={() => {
+                  setDoctorBusy(true);
                   void runNasDoctor(true)
-                    .then((d) => alive.current && setDoctor(d))
+                    .then((d) => {
+                      if (alive.current) setDoctor(d);
+                      if (!d.error) pushToast("Doctor report updated", "ok");
+                    })
                     .catch((err: unknown) => pushToast(err instanceof Error ? err.message : String(err)))
-                }
+                    .finally(() => {
+                      if (alive.current) setDoctorBusy(false);
+                    });
+                }}
               >
-                ⚕ Run doctor
+                {doctorBusy ? "Running…" : "⚕ Run doctor"}
               </button>
               <button
                 type="button"
                 className="key key--sm key--warn"
-                title={`modelctl repair-active --root ${root || "—"} --apply`}
+                disabled={nodeJobRunning || doctorClean}
+                title={
+                  doctorClean
+                    ? "Doctor reports all active refs valid — nothing to repair"
+                    : nodeJobRunning
+                      ? "— one job runs at a time on this node"
+                      : `modelctl repair-active --root ${root || "—"} --apply`
+                }
                 onClick={handleRepairClick}
               >
                 {armedRepair ? "Confirm repair →" : "⚒ Repair active refs"}
@@ -601,7 +641,9 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
           </div>
           <p className="cmd-cap">
             {doctor?.error ? (
-              <span className="log-warn">{doctor.error}</span>
+              <span className="log-dim">
+                doctor could not run — check SSH reachability, then run doctor again
+              </span>
             ) : doctor ? (
               doctorSummary(doctor.report)
             ) : (
@@ -631,8 +673,10 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
               {inv?.error ? `Inventory failed: ${inv.error}` : "The store is empty — queue a download below."}
             </div>
           ) : (
-            models.map((m) => {
+            pagedModels.map((m) => {
               const state = modelDownloadState(m.name, jobs);
+              const busyJob = state ? busyDownloadJob(m.name, jobs) : null;
+              const pct = busyJob ? jobPct(busyJob) : null;
               return (
                 <button
                   key={m.name}
@@ -659,6 +703,7 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
                       >
                         <ScLed state="accent" />
                         {state === "queue" ? "queue · staging" : "downloading"}
+                        {pct != null ? ` · ${pct}%` : ""}
                       </span>
                     ) : (
                       <span className="xref">detail ↓</span>
@@ -669,6 +714,12 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
             })
           )}
         </div>
+        <Pager
+          page={safePage}
+          pageCount={pageCount}
+          total={models.length}
+          onPage={setPage}
+        />
         <p className="cmd-cap">
           modelctl list --json {root ? `--root ${root}` : ""}{" "}
           <span className="log-dim">→ active validated objects only</span>
@@ -707,6 +758,20 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
                 ✕
               </button>
             </div>
+
+            {selectedBusyJob ? (
+              selectedBusyPct != null ? (
+                <div>
+                  <div className="job-progress">
+                    <div className="job-progress__fill" style={{ "--pct": `${selectedBusyPct}%` } as CSSProperties} />
+                  </div>
+                  <p className="cmd-cap">
+                    {selectedBusyLastLine ? `${selectedBusyLastLine} · ` : ""}
+                    {selectedBusyPct}%
+                  </p>
+                </div>
+              ) : null
+            ) : null}
 
             {selectedBusy ? (
               <div className="notice" role="note">
@@ -772,11 +837,13 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
                   type="button"
                   className="xref xref--accent"
                   style={{ marginLeft: "auto", background: "none", border: 0, cursor: "pointer" }}
-                  title={`modelctl sync-cards ${selected} ${root ? `--root ${root}` : ""}`}
+                  disabled={nodeJobRunning}
+                  title={nodeJobRunning ? "— one job runs at a time on this node" : `modelctl sync-cards ${selected} ${root ? `--root ${root}` : ""}`}
                   onClick={() =>
                     void submitJob(
                       { kind: "sync-cards", model: selected, sparkId: spark.id },
-                      `Cards sync queued for ${selected}`
+                      `Cards sync queued for ${selected}`,
+                      `sync:${selected}`
                     )
                   }
                 >
@@ -795,12 +862,13 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
                 <button
                   type="button"
                   className="key key--sm"
-                  disabled={selectedBusy}
-                  title={`modelctl update ${selected} ${root ? `--root ${root}` : ""}`}
+                  disabled={nodeJobRunning || selectedBusy}
+                  title={nodeJobRunning ? "— one job runs at a time on this node" : `modelctl update ${selected} ${root ? `--root ${root}` : ""}`}
                   onClick={() =>
                     void submitJob(
                       { kind: "update", model: selected, sparkId: spark.id },
-                      `Update queued for ${selected}`
+                      `Update queued for ${selected}`,
+                      `update:${selected}`
                     )
                   }
                 >
@@ -809,11 +877,13 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
                 <button
                   type="button"
                   className="key key--sm"
-                  title={`modelctl sync-cards ${selected} ${root ? `--root ${root}` : ""}`}
+                  disabled={nodeJobRunning}
+                  title={nodeJobRunning ? "— one job runs at a time on this node" : `modelctl sync-cards ${selected} ${root ? `--root ${root}` : ""}`}
                   onClick={() =>
                     void submitJob(
                       { kind: "sync-cards", model: selected, sparkId: spark.id },
-                      `Cards sync queued for ${selected}`
+                      `Cards sync queued for ${selected}`,
+                      `sync:${selected}`
                     )
                   }
                 >
@@ -822,7 +892,7 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
                 <button
                   type="button"
                   className="key key--sm key--danger"
-                  disabled={selectedBusy}
+                  disabled={nodeJobRunning || selectedBusy}
                   title={
                     armedDelete === selected
                       ? `Click again to delete ${selected} from the NAS store NOW — modelctl delete --apply --yes`
@@ -926,7 +996,8 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
               <label className="field">
                 <span className="field__label">Revision</span>
                 <input
-                  type="text"
+                  disabled={busy || nodeJobRunning || pendingAction !== null || !dlRepo.trim()}
+                  title={nodeJobRunning ? "— one job runs at a time on this node" : "modelctl download REPO --name N --quantization Q --root …"}
                   value={dlRev}
                   onChange={(e) => setDlRev(e.target.value)}
                   placeholder="main"
@@ -936,9 +1007,8 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
               <div className="row" style={{ gap: 6 }}>
                 <button
                   type="button"
-                  className="key key--sm key--run"
-                  disabled={busy || !dlRepo.trim()}
-                  title="modelctl download REPO --name N --quantization Q --root …"
+                  disabled={busy || nodeJobRunning || pendingAction !== null || !dlRepo.trim()}
+                  title={nodeJobRunning ? "— one job runs at a time on this node" : "modelctl download REPO --name N --quantization Q --root …"}
                   onClick={() => void handleSingleDownload()}
                 >
                   ⤓ Download
@@ -1062,8 +1132,8 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
               <button
                 type="button"
                 className="key key--sm key--primary"
-                disabled={entries.length === 0}
-                title={`modelctl queue downloads.yaml --jobs ${qJobs} ${root ? `--root ${root}` : ""}`}
+                disabled={entries.length === 0 || nodeJobRunning || pendingAction !== null}
+                title={nodeJobRunning ? "— one job runs at a time on this node" : `modelctl queue downloads.yaml --jobs ${qJobs} ${root ? `--root ${root}` : ""}`}
                 onClick={handleQueue}
               >
                 ✓ Validate + queue
@@ -1082,76 +1152,14 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
         )}
         {queueRunning ? (
           <p className="cmd-cap">
-            <ScLed state="accent" /> a queue job is running — see CH·05 below
+            <ScLed state="accent" /> a queue job is running — see CH·04 below
           </p>
         ) : null}
       </ScModule>
 
-      {/* ── CH·04 MODELCTL ──────────────────────────────────────────── */}
-      <ScChHead code="04" title="modelctl" note="the CLI that owns this store" />
-      <ScModule label="modelctl package" id="sec-modelctl">
-        <div className="kv-grid">
-          <div className="kv">
-            <span className="kv__label">Installed</span>
-            <span className={`kv__value${status?.error ? " kv__value--warning" : " kv__value--success"}`}>
-              {installed ?? (status ? "not installed" : "…")}
-            </span>
-            <span className="kv__hint">uv tool · modelctl --version</span>
-          </div>
-          <div className="kv">
-            <span className="kv__label">Latest release</span>
-            <span className={`kv__value${updateAvailable ? " kv__value--warning" : ""}`}>
-              {latest ?? "unknown"}
-            </span>
-            <span className="kv__hint">
-              GitHub · piresbruno/modelctl
-              {release?.error ? ` · probe failed: ${release.error}` : release?.publishedAt ? ` · ${agoLabel(release.publishedAt)}` : ""}
-            </span>
-          </div>
-          <div className="kv">
-            <span className="kv__label">uv</span>
-            <span className="kv__value">{status?.uv?.version ?? "—"}</span>
-            <span className="kv__hint">tool runner</span>
-          </div>
-          <div className="kv">
-            <span className="kv__label">Last job</span>
-            <span className="kv__value" style={{ paddingTop: 2 }}>
-              {jobs[0] ? (
-                <span className={jobStatusClass(jobs[0].status)}>
-                  {jobs[0].name || jobs[0].kind} · {jobs[0].status}
-                </span>
-              ) : (
-                "—"
-              )}
-            </span>
-            <span className="kv__hint">{jobs[0] ? agoLabel(jobs[0].endedAt ?? jobs[0].startedAt ?? jobs[0].createdAt) : ""}</span>
-          </div>
-        </div>
-        <div className="hairline" />
-        <div className="spread">
-          <div className="row">
-            <button
-              type="button"
-              className="key key--primary"
-              title="runs the existing install-modelctl job on this node"
-              onClick={() =>
-                void submitJob({ kind: "install-modelctl", sparkId: spark.id }, "modelctl update job started")
-              }
-            >
-              ⟳ Update modelctl
-            </button>
-          </div>
-          <span className="cmd-cap">uv tool install --force …/modelctl → re-check after the job completes</span>
-        </div>
-        <p className="field__hint">
-          Same job the compute nodes use — 0.x minor bumps are features; the store&apos;s{" "}
-          <code>catalog.json</code> schema is migrated by the first <code>catalog refresh</code> after the
-          update.
-        </p>
-      </ScModule>
 
-      {/* ── CH·05 JOBS ──────────────────────────────────────────────── */}
-      <ScChHead code="05" title="Jobs" note="this node only" />
+      {/* ── CH·04 JOBS ──────────────────────────────────────────────── */}
+      <ScChHead code="04" title="Jobs" note="this node only" />
       <ScModule label="Jobs" id="sec-jobs">
         {jobs.length === 0 ? (
           <p className="cmd-cap">
@@ -1159,19 +1167,34 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
           </p>
         ) : (
           <div className="job-card">
-            {jobs.slice(0, 12).map((j) => (
-              <div className="job-row" key={j.jobId}>
-                <span className={jobStatusClass(j.status)}>{j.status}</span>
-                <span className="job-row__name">{j.name || j.kind}</span>
-                <span className="job-row__meta">
-                  {agoLabel(j.startedAt ?? j.createdAt)}
-                  {j.lastError ? ` · ${j.lastError}` : ""}
-                </span>
-                {j.status === "running" && j.logTail ? (
-                  <pre className="job-row__log">{j.logTail}</pre>
-                ) : null}
-              </div>
-            ))}
+            {jobs.slice(0, 12).map((j) => {
+              const pct = j.status === "running" ? jobPct(j) : null;
+              const lastLine = j.logTail.trim().split("\n").slice(-1)[0]?.slice(0, 90) ?? "";
+              return (
+                <div className="job-row" key={j.jobId}>
+                  <span className={jobStatusClass(j.status)}>{j.status}</span>
+                  <span className="job-row__name">{j.name || j.kind}</span>
+                  <span className="job-row__meta">
+                    {agoLabel(j.startedAt ?? j.createdAt)}
+                    {j.lastError ? ` · ${j.lastError}` : ""}
+                  </span>
+                  {j.status === "running" && pct != null ? (
+                    <>
+                      <div className="job-progress">
+                        <div className="job-progress__fill" style={{ "--pct": `${pct}%` } as CSSProperties} />
+                      </div>
+                      {lastLine ? (
+                        <span className="cmd-cap">
+                          {lastLine} · {pct}%
+                        </span>
+                      ) : null}
+                    </>
+                  ) : j.status === "running" && j.logTail ? (
+                    <pre className="job-row__log">{j.logTail}</pre>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
         )}
       </ScModule>
@@ -1211,27 +1234,7 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
         </div>
       </ScModule>
 
-      {/* Toasts (house pattern) */}
-      <div
-        style={{
-          position: "fixed",
-          bottom: 16,
-          right: 16,
-          display: "flex",
-          flexDirection: "column",
-          gap: 6,
-          zIndex: 60,
-        }}
-      >
-        {toasts.map((t) => (
-          <span
-            key={t.id}
-            className={`text-xs rounded px-2 py-1 ${t.kind === "error" ? "bg-danger/10 text-danger" : "bg-accent-soft text-accent"}`}
-          >
-            {t.msg}
-          </span>
-        ))}
-      </div>
+      <ToastStack toasts={toasts} />
     </div>
   );
 }

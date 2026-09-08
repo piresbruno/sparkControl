@@ -444,6 +444,11 @@
   color: var(--color-danger);
   border-color: color-mix(in srgb, var(--color-danger) 34%, var(--color-border));
 }
+.spark-console .chip--warn {
+  background: color-mix(in srgb, var(--color-warning) 12%, transparent);
+  color: var(--color-warning);
+  border-color: color-mix(in srgb, var(--color-warning) 34%, var(--color-border));
+}
 .spark-console .bench-status-pill {
   display: inline-flex;
   align-items: center;

@@ -32,6 +32,7 @@ import {
 } from "../../../api/client";
 import { ScChip, ScModule, ScSubpanel } from "./ScKit";
 import { fmtGB, fmtInt, fmtSeconds, shortModelName, tokenizeLogLine } from "./consoleUtils";
+import { jobPct } from "../../NasPage/nasUtils";
 
 interface ScModelsProps {
   spark: SparkSnapshot;
@@ -69,12 +70,7 @@ const KIND_LABEL: Record<MctlJob["kind"], string> = {
   update: "update ↧",
 };
 
-/** Progress % — parsed from the newest `NN%` in logTail (no pct field on MctlJob). */
-function jobPct(job: MctlJob): number | null {
-  const matches = [...job.logTail.matchAll(/(\d+)%/g)];
-  if (!matches.length) return null;
-  return Math.min(100, Math.max(0, Number(matches[matches.length - 1][1])));
-}
+
 
 /** "sync unsloth/Llama-3.1-8B → worker-2" → "Llama-3.1-8B → worker-2" */
 function jobModelLabel(job: MctlJob): string {

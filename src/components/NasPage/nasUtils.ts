@@ -56,15 +56,36 @@ export function modelDownloadState(
   model: string,
   jobs: Pick<MctlJob, "kind" | "status" | "name" | "logTail">[]
 ): "download" | "queue" | null {
+  const job = busyDownloadJob(model, jobs);
+  if (!job) return null;
+  return job.kind === "download" ? "download" : "queue";
+}
+
+/**
+ * The running download/queue job whose name/logTail names `model`, or null.
+ * Single source of truth for per-model in-flight state (row overlays, detail
+ * card, progress bars).
+ */
+export function busyDownloadJob(
+  model: string,
+  jobs: Pick<MctlJob, "kind" | "status" | "name" | "logTail">[]
+): Pick<MctlJob, "kind" | "status" | "name" | "logTail"> | null {
   for (const j of jobs) {
     if (j.status !== "running") continue;
     if (j.kind === "download") {
-      if (j.name.split(/\s+/).includes(model)) return "download";
+      if (j.name.split(/\s+/).includes(model)) return j;
     } else if (j.kind === "queue") {
-      if (j.logTail && j.logTail.split(/\s+/).includes(model)) return "queue";
+      if (j.logTail && j.logTail.split(/\s+/).includes(model)) return j;
     }
   }
   return null;
+}
+
+/** Progress % — parsed from the newest `NN%` in logTail (no pct field on MctlJob). */
+export function jobPct(job: Pick<MctlJob, "logTail">): number | null {
+  const matches = [...job.logTail.matchAll(/(\d+)%/g)];
+  if (!matches.length) return null;
+  return Math.min(100, Math.max(0, Number(matches[matches.length - 1][1])));
 }
 
 /** True while `model` is named in a running download/queue job. */
@@ -165,6 +186,47 @@ export function doctorSummary(report: unknown): string {
   } catch {
     return "report unavailable";
   }
+}
+
+/**
+ * Machine-readable doctor stats for pill/CTA decisions: total checks,
+ * non-benign findings, and how many are repairable. Mirrors doctorSummary's
+ * shape handling: array → count statuses; object counters → failed/repairable
+ * when present (null findings = unknown); string/{raw}/null → null (unknown —
+ * never disables the repair CTA on unknown shapes).
+ */
+export function doctorStats(
+  report: unknown
+): { total: number; findings: number; repairable: number } | null {
+  if (report == null) return null;
+  if (typeof report === "string") return null;
+  if (Array.isArray(report)) {
+    let findings = 0;
+    let repairable = 0;
+    for (const item of report) {
+      let key = "unknown";
+      if (item && typeof item === "object" && "status" in item) {
+        const st = (item as { status?: unknown }).status;
+        if (typeof st === "string") key = st;
+      }
+      if (!DOCTOR_BENIGN[key]) findings += 1;
+      if (key === "repairable_directory") repairable += 1;
+    }
+    return { total: report.length, findings, repairable };
+  }
+  const o = report as Record<string, unknown>;
+  if (typeof o.raw === "string") return null;
+  const num = (k: string): number | null =>
+    typeof o[k] === "number" && Number.isFinite(o[k]) ? (o[k] as number) : null;
+  const checks = num("checks") ?? num("total") ?? num("checks_total");
+  const repair = num("repairable");
+  const failed = num("failed") ?? (Array.isArray(o.issues) ? (o.issues as unknown[]).length : null);
+  if (checks == null && failed == null && repair == null) return null;
+  return {
+    total: checks ?? 0,
+    findings: failed ?? 0,
+    repairable: repair ?? 0,
+  };
 }
 
 /**

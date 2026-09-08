@@ -18,12 +18,10 @@ import type {
 
 const JOBS_POLL_MS = 4000;
 const NAS_POLL_MS = 60_000;
+const PAGE_SIZE = 10;
 
-interface Toast {
-  id: number;
-  msg: string;
-  kind: "error" | "info";
-}
+import { ToastStack, useToasts } from "../../ui/Toasts";
+import { Pager } from "../../ui/Pager";
 
 function gb(bytes: number | null | undefined): string {
   if (bytes == null || !Number.isFinite(bytes)) return "-";
@@ -73,7 +71,7 @@ function DatabaseIcon({ className = "" }: { className?: string }) {
 export function ModelsPage() {
   const [nas, setNas] = useState<InventoryResponse | null>(null);
   const [modelctl, setModelctl] = useState<ModelctlStatus | null>(null);
-  const [toasts, setToasts] = useState<Toast[]>([]);
+  const { toasts, pushToast } = useToasts();
   const [dlOpen, setDlOpen] = useState(false);
   const [dlRepo, setDlRepo] = useState("");
   const [dlName, setDlName] = useState("");
@@ -81,13 +79,6 @@ export function ModelsPage() {
   const [dlRev, setDlRev] = useState("");
   const [busy, setBusy] = useState(false);
   const [jobs, setJobs] = useState<MctlJobLite[]>([]);
-  const toastSeq = useRef(0);
-
-  const pushToast = useCallback((msg: string, kind: Toast["kind"] = "error") => {
-    const id = ++toastSeq.current;
-    setToasts((prev) => [...prev, { id, msg, kind }]);
-    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4000);
-  }, []);
 
   const refreshNas = useCallback(async (force = false) => {
     setNas(await listNasModels({ force }).catch((e) => ({ models: [], error: String(e) })));
@@ -167,7 +158,7 @@ export function ModelsPage() {
         quantization: dlQuant.trim() || undefined,
         revision: dlRev.trim() || undefined,
       });
-      pushToast("Download job queued — jobs appear on the NAS host node", "info");
+      pushToast("Download job queued — jobs appear on the NAS host node", "ok");
       setDlRepo("");
       setDlName("");
       setDlQuant("");
@@ -205,7 +196,7 @@ export function ModelsPage() {
       setBusy(true);
       try {
         await startJob({ kind: "nas-delete", model: model.name });
-        pushToast(`NAS delete queued for ${model.name}`, "info");
+        pushToast(`NAS delete queued for ${model.name}`, "ok");
       } catch (err) {
         pushToast(String(err));
       } finally {
@@ -222,6 +213,12 @@ export function ModelsPage() {
   const storeChip = `nas · ${models.length} model${models.length === 1 ? "" : "s"}${
     totalBytes > 0 ? ` · ${(totalBytes / 1024 ** 3).toFixed(1)} GB store` : ""
   }`;
+
+  // Pagination — shared with the node page's Models channel.
+  const [page, setPage] = useState(0);
+  const pageCount = Math.max(1, Math.ceil(models.length / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount - 1);
+  const pagedModels = models.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
 
   const activeJob = jobs.find((j) => j.status === "running");
 
@@ -343,7 +340,7 @@ export function ModelsPage() {
               {error ? error : "NAS catalog empty — download a model from Hugging Face."}
             </div>
           ) : (
-            models.map((m) => (
+            pagedModels.map((m) => (
               <div key={m.name ?? m.repository} className="nas-table__row">
                 <span className="font-medium" style={{ fontWeight: 600 }}>
                   {m.name ?? "—"}
@@ -375,21 +372,19 @@ export function ModelsPage() {
           )}
         </div>
 
+        <Pager
+          page={safePage}
+          pageCount={pageCount}
+          total={models.length}
+          onPage={setPage}
+        />
         <p className="empty-note" style={{ margin: "10px 2px 0" }}>
           To sync, push, serve or stop a model on a specific node, open that node from Overview →{" "}
           <b>Models</b> channel.
         </p>
       </section>
 
-      {toasts.map((t, i) => (
-        <span
-          key={t.id}
-          className={`text-xs rounded px-2 py-1 ${t.kind === "error" ? "bg-danger/10 text-danger" : "bg-accent-soft text-accent"}`}
-          style={{ position: "fixed", bottom: 16 + i * 34, right: 16, zIndex: 50 }}
-        >
-          {t.msg}
-        </span>
-      ))}
+      <ToastStack toasts={toasts} />
     </div>
   );
 }

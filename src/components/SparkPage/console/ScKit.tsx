@@ -154,13 +154,23 @@ export function ScSubpanel({
 export function ScChip({
   tone = "default",
   children,
+  title,
 }: {
-  tone?: "default" | "accent" | "live" | "err";
+  tone?: "default" | "accent" | "live" | "warn" | "err";
   children: ReactNode;
+  title?: string;
 }) {
   const cls =
-    tone === "default" ? "chip" : tone === "accent" ? "chip chip--accent" : tone === "live" ? "chip chip--live" : "chip chip--err";
-  return <span className={cls}>{children}</span>;
+    tone === "default"
+      ? "chip"
+      : tone === "accent"
+        ? "chip chip--accent"
+        : tone === "live"
+          ? "chip chip--live"
+          : tone === "warn"
+            ? "chip chip--warn"
+            : "chip chip--err";
+  return <span className={cls} title={title}>{children}</span>;
 }
 
 export function ScLed({ state = "off" }: { state?: "off" | "live" | "success" | "accent" | "danger" }) {
