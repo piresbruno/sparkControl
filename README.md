@@ -125,15 +125,42 @@ recorded (when capture is on) with status, TTFT, duration, token counts, finish 
 
 ### modelctl integration (Models page)
 
-Wraps the [`modelctl`](https://github.com/piresbruno/modelctl) CLI for inventory + placement — the dashboard
-never generates serve commands and never calls destructive NAS `delete`.
+Wraps the [`modelctl`](https://github.com/piresbruno/modelctl) CLI for inventory + placement. Serve commands
+are surfaced only as `modelctl serve-command` output to copy, and NAS `delete` is destructive by design: dry-run
+first, then an explicitly armed apply.
 
 - **NAS inventory** (`modelctl list --json --root <nasRoot>`, 60 s cache) and **node inventory** (`list --local --json`, 30 s cache; last-good served stale for 5× TTL on failure).
 - **Download from Hugging Face** to the NAS, **sync NAS → node** (`sync-local`), **push node → node** over ConnectX-7 (`push --host … --jobs 4`, runs on the source node), **remove from node**.
 - **Placement planning:** for any model × target node → `present` / `sync` / `push` (with the peer that holds it) / `unavailable`, surfaced as one-click remediations in the node matrix.
 - **modelctl/uv validation** per node with an idempotent **install-modelctl** job (git check → uv installer → `uv tool install --force` → verify).
-- Per-spark opt-in: **"modelctl integration"** checkbox in Add/Edit Spark.
+- Per-spark opt-in: **"modelctl integration"** checkbox in Add/Edit Spark (forced on for `kind: "nas"` nodes).
 - Heavyweight ops run as detached remote jobs with live log tails; one active job per node (409 otherwise).
+
+#### NAS model-store node
+
+A `kind: "nas"` Spark is the machine that **owns** the modelctl store root — typically an always-on NAS host
+(e.g. an Ubuntu LXC/VM that mounts the share) rather than a GPU node. Pick **Unit type → NAS model store** and
+set **NAS LLM models path** (the path *as mounted on that node*; `nfsLinks` mounts may need symlink fixes there).
+It is stored per-spark as `nasRoot` and used as `--root` for every store command; leaving it empty falls back to
+the global `modelctl.nasRoot`. NAS operations resolve to this node automatically: `defaultNasSpark()` prefers
+`kind: "nas"` first, then `modelctl.nasHostSparkId`, then head → local → sole spark — so the picker in Settings
+is only needed when the store lives on a compute node instead.
+
+The node page becomes a store console (no serving, GPU, or benchmark panels):
+
+- **Store** — capacity gauge from the node's storage metrics, model count, and the `catalog.json` block
+  (schema/generation/last refresh + a `catalog-refresh` job).
+- **Models** — master-detail over the NAS catalog: resolved path, copyable serve command, `RUN.md` excerpt,
+  `update`, `sync-cards`, and delete (dry-run `delete-plan` preview, then armed `--apply --yes`).
+- **Download** — single pull or a validated queue; the `downloads.yaml` is built server-side from the form rows
+  (`modelctl queue … --jobs N --root …`), raw YAML is never accepted.
+- **modelctl** — installed version vs the latest GitHub release, with an `update` job
+  (`uv tool install --force ./modelctl`); `doctor --json` audit with two-click `repair-active --apply`.
+- **Jobs** — this node's job history (queue / catalog / repair / cleanup / sync-cards / update).
+
+`modelctl doctor` reports a top-level **array** of audit items; `parseDoctorJson` accepts that shape (and objects
+defensively) and the UI summarizes items by real status vocabulary. Version chips compare numerically
+(`versionIsNewer`), so an installed `v0.18.0` is never flagged against a `v0.9.6` release.
 
 ### Serving scripts
 
@@ -365,7 +392,7 @@ If the key file has a non-default name (e.g. `id_ed25519_shared`), mount it **as
 
 ## Architecture
 
-Design principle: **one Spark model, N instances**. Every unit is a record in `config/sparks.json` with a `kind` field (`spark` or `host`). The same `SparkMonitor`, `SystemCollector`, and `LlmProbe` code runs for all of them. Adding a unit is a config change, not a code change.
+Design principle: **one Spark model, N instances**. Every unit is a record in `config/sparks.json` with a `kind` field (`spark`, `host`, or `nas`). The same `SparkMonitor`, `SystemCollector`, and `LlmProbe` code runs for all of them. Adding a unit is a config change, not a code change.
 
 ```txt
 ┌────────────────────── Docker container (sparkControl) ─────────────────────┐
@@ -517,6 +544,7 @@ Copy `.env.example` to `.env` if needed:
 2. Choose **Unit type**:
    - **NVIDIA DGX Spark** — the default; hardware summary shows DGX Spark specs and the CX7 IP field is available.
    - **Dedicated GPU host** — any Linux machine with an NVIDIA GPU. It is monitored exactly like a Spark (SSH + `nvidia-smi`) but is **not** reported as a DGX Spark: the header shows a detected hardware summary (GPU model, CPU, RAM) instead of fixed GB10 specs, and the page shows separate **RAM** and **VRAM** panels (VRAM from `nvidia-smi`, RAM from system memory). On the unit page, RAM → Network → Storage stack in the right column with GPU filling the left column.
+   - **NAS model store** — a node (e.g. the Ubuntu VM that mounts the model store) that owns the modelctl `--root` but serves nothing. Compute-only fields (LLM ports, head/worker role, CX7, WoL, monitoring toggles) are hidden; **NAS LLM models path** becomes required and is used as `--root` for every store command; modelctl integration is forced on. All NAS operations (downloads, sync, catalog, delete, doctor/repair) then target this node automatically. See [NAS model-store node](#nas-model-store-node).
 3. Set **Name**, **LAN IP** (required), optional **CX7 IP** (Sparks only), **SSH user**, and auth (key or password). LAN IP is probed from the sparkControl host. Key auth in Docker needs a key mounted into the container (see Quick start). Wake-on-LAN MAC is auto-read from **enP7s7** when online (optional override in Edit).
 4. **Test Connection** for SSH + LLM reachability.
 5. Save — a tab appears and metrics start streaming.
