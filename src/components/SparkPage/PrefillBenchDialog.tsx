@@ -13,6 +13,7 @@ import {
   PREFILL_CONTEXT_SIZES,
   PREFILL_DEFAULT_CONTEXT_SIZES,
   formatContextSize,
+  formatTtft,
 } from "../../shared/prefillBench.js";
 
 interface PrefillBenchDialogProps {
@@ -68,11 +69,6 @@ function statusLabel(status: PrefillBenchJob["status"]): string {
     default:
       return status;
   }
-}
-
-function formatTtft(ms: number): string {
-  if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
-  return `${Math.round(ms)}ms`;
 }
 
 function defaultSelected(contextLength: number | null): number[] {

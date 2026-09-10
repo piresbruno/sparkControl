@@ -29,3 +29,13 @@ export function formatContextSize(tokens) {
   if (n >= 1000 && n % 1000 === 0) return `${n / 1000}k`;
   return String(n);
 }
+
+/**
+ * TTFT duration, same convention as the bench dialogs: ms under a second,
+ * seconds above (`380ms` / `3.80s`).
+ * @param {number} ms
+ */
+export function formatTtft(ms) {
+  if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
+  return `${Math.round(ms)}ms`;
+}

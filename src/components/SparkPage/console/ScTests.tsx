@@ -12,7 +12,8 @@ import { ScModule } from "./ScKit";
 import { useActivePrefillBench } from "./useActivePrefillBench";
 import { BenchmarkDialog } from "../BenchmarkDialog";
 import { PrefillBenchDialog } from "../PrefillBenchDialog";
-import { formatContextSize } from "../../../shared/prefillBench.js";
+import { formatContextSize, formatTtft } from "../../../shared/prefillBench.js";
+import type { PrefillBenchJob } from "../../../api/types";
 
 interface ScTestsProps {
   sparkId: string;
@@ -34,6 +35,35 @@ const GRID_STYLE: CSSProperties = {
 const CARD_STYLE: CSSProperties = { gap: "var(--space-2)" };
 const OFF_TITLE = "No engine running";
 const NO_PORT_TITLE = "No LLM port configured — enable LLM monitoring for this node";
+
+/**
+ * Chip line: level progress, the size being measured right now, and the
+ * throughput of the last level that finished (the runner only produces a
+ * measurement per completed level — one request per size).
+ */
+function prefillChipLabel(job: PrefillBenchJob): string {
+  const parts = [
+    "running",
+    `${job.progress.completedLevels}/${job.progress.totalLevels}`,
+  ];
+  if (job.progress.currentContext != null) {
+    parts.push(formatContextSize(job.progress.currentContext));
+  }
+  const last = job.results[job.results.length - 1];
+  if (last && last.prefillTps > 0) parts.push(`${Math.round(last.prefillTps)} tok/s`);
+  return parts.join(" · ");
+}
+
+/** Hover detail: phase message + one line per measured level. */
+function prefillChipTitle(job: PrefillBenchJob): string {
+  const lines = [job.progress.message || "Prefill benchmark running"];
+  for (const r of job.results) {
+    lines.push(
+      `${formatContextSize(r.targetTokens)} · ${r.prefillTps.toFixed(1)} tok/s · TTFT ${formatTtft(r.ttftMs)}`
+    );
+  }
+  return lines.join("\n");
+}
 
 export function ScTests({
   sparkId,
@@ -150,13 +180,9 @@ export function ScTests({
             {prefillRunning ? (
               <span
                 className="bench-status-pill bench-status-pill--running"
-                title={activePrefill.progress.message || "Prefill benchmark running"}
+                title={prefillChipTitle(activePrefill)}
               >
-                running · {activePrefill.progress.completedLevels}/
-                {activePrefill.progress.totalLevels}
-                {activePrefill.progress.currentContext != null
-                  ? ` · ${formatContextSize(activePrefill.progress.currentContext)}`
-                  : ""}
+                {prefillChipLabel(activePrefill)}
               </span>
             ) : contextLength == null && engineUp ? (
               <span className="empty-note">context length unknown — all sizes offered</span>

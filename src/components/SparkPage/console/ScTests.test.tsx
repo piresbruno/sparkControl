@@ -30,9 +30,22 @@ function job(over: Partial<PrefillBenchJob> = {}): PrefillBenchJob {
       currentContext: 8192,
       completedLevels: 1,
       totalLevels: 2,
-      message: "Measuring 8k…",
+      message: "Prefilling 8k…",
     },
-    results: [],
+    results: [
+      {
+        targetTokens: 4096,
+        promptTokens: 4102,
+        promptChars: 16000,
+        prefillTps: 745.3,
+        ttftMs: 1200,
+        ttftContentMs: null,
+        completionTokens: 8,
+        durationMs: 1300,
+        model: "m1",
+        error: null,
+      },
+    ],
     error: null,
     durationMs: 0,
     ...over,
@@ -83,8 +96,10 @@ describe("ScTests — prefill bench feedback", () => {
     await flushMount();
 
     const chip = container.querySelector(".bench-status-pill--running");
-    expect(chip?.textContent).toContain("running · 1/2 · 8k");
-    expect(chip?.getAttribute("title")).toBe("Measuring 8k…");
+    expect(chip?.textContent).toContain("running · 1/2 · 8k · 745 tok/s");
+    expect(chip?.getAttribute("title")).toBe(
+      "Prefilling 8k…\n4k · 745.3 tok/s · TTFT 1.20s"
+    );
     expect(screen.getByRole("button", { name: "Open prefill bench" })).toBeTruthy();
 
     // Poll (running cadence) reports the run finished.
