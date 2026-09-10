@@ -35,7 +35,7 @@ import { llmProbeHost } from "../collectors/llmHost.js";
 import { TRACE_MAX_REQ_BODY, TRACE_MAX_RES_BODY } from "../config.js";
 
 /** Idle timeout between upstream bytes (connect included). */
-const IDLE_TIMEOUT_MS = 300_000;
+const IDLE_TIMEOUT_MS = 600_000;
 
 /** Probe-style paths whose successful GETs are not recorded. */
 const PROBE_PATHS = new Set([
