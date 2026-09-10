@@ -28,6 +28,38 @@ test("sshExec passes key-auth argv, sanitizes env, resolves trimmed stdout", asy
   assert.ok(!("GITHUB_TOKEN" in captured.opts.env), "env whitelist excludes process noise");
 });
 
+test("sshExec multiplexes per host with a hand-expanded, short ControlPath", async () => {
+  const capture = async (host) => {
+    const captured = {};
+    _setExecFile((file, args, opts, cb) => {
+      captured.args = args;
+      cb(null, "ok", "");
+    });
+    await sshExec({ id: host, ssh: { host, user: "root", auth: "key" } }, "echo ok");
+    return captured.args;
+  };
+
+  const argsA = await capture("10.0.0.5");
+  assert.ok(argsA.includes("ControlMaster=auto"));
+  const controlPathArg = argsA.find((a) => a.startsWith("ControlPath="));
+  assert.ok(controlPathArg, "ControlPath present");
+  assert.match(controlPathArg, /^ControlPath=\/tmp\/sparkcontrol-[0-9a-f]{40}$/);
+  assert.ok(!controlPathArg.includes("%"), "expanded, not ssh's %C template");
+  assert.ok(
+    controlPathArg.length - "ControlPath=".length < 104,
+    "socket path under the sun_path limit"
+  );
+  assert.ok(argsA.includes("ControlPersist=300"));
+  assert.equal(argsA[argsA.indexOf("--") + 1], "root@10.0.0.5", "destination still after --");
+
+  const argsB = await capture("10.0.0.6");
+  assert.notEqual(
+    argsB.find((a) => a.startsWith("ControlPath=")),
+    controlPathArg,
+    "distinct socket per target host"
+  );
+});
+
 test("sshExec password auth routes via sshpass -e with SSHPASS env", async () => {
   _setSshpassAvailable(true);
   const captured = {};

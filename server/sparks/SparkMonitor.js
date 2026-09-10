@@ -6,7 +6,7 @@ import { ComfyProbe } from "../collectors/ComfyProbe.js";
 import { HermesProbe } from "../collectors/HermesProbe.js";
 import { TailscaleProbe } from "../collectors/TailscaleProbe.js";
 import { llmDaily } from "../collectors/LlmDaily.js";
-import { sshTest, sshExec } from "../collectors/ssh.js";
+import { sshExec } from "../collectors/ssh.js";
 import {
   POLL_INTERVAL_GPU,
   POLL_INTERVAL_CPU,
@@ -132,7 +132,13 @@ export class SparkMonitor {
     /** @type {ReturnType<typeof setInterval> | null} */
     this._tailscaleIntervalId = null;
     this._running = false;
-    /** @type {Record<string, boolean>} in-flight domain guards */
+    /**
+     * Bumped on every start()/stop()/config swap. In-flight collections
+     * capture it and discard their result when it changed — a poll that
+     * straddles a lifecycle boundary must not mutate state.
+     */
+    this._runGeneration = 0;
+    /** @type {Record<string, boolean|symbol>} in-flight domain guards */
     this._inflight = {};
     /** C3: true while an agent connection pushes metrics (SSH polls idle). */
     this._agentSuspended = false;
@@ -147,6 +153,15 @@ export class SparkMonitor {
     const wasTailscale = this._tailscaleMonitoringEnabled(this.spark);
     this.spark = spark;
     this.collector.spark = spark;
+
+    // The monitor object survives a config swap (hot update), so in-flight
+    // SSH reads started under the old config are still running. Bump the
+    // generation and drop the guards: their results are discarded on arrival
+    // (old host's metrics / rate baselines must not land under the new config),
+    // and fresh polls for the new config start immediately.
+    this._runGeneration += 1;
+    this._inflight = {};
+    this.collector.invalidatePendingCollections();
 
     // Rebuild LLM probe map — add new ports, remove stale ones, update existing
     const ports = this._llmDetectEnabled() ? this._llmPorts() : [];
@@ -368,6 +383,7 @@ export class SparkMonitor {
   /** Start background polling. */
   start() {
     if (this._running) return;
+    this._runGeneration += 1;
     this._running = true;
     this._stopped = false;
     this._poll();
@@ -442,6 +458,7 @@ export class SparkMonitor {
   stop() {
     this._running = false;
     this._stopped = true;
+    this._runGeneration += 1;
     for (const id of this._intervals) clearInterval(id);
     this._intervals = [];
     this._llmIntervalId = null;
@@ -536,36 +553,35 @@ export class SparkMonitor {
   // ─── Liveness ─────────────────────────────────────────────
   async _checkOnline() {
     if (!this._running || this._inflight.online) return;
-    this._inflight.online = true;
+    // Token + generation: a check that straddles stop()/updateConfig() must
+    // neither flip state nor clear the new lifecycle's in-flight guard.
+    const checkToken = Symbol("online");
+    const runGeneration = this._runGeneration;
+    const isCurrentRun = () => this._running && this._runGeneration === runGeneration;
+    this._inflight.online = checkToken;
     try {
+      let uptime;
       if (this.spark.isLocal) {
         await this.collector.pingHost();
+        if (!isCurrentRun()) return;
+        uptime = await this._readUptime();
       } else {
-        const result = await sshTest(this.spark);
-        // Re-check after the (up to 10s) SSH await — `stop()` may have fired
-        // mid-flight (removeSpark / updateSpark). Bail before mutating state or
-        // running into a stopped registry entry.
-        if (!this._running) return;
-        if (!result.ok) throw new Error(result.message);
+        // Remote: the uptime read IS the liveness probe — its round-trip
+        // proves the SSH session came up, so no separate sshTest login is paid.
+        uptime = await this._readUptime();
       }
-      if (!this._running) return;
+      if (!isCurrentRun()) return;
       this.online = true;
       this.lastOnlineOk = Date.now();
-
-      // Collect system uptime
-      try {
-        this._uptimeSeconds = await this._readUptime();
-      } catch {
-        // Non-fatal — uptime stays at previous value or null
-      }
+      this._uptimeSeconds = uptime;
     } catch {
-      if (!this._running) return;
+      if (!isCurrentRun()) return;
       if (!this.lastOnlineOk || Date.now() - this.lastOnlineOk > ONLINE_GRACE_MS) {
         this.online = false;
         this._uptimeSeconds = null;
       }
     } finally {
-      this._inflight.online = false;
+      if (this._inflight.online === checkToken) this._inflight.online = false;
     }
   }
 
@@ -597,7 +613,9 @@ export class SparkMonitor {
     if (domain === "comfy" && !this._comfyMonitoringEnabled()) return;
     if (domain === "hermes" && !this._hermesMonitoringEnabled()) return;
     if (domain === "tailscale" && !this._tailscaleMonitoringEnabled()) return;
-    this._inflight[domain] = true;
+    const pollToken = Symbol(domain);
+    const runGeneration = this._runGeneration;
+    this._inflight[domain] = pollToken;
     try {
       let result;
       switch (domain) {
@@ -635,12 +653,11 @@ export class SparkMonitor {
           result = this.hermesProbe ? await this.hermesProbe.check() : null;
           break;
       }
-      // Re-check after the await — `stop()`/`updateSpark()` may have torn
-      // this monitor down mid-flight. Writing `_metrics` on a dead monitor
-      // isn't user-visible (monitors.delete already happened) but it's a
-      // latent class of bug worth killing, and a replaced monitor could
-      // otherwise race the tail-end await onto the wrong object.
-      if (!this._running) return;
+      // Re-check after the await — `stop()`/`updateConfig()` may have torn this
+      // monitor down (or swapped its target host) mid-flight. A late result
+      // belongs to the previous lifecycle: committing it would show old-host
+      // metrics under the new config, so drop it.
+      if (!this._running || this._runGeneration !== runGeneration) return;
       switch (domain) {
         case "gpu":
           this._metrics.gpu = result;
@@ -695,14 +712,16 @@ export class SparkMonitor {
     } catch (err) {
       console.error(`[SparkMonitor] ${this.spark.id} ${domain} poll error:`, err.message);
     } finally {
-      this._inflight[domain] = false;
+      if (this._inflight[domain] === pollToken) this._inflight[domain] = false;
     }
   }
 
   /** Manually refresh a single domain, bypassing auto-poll guards. */
   async refreshDomain(domain) {
     if (this._inflight[domain]) return;
-    this._inflight[domain] = true;
+    const refreshToken = Symbol(domain);
+    const runGeneration = this._runGeneration;
+    this._inflight[domain] = refreshToken;
     try {
       let result;
       switch (domain) {
@@ -714,13 +733,13 @@ export class SparkMonitor {
           this._inflight[domain] = false;
           return this._pollDomain(domain);
       }
-      if (!this._running) return;
+      if (!this._running || this._runGeneration !== runGeneration) return;
       this._metrics.storage = result;
       this._lastUpdate[domain] = Date.now();
     } catch (err) {
       console.error(`[SparkMonitor] ${this.spark.id} ${domain} refresh error:`, err.message);
     } finally {
-      this._inflight[domain] = false;
+      if (this._inflight[domain] === refreshToken) this._inflight[domain] = false;
     }
   }
 

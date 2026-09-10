@@ -27,6 +27,12 @@ const LLM_PROBE_TIMEOUT_MS = 3000;
 const COMFY_PROBE_TIMEOUT_MS = parseInt(process.env.COMFY_PROBE_TIMEOUT_MS || "3000", 10);
 const TAILSCALE_PROBE_TIMEOUT_MS = parseInt(process.env.TAILSCALE_PROBE_TIMEOUT_MS || "8000", 10);
 const SSH_CONNECT_TIMEOUT = 5; // seconds
+// SSH connection multiplexing (ControlMaster): one long-lived master socket per
+// host+user collapses the many short-lived logins each poll cycle pays into a
+// single TCP/auth handshake. SSH_MULTIPLEX=0 disables it (escape hatch for
+// sshd_config MaxSessions 1); SSH_CONTROL_PERSIST is the idle TTL in seconds.
+const SSH_MULTIPLEX = process.env.SSH_MULTIPLEX !== "0";
+const SSH_CONTROL_PERSIST = process.env.SSH_CONTROL_PERSIST || "300";
 
 // ─── Poll intervals (milliseconds) ───────────────────────
 const POLL_INTERVAL_GPU = parseInt(process.env.POLL_INTERVAL_GPU || "2000", 10);
@@ -112,6 +118,8 @@ export {
   COMFY_PROBE_TIMEOUT_MS,
   TAILSCALE_PROBE_TIMEOUT_MS,
   SSH_CONNECT_TIMEOUT,
+  SSH_MULTIPLEX,
+  SSH_CONTROL_PERSIST,
   POLL_INTERVAL_GPU,
   POLL_INTERVAL_CPU,
   POLL_INTERVAL_NETWORK,

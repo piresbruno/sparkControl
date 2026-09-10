@@ -13,7 +13,7 @@ import {
 import {
   SortableContext,
   arrayMove,
-  horizontalListSortingStrategy,
+  rectSortingStrategy,
   sortableKeyboardCoordinates,
   useSortable,
 } from "@dnd-kit/sortable";
@@ -355,7 +355,7 @@ export function SparkTabs({
         <OverviewTab isActive={activeId === OVERVIEW_ID} onSelect={onSelect} />
         <AnalysisTab isActive={activeId === ANALYSIS_ID} onSelect={onSelect} />
         <ModelsTab isActive={activeId === MODELS_ID} onSelect={onSelect} />
-        <SortableContext items={items} strategy={horizontalListSortingStrategy}>
+        <SortableContext items={items} strategy={rectSortingStrategy}>
           {ordered.map((spark) => (
             <SortableTab
               key={spark.id}

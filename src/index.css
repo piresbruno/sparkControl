@@ -335,12 +335,14 @@ input:disabled {
 .pill-nav {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 4px;
   background: var(--color-surface-elevated);
   padding: 5px 6px;
-  border-radius: 50px;
+  /* Fully rounded at one-row height; sane corners once the nav wraps. */
+  border-radius: 23px;
   box-shadow: var(--shadow-card);
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
 }
 
@@ -863,6 +865,17 @@ input[type="checkbox"] {
   transition: opacity 0.24s ease;
   pointer-events: none;
 }
+/* Settings is a bottom sheet on phones (align + rounded top edge live on the
+   overlay/panel below); centred dialog from sm upward. */
+.settings-overlay {
+  align-items: flex-end;
+  overflow: hidden;
+}
+@media (min-width: 640px) {
+  .settings-overlay {
+    align-items: center;
+  }
+}
 .modal-overlay.is-open,
 .bench-overlay.is-open,
 .settings-overlay.is-open {
@@ -895,6 +908,12 @@ input[type="checkbox"] {
   opacity: 1;
 }
 .settings-panel {
+  /* Bounded height + internal scroll: the footer (Cancel/Save) stays pinned
+     and visible even when the form is taller than the viewport. */
+  display: flex;
+  flex-direction: column;
+  max-height: min(94dvh, 100%);
+  overflow: hidden;
   transform: translateY(10px) scale(0.97);
   opacity: 0;
   transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.22s ease;
@@ -905,6 +924,12 @@ input[type="checkbox"] {
   box-shadow: var(--shadow-shell);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
+}
+@media (max-width: 639px) {
+  .settings-panel {
+    max-height: 94dvh;
+    border-radius: 1.1rem 1.1rem 0 0;
+  }
 }
 :root .settings-panel,
 [data-theme="light"] .settings-panel {

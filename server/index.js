@@ -350,7 +350,7 @@ app.post("/api/sparks", (req, res) => {
     startMonitor(spark);
     res.json({ success: true, spark: registry.toPublic(spark) });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -396,7 +396,7 @@ app.patch("/api/sparks/:id", (req, res) => {
       hasPassword: registry.hasPassword(req.params.id),
     });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -407,7 +407,7 @@ app.delete("/api/sparks/:id", (req, res) => {
     stopMonitor(req.params.id);
     res.json({ success: true, removed });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -421,7 +421,7 @@ app.put("/api/sparks/order", (req, res) => {
     const sparks = registry.reorderSparks(order);
     res.json({ success: true, sparks });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -1389,7 +1389,7 @@ app.put("/api/sparks/:id/password", (req, res) => {
     if (mon) mon.updateConfig(registry.getSpark(req.params.id));
     res.json({ success: true, spark, hasPassword: true });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -1413,7 +1413,7 @@ app.put("/api/sparks/:id/disabled-devices", (req, res) => {
     }
     res.json({ success: true, disabledDevices });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -1438,7 +1438,7 @@ app.put("/api/sparks/:id/disabled-interfaces", (req, res) => {
     }
     res.json({ success: true, disabledInterfaces: cleaned });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -1477,7 +1477,7 @@ app.put("/api/sparks/:id/llm-ports", (req, res) => {
       llmApiKeyPorts: registry.llmApiKeyPorts(req.params.id),
     });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -1511,7 +1511,7 @@ app.put("/api/sparks/:id/llm-port", (req, res) => {
       llmApiKeyPorts: registry.llmApiKeyPorts(req.params.id),
     });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -1541,7 +1541,7 @@ app.post("/api/sparks/:id/llm-ports", (req, res) => {
     }
     res.json({ success: true, llmPorts: updated.llmPorts });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -1584,7 +1584,7 @@ app.delete("/api/sparks/:id/llm-ports/:port", (req, res) => {
       llmApiKeyPorts: registry.llmApiKeyPorts(req.params.id),
     });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -1619,7 +1619,7 @@ app.put("/api/sparks/:id/llm-ports/:port/api-key", (req, res) => {
       llmApiKeyPorts: registry.llmApiKeyPorts(req.params.id),
     });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    res.status(err.status || 400).json({ error: err.message });
   }
 });
 
@@ -2374,10 +2374,15 @@ agentWss.on("connection", (ws) => {
 
 wss.on("connection", (ws) => {
   console.log("[ws] client connected");
-  // Send the initial snapshot through the same path the broadcast uses so the
-  // new client benefits from the same payload format (and bufferedAmount
-  // guard, although a freshly-open socket trivially passes it).
-  broadcastPayload(buildSnapshotPayload());
+  // Send the initial snapshot to THIS client only. Broadcasting it (the old
+  // behavior) pushed a duplicate full snapshot at every already-connected
+  // dashboard each time a new tab opened, forcing a re-render there for data
+  // it already had. Payload format stays identical to the broadcast path.
+  try {
+    ws.send(buildSnapshotPayload());
+  } catch {
+    /* client vanished during connect — its close handler cleans up */
+  }
   ws.on("close", () => {
     console.log("[ws] client disconnected");
   });

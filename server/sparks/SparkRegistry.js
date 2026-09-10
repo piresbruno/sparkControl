@@ -78,9 +78,17 @@ export class SparkRegistry {
     }
     if (this.getSpark(config.id)) throw new Error(`Spark ${config.id} already exists`);
     const spark = this._normalizeConfig(config);
-    this._storePassword(spark.id, config?.ssh?.password);
-    this._sparks.push(spark);
-    this._save();
+    const nextSparks = [...this._sparks, spark];
+    // Write first, commit after: a failed disk write must not leave memory
+    // claiming a Spark that a restart would silently drop.
+    this._save(nextSparks);
+    try {
+      this._storePassword(spark.id, config?.ssh?.password);
+    } catch (err) {
+      this._save(this._sparks); // restore the pre-add file
+      throw err;
+    }
+    this._sparks = nextSparks;
     this._emit("add", this._withSecrets(spark));
     return this._withSecrets(spark);
   }
@@ -101,10 +109,13 @@ export class SparkRegistry {
     if (!/^([0-9a-f]{2}[:\-]){5}[0-9a-f]{2}$/.test(clean)) return null;
     const prev = this._sparks[idx];
     if (prev.detectedMacAddress === clean) return null;
-    this._sparks[idx] = this._normalizeConfig({ ...prev, detectedMacAddress: clean });
-    this._save();
-    this._emit("update", this._withSecrets(this._sparks[idx]));
-    return this.toPublic(this._sparks[idx]);
+    const nextSpark = this._normalizeConfig({ ...prev, detectedMacAddress: clean });
+    const nextSparks = [...this._sparks];
+    nextSparks[idx] = nextSpark;
+    this._save(nextSparks); // throws on failure — memory stays on the old value
+    this._sparks = nextSparks;
+    this._emit("update", this._withSecrets(nextSpark));
+    return this.toPublic(nextSpark);
   }
 
   /** Update an existing Spark by ID. Does not allow changing `id`. */
@@ -147,10 +158,12 @@ export class SparkRegistry {
 
     // Merge ssh carefully so we don't drop auth fields
     let mergedSsh = prev.ssh;
+    /** @type {string|null|undefined} password carried by this patch, if any */
+    let newPassword;
     if (safeUpdates.ssh) {
       mergedSsh = { ...prev.ssh, ...safeUpdates.ssh };
       if (Object.prototype.hasOwnProperty.call(safeUpdates.ssh, "password")) {
-        this._storePassword(id, safeUpdates.ssh.password);
+        newPassword = safeUpdates.ssh.password;
       }
       delete mergedSsh.password;
     }
@@ -161,28 +174,45 @@ export class SparkRegistry {
       id, // never overwrite id
       ssh: mergedSsh,
     };
-    this._sparks[idx] = this._normalizeConfig(updated);
-    this._save();
-    this._emit("update", this._withSecrets(this._sparks[idx]));
-    return this._withSecrets(this._sparks[idx]);
+    const nextSpark = this._normalizeConfig(updated);
+    const nextSparks = [...this._sparks];
+    nextSparks[idx] = nextSpark;
+    this._save(nextSparks);
+    if (newPassword !== undefined) {
+      try {
+        this._storePassword(id, newPassword);
+      } catch (err) {
+        this._save(this._sparks); // restore the pre-update file
+        throw err;
+      }
+    }
+    this._sparks = nextSparks;
+    this._emit("update", this._withSecrets(nextSpark));
+    return this._withSecrets(nextSpark);
   }
 
   /** Remove a Spark by ID. Returns removed Spark or null. */
   removeSpark(id) {
     const idx = this._sparks.findIndex((s) => s.id === id);
     if (idx === -1) return null;
-    const removed = this._sparks.splice(idx, 1)[0];
-    let secretsChanged = false;
-    if (this._passwords.has(id)) {
-      this._passwords.delete(id);
-      secretsChanged = true;
+    const removed = this._sparks[idx];
+    const nextSparks = this._sparks.filter((s) => s.id !== id);
+    const nextPasswords = new Map(this._passwords);
+    const nextLlmApiKeys = new Map(this._llmApiKeys);
+    const secretsChanged = nextPasswords.delete(id) || nextLlmApiKeys.delete(id);
+
+    this._save(nextSparks);
+    if (secretsChanged) {
+      try {
+        this._saveSecrets(nextPasswords, nextLlmApiKeys);
+      } catch (err) {
+        this._save(this._sparks); // restore the pre-remove file
+        throw err;
+      }
     }
-    if (this._llmApiKeys.has(id)) {
-      this._llmApiKeys.delete(id);
-      secretsChanged = true;
-    }
-    if (secretsChanged) this._persistSecrets();
-    this._save();
+    this._sparks = nextSparks;
+    this._passwords = nextPasswords;
+    this._llmApiKeys = nextLlmApiKeys;
     this._emit("remove", removed);
     return this.toPublic(removed);
   }
@@ -206,8 +236,8 @@ export class SparkRegistry {
     for (const s of this._sparks) {
       if (!seen.has(s.id)) next.push(s);
     }
+    this._save(next);
     this._sparks = next;
-    this._save();
     this._emit("reorder", null);
     return this.publicSparks;
   }
@@ -251,13 +281,24 @@ export class SparkRegistry {
         this._sparks.push(this._normalizeConfig(s));
       }
       if (migratedSecrets || loaded.some((s) => s?.ssh?.password)) {
-        this._persistSecrets();
-        this._save(); // rewrite sparks.json without passwords
+        // Best-effort rewrite: _save/_saveSecrets now throw, but a failed
+        // migration write must not drop the registry we just loaded (boot
+        // continues; the next successful mutation rewrites both files).
+        try {
+          this._persistSecrets();
+          this._save(); // rewrite sparks.json without passwords
+        } catch (err) {
+          console.error("[SparkRegistry] Failed to rewrite migrated secrets:", err.message);
+        }
       }
     } catch (err) {
       if (err.code === "ENOENT") {
         this._sparks = [];
-        this._save();
+        try {
+          this._save();
+        } catch (saveErr) {
+          console.error("[SparkRegistry] Failed to create sparks.json:", saveErr.message);
+        }
       } else {
         console.error("[SparkRegistry] Failed to load sparks.json:", err.message);
         this._sparks = [];
@@ -265,10 +306,18 @@ export class SparkRegistry {
     }
   }
 
-  _save() {
+  /**
+   * Persist a spark list. Always writes the GIVEN array so callers can stage a
+   * mutation, persist it, and only then commit to memory (write-then-commit) —
+   * a failed write must never leave memory ahead of disk.
+   * Throws (status 500) on failure: silently swallowing it let the registry
+   * diverge from sparks.json until the next successful write clobbered disk.
+   * @param {object[]} [source]
+   */
+  _save(source = this._sparks) {
     try {
       // Never write passwords / API keys to sparks.json
-      const sparks = this._sparks.map((s) => {
+      const sparks = source.map((s) => {
         const ssh = { ...(s.ssh || {}) };
         delete ssh.password;
         delete ssh.hasPassword;
@@ -280,8 +329,25 @@ export class SparkRegistry {
       // truncate the registry and silently drop every Spark on next restart.
       // 0o644 keeps the registry readable so root/non-root container users share it.
       atomicWrite(SPARKS_JSON_PATH, JSON.stringify(data, null, 2) + "\n", 0o644);
-    } catch (err) {
-      console.error("[SparkRegistry] Failed to save sparks.json:", err.message);
+    } catch (cause) {
+      const err = new Error(`Failed to save sparks.json: ${cause?.message || cause}`);
+      err.status = 500;
+      throw err;
+    }
+  }
+
+  /**
+   * Persist the given secret maps (write-then-commit, same contract as _save).
+   * @param {Map<string, string>} passwords
+   * @param {Map<string, Record<string, string>>} llmApiKeys
+   */
+  _saveSecrets(passwords, llmApiKeys) {
+    try {
+      saveSecrets(passwords, llmApiKeys);
+    } catch (cause) {
+      const err = new Error(`Failed to persist secrets: ${cause?.message || cause}`);
+      err.status = 500;
+      throw err;
     }
   }
 
@@ -304,15 +370,14 @@ export class SparkRegistry {
    */
   _storePassword(id, password) {
     if (password == null) return;
+    const next = new Map(this._passwords);
     if (password === "") {
-      if (this._passwords.has(id)) {
-        this._passwords.delete(id);
-        this._persistSecrets();
-      }
-      return;
+      if (!next.delete(id)) return;
+    } else {
+      next.set(id, String(password));
     }
-    this._passwords.set(id, String(password));
-    this._persistSecrets();
+    this._saveSecrets(next, this._llmApiKeys);
+    this._passwords = next;
   }
 
   /** Public helper: set password without other config changes (e.g. from Test / Edit). */
@@ -371,18 +436,19 @@ export class SparkRegistry {
   _storeLlmApiKey(id, port, apiKey) {
     if (apiKey == null) return;
     const portKey = String(port);
-    const existing = { ...(this._llmApiKeys.get(id) || {}) };
+    const next = new Map(this._llmApiKeys);
+    const existing = { ...(next.get(id) || {}) };
     if (apiKey === "") {
       if (!existing[portKey]) return;
       delete existing[portKey];
-      if (Object.keys(existing).length === 0) this._llmApiKeys.delete(id);
-      else this._llmApiKeys.set(id, existing);
-      this._persistSecrets();
-      return;
+      if (Object.keys(existing).length === 0) next.delete(id);
+      else next.set(id, existing);
+    } else {
+      existing[portKey] = String(apiKey).trim();
+      next.set(id, existing);
     }
-    existing[portKey] = String(apiKey).trim();
-    this._llmApiKeys.set(id, existing);
-    this._persistSecrets();
+    this._saveSecrets(this._passwords, next);
+    this._llmApiKeys = next;
   }
 
   /** Drop API key for a port (e.g. when the port is removed). */
@@ -412,8 +478,10 @@ export class SparkRegistry {
     if (!key) return;
     delete existing[String(from)];
     existing[String(to)] = key;
-    this._llmApiKeys.set(id, existing);
-    this._persistSecrets();
+    const next = new Map(this._llmApiKeys);
+    next.set(id, existing);
+    this._saveSecrets(this._passwords, next);
+    this._llmApiKeys = next;
   }
 
   /**
@@ -430,15 +498,17 @@ export class SparkRegistry {
         .filter(Boolean)
     );
     let changed = false;
-    const next = {};
+    const nextKeys = {};
     for (const [port, key] of Object.entries(existing)) {
-      if (keep.has(String(port))) next[port] = key;
+      if (keep.has(String(port))) nextKeys[port] = key;
       else changed = true;
     }
     if (!changed) return;
-    if (Object.keys(next).length === 0) this._llmApiKeys.delete(id);
-    else this._llmApiKeys.set(id, next);
-    this._persistSecrets();
+    const next = new Map(this._llmApiKeys);
+    if (Object.keys(nextKeys).length === 0) next.delete(id);
+    else next.set(id, nextKeys);
+    this._saveSecrets(this._passwords, next);
+    this._llmApiKeys = next;
   }
 
   /**
@@ -459,12 +529,7 @@ export class SparkRegistry {
   }
 
   _persistSecrets() {
-    try {
-      saveSecrets(this._passwords, this._llmApiKeys);
-    } catch (err) {
-      console.error("[SparkRegistry] Failed to persist secrets:", err.message);
-      throw err; // surface to API so the UI can show it
-    }
+    this._saveSecrets(this._passwords, this._llmApiKeys);
   }
 
   _withSecrets(spark) {

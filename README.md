@@ -526,6 +526,8 @@ Copy `.env.example` to `.env` if needed:
 | `POLL_INTERVAL_NVERR` | `60000` | Kernel journal scan for NVRM `NV_ERR_NO_MEMORY` (ms) |
 | `HERMES_UPDATE_TIMEOUT_MS` | `600000` | Hard timeout for running `hermes update` over SSH (ms) |
 | `POLL_INTERVAL_LIVENESS` | `5000` | Online/SSH liveness check (ms) |
+| `SSH_MULTIPLEX` | `1` | SSH connection multiplexing (`ControlMaster`): one socket per host+user is reused by every poll instead of logging in per command. Set `0` for hosts running `sshd` with `MaxSessions 1`. |
+| `SSH_CONTROL_PERSIST` | `300` | Seconds a multiplexed SSH master socket stays open after the last command. |
 | `SPARKDASH_SECRETS_KEY` | _(auto)_ | Passphrase or 64-char hex for secret encryption |
 | `HOST_PROC_PATH` | `/host/proc` | Host proc mount inside container |
 | `HOST_SYS_PATH` | `/host/sys` | Host sys mount |

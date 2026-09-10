@@ -49,6 +49,17 @@ export class SystemCollector {
     this._hardwareInfo = null;
     /** Cached NVRM NV_ERR_NO_MEMORY count (slow journal scan). */
     this._nvErrCache = { count: 0, at: 0 };
+
+    // Lifecycle sequence for CPU collection. Bumped when the owning monitor
+    // hands this collector a new spark config: a sample that resolves after the
+    // swap must not commit its rate baseline (old host's /proc/stat mix would
+    // make the next reading bogus).
+    this._cpuCollectionSequence = 0;
+  }
+
+  /** Invalidate in-flight CPU collections (spark config was replaced). */
+  invalidatePendingCollections() {
+    this._cpuCollectionSequence += 1;
   }
 
   /** Collect GPU metrics (temperature, usage, power, VRAM). */
@@ -67,6 +78,7 @@ export class SystemCollector {
   async collectCpu() {
     if (!this.spark.isLocal) return this._getRemoteCpu();
     try {
+      const seq = ++this._cpuCollectionSequence;
       // Read /proc/stat once and compute usage BEFORE estimating power.
       // Previously _getCPUPower re-read /proc/stat in parallel with _getCPUUsage,
       // racing on lastCpuStat and producing 0% (idle power) on the first poll.
@@ -75,8 +87,12 @@ export class SystemCollector {
       const usedDiff = usage.used - (this.lastCpuStat?.used || usage.used);
       const cpuPercentage = totalDiff > 0 ? Math.round((usedDiff / totalDiff) * 100) : 0;
       const usageFraction = totalDiff > 0 ? usedDiff / totalDiff : 0;
-      this.lastCpuStat = usage;
-      this.lastCpuUsagePct = cpuPercentage;
+      // Commit baselines only while this collection is still the active
+      // lifecycle; a config swap mid-read invalidates the sample.
+      if (seq === this._cpuCollectionSequence) {
+        this.lastCpuStat = usage;
+        this.lastCpuUsagePct = cpuPercentage;
+      }
 
       // Temperature and power can run in parallel — power is now a pure
       // function of the usage fraction (no extra /proc/stat read).
@@ -1040,6 +1056,7 @@ export class SystemCollector {
 
   async _getRemoteCpu(sshExecutor = sshExec) {
     try {
+      const seq = ++this._cpuCollectionSequence;
       const cmd = this._buildRemoteCpuCommand();
 
       const output = await sshExecutor(this.spark, cmd);
@@ -1052,7 +1069,11 @@ export class SystemCollector {
       const totalDiff = cpuStat.total - (this.lastCpuStat?.total || cpuStat.total);
       const usedDiff = cpuStat.used - (this.lastCpuStat?.used || cpuStat.used);
       const usage = totalDiff > 0 ? Math.round((usedDiff / totalDiff) * 100) : 0;
-      this.lastCpuStat = cpuStat;
+      // Same lifecycle guard as the local path: don't let an old-config sample
+      // land in the fresh lifecycle's baselines.
+      if (seq === this._cpuCollectionSequence) {
+        this.lastCpuStat = cpuStat;
+      }
 
       // ARM/Neoverse power estimation
       const isArm = /CPU architecture:\s*[89]|aarch64|ARMv[89]|armv[89]/i.test(cpuinfoOut);
@@ -1178,6 +1199,10 @@ export class SystemCollector {
         "echo '---'",
         // WoL MAC for the primary LAN NIC on DGX Spark
         `cat /sys/class/net/${WOL_INTERFACE}/address 2>/dev/null || true`,
+        "echo '---'",
+        // Every NIC's link speed in the same round-trip — a per-interface
+        // `cat .../speed` used to cost an extra SSH login on every poll.
+        'for d in /sys/class/net/*/speed; do echo "$(basename $(dirname $d)):$(cat $d 2>/dev/null)"; done 2>/dev/null || true',
       ].join("; ");
 
       const output = await sshExec(this.spark, cmd);
@@ -1187,6 +1212,15 @@ export class SystemCollector {
       const ipOut = sections[2]?.trim() || "";
       const operstateOut = sections[3]?.trim() || "";
       const wolMac = normalizeMac(sections[4]?.trim() || "");
+
+      // Parse NIC link speeds ("enP7s7:10000"); absent/blank speeds stay unknown
+      const speedMap = new Map();
+      for (const line of (sections[5]?.trim() || "").split("\n")) {
+        const idx = line.indexOf(":");
+        if (idx <= 0) continue;
+        const mbps = parseInt(line.slice(idx + 1).trim(), 10);
+        if (Number.isFinite(mbps) && mbps > 0) speedMap.set(line.slice(0, idx), mbps);
+      }
 
       // Parse operstate lines ("enP7s7:up")
       const operstateMap = new Map();
@@ -1256,22 +1290,7 @@ export class SystemCollector {
         primaryInterface = alt?.name ?? primaryInterface;
       }
 
-      let linkSpeedMbps = null;
-      if (primaryInterface) {
-        try {
-          // Interface name is from the kernel; still keep it to safe chars
-          if (/^[a-zA-Z0-9._-]+$/.test(primaryInterface)) {
-            const speedRaw = await sshExec(
-              this.spark,
-              `cat /sys/class/net/${primaryInterface}/speed 2>/dev/null || true`
-            );
-            const n = parseInt(String(speedRaw).trim(), 10);
-            if (Number.isFinite(n) && n > 0) linkSpeedMbps = n;
-          }
-        } catch {
-          /* link speed optional */
-        }
-      }
+      const linkSpeedMbps = (primaryInterface && speedMap.get(primaryInterface)) || null;
 
       return { primaryInterface, linkSpeedMbps, interfaces: tagged, wolMac };
     } catch (err) {

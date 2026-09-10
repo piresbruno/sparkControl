@@ -10,6 +10,8 @@ Format: version sections are listed newest first.
 ## [Unreleased]
 
 ### Added
+- **SSH connection multiplexing** — every SSH command to a Spark reuses one long-lived ControlMaster socket per host+user (hand-expanded `%C` hash, `/tmp/sparkcontrol-<hash>`) instead of paying a fresh login per poll (upstream measured ~217 logins/min per remote Spark at default cadence). `SSH_MULTIPLEX=0` disables it (sshd `MaxSessions 1` hosts); `SSH_CONTROL_PERSIST` (default 300 s) tunes the idle TTL.
+- **Remote spark round trips halved** — liveness proves the SSH session via the uptime read itself (no separate `sshTest` login), and NIC link speeds ride the existing joined remote command instead of a per-poll `cat .../speed`.
 - **Instrument-console node detail page** — Spark pages are rebuilt as a four-channel console (Resources / Serving / Models / Tests) with a data-plate rack header, status-LED channel rail, derived engine-activity pill, direct + proxy endpoint cards, 12-stat serving readout, and armed stop; legacy expert panels remain behind disclosures. Workers navigate to their head.
 - **Worker card attribution** — Overview worker cards show, on the card: the head Spark's name, the model being served (head engine first, own detection probe as fallback), and the node's modelctl version (lazy probe of opt-in, online workers; "not installed" when absent/offline). The snapshot now mirrors `modelctlEnabled`.
 - **NAS catalog delete** — the Models tab (now NAS-catalog-only) gains a per-row Delete that queues the new `nas-delete` job kind: `modelctl delete NAME --root <nasRoot> --apply --yes` on the machine managing the NAS store (defaultNasSpark, same as downloads). Destructive by design; the button documents the exact command.
@@ -21,6 +23,10 @@ Format: version sections are listed newest first.
 - **Models tab = NAS catalog only** — per the approved mockup: HF download form + Name/Runtime/Repository/Size/Delete table with a summary chip and stale/modelctl badges. The per-node matrix, node select, serving controls and active-jobs panel are removed — per-node model management lives on the node detail page (Models channel); a pointer note says so.
 
 ### Fixed
+- **Dashboard WS connect** — the initial snapshot goes only to the connecting client; previously every open tab received a duplicate full snapshot (and re-render) whenever another tab opened.
+- **Monitor lifecycle races** — collections that straddle `stop()` / config swaps are discarded (run-generation + in-flight token guards): a stale poll can no longer flip `online` or commit old-host metrics / CPU rate baselines under a new config, and can't clear the new lifecycle's in-flight guard.
+- **Spark registry durability** — mutations are write-then-commit with rollback; a failed save now surfaces as HTTP 500 instead of being swallowed (memory could claim a Spark that disk never got, or lose credentials on a half-applied change).
+- **Settings sheet on phones** — Cancel/Save stay pinned while the form scrolls (bottom sheet ≤639 px, safe-area-aware footer); the Sparks pill nav wraps onto multiple rows and drag-reorder follows the wrap.
 - **Analysis table alignment** — header and rows now share one grid, so every column lines up with its data; numeric columns (Tok/s, TTFT, Duration) are right-aligned tabular figures and the status pill no longer stretches. Narrow viewports scroll the table horizontally instead of crushing columns.
 - **Analysis TTFT/duration units** — values ≥ 1 s were rendered as `3.8kms`; they now format as `380ms` / `3.80s` / `1m 4s` (same convention as the bench dialogs), in the table and the trace detail sheet.
 - **Page-wide filter dropdowns** — the global `select { width: 100% }` rule wrapped the Analysis and Models serving filter bars onto their own full-width rows; toolbar selects now size to content (`.select-inline`).

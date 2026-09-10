@@ -6,8 +6,17 @@
  * Password auth uses sshpass -e (password via env), not -p on the command line.
  */
 import { execFile as _execFileReal } from "child_process";
+import crypto from "crypto";
 import fs from "fs";
-import { COMFY_PORT, COMFY_PROBE_TIMEOUT_MS, SSH_CONNECT_TIMEOUT } from "../config.js";
+import os from "os";
+import path from "path";
+import {
+  COMFY_PORT,
+  COMFY_PROBE_TIMEOUT_MS,
+  SSH_CONNECT_TIMEOUT,
+  SSH_CONTROL_PERSIST,
+  SSH_MULTIPLEX,
+} from "../config.js";
 import { isAllowedTargetHost, isValidSshUser } from "../validate.js";
 import { llmProbeHost } from "./llmHost.js";
 
@@ -67,6 +76,34 @@ function sshpassAvailable() {
     _sshpassAvailable = false;
   }
   return _sshpassAvailable;
+}
+
+/**
+ * ControlMaster options for a host+user pair.
+ *
+ * The socket path is expanded here (sha1 of `localhost:user:host:22`) instead of
+ * passing ssh's `%C` template — ssh expands `%C` itself, but the resulting path
+ * must stay under the kernel's ~104-byte sun_path limit, and hashing by hand
+ * keeps one deterministic socket per target. SSH_MULTIPLEX=0 turns multiplexing
+ * off per-invocation (sshd MaxSessions 1 hosts).
+ */
+function multiplexOpts({ targetHost, user }) {
+  if (!SSH_MULTIPLEX) {
+    return ["-o", "ControlMaster=no", "-o", "ControlPath=none"];
+  }
+  const hash = crypto
+    .createHash("sha1")
+    .update(`${os.hostname()}:${user}:${targetHost}:22`)
+    .digest("hex");
+  const controlPath = path.join("/tmp", `sparkcontrol-${hash}`);
+  return [
+    "-o",
+    "ControlMaster=auto",
+    "-o",
+    `ControlPath=${controlPath}`,
+    "-o",
+    `ControlPersist=${SSH_CONTROL_PERSIST}`,
+  ];
 }
 
 /**
@@ -138,11 +175,11 @@ export async function sshExec(spark, cmd, options = {}) {
     // Password via env (sshpass -e) — never on argv or in process list as -p
     env.SSHPASS = password;
     file = "sshpass";
-    args = ["-e", "ssh", ...baseOpts, "--", remote, cmd];
+    args = ["-e", "ssh", ...baseOpts, ...multiplexOpts({ targetHost, user }), "--", remote, cmd];
   } else {
     // Key-based SSH (default) — BatchMode prevents hanging on missing keys
     file = "ssh";
-    args = [...baseOpts, "-o", "BatchMode=yes"];
+    args = [...baseOpts, ...multiplexOpts({ targetHost, user }), "-o", "BatchMode=yes"];
     const identityFile = process.env.SSH_IDENTITY_FILE;
     if (identityFile) {
       args.push("-i", identityFile);
