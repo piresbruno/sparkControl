@@ -9,8 +9,10 @@
  */
 import { useState, type CSSProperties } from "react";
 import { ScModule } from "./ScKit";
+import { useActivePrefillBench } from "./useActivePrefillBench";
 import { BenchmarkDialog } from "../BenchmarkDialog";
 import { PrefillBenchDialog } from "../PrefillBenchDialog";
+import { formatContextSize } from "../../../shared/prefillBench.js";
 
 interface ScTestsProps {
   sparkId: string;
@@ -42,6 +44,12 @@ export function ScTests({
 }: ScTestsProps) {
   const [benchOpen, setBenchOpen] = useState(false);
   const [prefillOpen, setPrefillOpen] = useState(false);
+  // Live "prefill bench running" feedback: a run takes minutes and the dialog
+  // may be closed, so the channel reports it (poll-based, no server change).
+  // The button then opens the dialog attached to the active run — the server
+  // rejects a second concurrent bench with 409 anyway.
+  const activePrefill = useActivePrefillBench(sparkId, primaryPort);
+  const prefillRunning = activePrefill?.status === "running";
   // Showcase: works offline to view history (legacy LlmPanel contract).
   const showcaseUp = primaryPort != null;
   // Benches: need a live endpoint; the server fills in the model id.
@@ -137,9 +145,20 @@ export function ScTests({
               style={engineUp ? undefined : { opacity: 0.5 }}
               onClick={() => setPrefillOpen(true)}
             >
-              ▶ Run prefill bench
+              {prefillRunning ? "Open prefill bench" : "▶ Run prefill bench"}
             </button>
-            {contextLength == null && engineUp ? (
+            {prefillRunning ? (
+              <span
+                className="bench-status-pill bench-status-pill--running"
+                title={activePrefill.progress.message || "Prefill benchmark running"}
+              >
+                running · {activePrefill.progress.completedLevels}/
+                {activePrefill.progress.totalLevels}
+                {activePrefill.progress.currentContext != null
+                  ? ` · ${formatContextSize(activePrefill.progress.currentContext)}`
+                  : ""}
+              </span>
+            ) : contextLength == null && engineUp ? (
               <span className="empty-note">context length unknown — all sizes offered</span>
             ) : null}
           </div>
