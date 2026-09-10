@@ -31,6 +31,8 @@ function job(over: Partial<PrefillBenchJob> = {}): PrefillBenchJob {
       completedLevels: 1,
       totalLevels: 2,
       message: "Prefilling 8k…",
+      levelStartedAt: null,
+      timeoutMs: null,
     },
     results: [
       {
@@ -50,6 +52,16 @@ function job(over: Partial<PrefillBenchJob> = {}): PrefillBenchJob {
     durationMs: 0,
     ...over,
   };
+}
+
+/**
+ * Fresh object graph per call, like the real fetch (JSON parse) — React bails
+ * out of re-rendering on identical references, which would freeze the clock.
+ */
+function respond(active: PrefillBenchJob | null) {
+  vi.mocked(client.listPrefillBench).mockImplementation(async () =>
+    structuredClone(listResponse(active))
+  );
 }
 
 function listResponse(active: PrefillBenchJob | null): PrefillBenchListResponse {
@@ -73,7 +85,7 @@ const advance = (ms: number) =>
 
 beforeEach(() => {
   vi.useFakeTimers();
-  vi.mocked(client.listPrefillBench).mockResolvedValue(listResponse(job()));
+  vi.mocked(client.listPrefillBench).mockImplementation(async () => listResponse(job()));
 });
 
 afterEach(() => {
@@ -83,7 +95,19 @@ afterEach(() => {
 });
 
 describe("ScTests — prefill bench feedback", () => {
-  it("shows a running chip with progress, then clears it when the run ends", async () => {
+  it("shows the in-flight size with a running clock and the last measured rate", async () => {
+    // Level started 42s ago, aborted by the runner at 36m (256k cap).
+    const levelStartedAt = Date.now() - 42_000;
+    respond(
+      job({
+        progress: {
+          ...job().progress,
+          currentContext: 262144,
+          levelStartedAt,
+          timeoutMs: 2_157_152,
+        },
+      })
+    );
     const { container } = render(
       <ScTests
         sparkId="spark-1"
@@ -95,20 +119,22 @@ describe("ScTests — prefill bench feedback", () => {
     );
     await flushMount();
 
-    const chip = container.querySelector(".bench-status-pill--running");
-    expect(chip?.textContent).toContain("running · 1/2 · 8k · 745 tok/s");
-    expect(chip?.getAttribute("title")).toBe(
-      "Prefilling 8k…\n4k · 745.3 tok/s · TTFT 1.20s"
+    const chip = () => container.querySelector(".bench-status-pill--running");
+    expect(chip()?.textContent).toContain("running · 1/2 · 256k · 42s · 745 tok/s");
+    expect(chip()?.getAttribute("title")).toBe(
+      "Prefilling 256k for 42s, cap 36m\n4k · 745.3 tok/s · TTFT 1.20s"
     );
     expect(screen.getByRole("button", { name: "Open prefill bench" })).toBeTruthy();
 
-    // Poll (running cadence) reports the run finished.
-    vi.mocked(client.listPrefillBench).mockResolvedValue(
-      listResponse(job({ status: "completed", completedAt: 2000, durationMs: 1000 }))
-    );
+    // Poll ticks the clock, so a long level visibly progresses.
+    await advance(1000);
+    expect(chip()?.textContent).toContain("running · 1/2 · 256k · 43s");
+
+    // Next poll (running cadence) reports the run finished.
+    respond(job({ status: "completed", completedAt: 2000, durationMs: 1000 }));
     await advance(1000);
 
-    expect(container.querySelector(".bench-status-pill--running")).toBeNull();
+    expect(chip()).toBeNull();
     expect(screen.getByRole("button", { name: "▶ Run prefill bench" })).toBeTruthy();
   });
 

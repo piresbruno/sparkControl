@@ -3,6 +3,7 @@
  */
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
+import http from "http";
 import os from "os";
 import path from "path";
 import fs from "fs";
@@ -86,4 +87,67 @@ test("PrefillBenchManager.start rejects empty sizes and overlapping jobs", () =>
       }),
     /already running/i
   );
+});
+
+test("a running job reports the in-flight size, its start time, and the abort cap", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prefill-progress-"));
+  const mgr = new PrefillBenchManager(
+    path.join(dir, "hist.json"),
+    path.join(dir, "active.json")
+  );
+
+  // Minimal SSE engine: first token after a delay, then a usage chunk.
+  const engine = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      setTimeout(() => {
+        res.write(
+          'data: {"model":"m1","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1024,"completion_tokens":1,"total_tokens":1025}}\n\n'
+        );
+        res.write("data: [DONE]\n\n");
+        res.end();
+      }, 200);
+    });
+  });
+  await new Promise((resolve) => engine.listen(0, "127.0.0.1", resolve));
+  const port = engine.address().port;
+  const waitFor = async (predicate) => {
+    for (let i = 0; i < 200; i++) {
+      const value = predicate();
+      if (value) return value;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return null;
+  };
+
+  try {
+    mgr.start({ sparkId: "s1", lanIp: "127.0.0.1", port, modelId: "m1", contextSizes: [1024] });
+
+    // Warmup precedes the first level, so wait for the level to be announced.
+    const inFlight = await waitFor(() => {
+      const active = mgr.getActive("s1");
+      return active?.progress?.currentContext != null ? active : null;
+    });
+    assert.ok(inFlight, "level reported in flight");
+    assert.equal(inFlight.progress.currentContext, 1024);
+    assert.equal(typeof inFlight.progress.levelStartedAt, "number");
+    assert.equal(inFlight.progress.timeoutMs, timeoutMsForSize(1024));
+    assert.match(inFlight.progress.message, /Prefilling 1k/);
+
+    // Completion clears them: a finished job must not advertise a live level.
+    const finished = await waitFor(() => {
+      const active = mgr.getActive("s1");
+      if (active) return null;
+      const last = mgr.getLast("s1");
+      return last && last.status !== "running" ? last : null;
+    });
+    assert.ok(finished, "job finished");
+    assert.equal(finished.status, "completed");
+    assert.equal(finished.progress.currentContext, null);
+    assert.equal(finished.progress.levelStartedAt, null);
+    assert.equal(finished.progress.timeoutMs, null);
+  } finally {
+    engine.close();
+  }
 });

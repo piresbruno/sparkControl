@@ -323,6 +323,8 @@ export class PrefillBenchManager {
           ...(snap.progress || {}),
           message: "Interrupted",
           currentContext: null,
+          levelStartedAt: null,
+          timeoutMs: null,
         },
       };
       if (interrupted.completedAt && interrupted.startedAt) {
@@ -385,6 +387,8 @@ export class PrefillBenchManager {
       job.error = reason;
       job.progress.message = "Interrupted";
       job.progress.currentContext = null;
+      job.progress.levelStartedAt = null;
+      job.progress.timeoutMs = null;
       job.completedAt = Date.now();
       this.activeBySpark.delete(job.sparkId);
       this._pushHistory(job);
@@ -470,6 +474,8 @@ export class PrefillBenchManager {
         completedLevels: 0,
         totalLevels: contextSizes.length,
         message: "Starting…",
+        levelStartedAt: null,
+        timeoutMs: null,
       },
       results: [],
       error: null,
@@ -518,11 +524,19 @@ export class PrefillBenchManager {
             job.error = "Cancelled by user";
             job.progress.message = "Cancelled";
           }
+          job.progress.currentContext = null;
+          job.progress.levelStartedAt = null;
+          job.progress.timeoutMs = null;
           break;
         }
 
         job.progress.currentContext = size;
         job.progress.message = `Prefilling ${formatContextSize(size)}…`;
+        // Prefill is not streamed — the engine says nothing until the first
+        // token — so the only honest intra-level feedback is how long this
+        // size has been running plus the abort ceiling it is bound by.
+        job.progress.levelStartedAt = Date.now();
+        job.progress.timeoutMs = timeoutMsForSize(size);
         this._checkpointActive();
 
         const row = await runPrefillSize({
@@ -540,6 +554,9 @@ export class PrefillBenchManager {
             job.error = "Cancelled by user";
             job.progress.message = "Cancelled";
           }
+          job.progress.currentContext = null;
+          job.progress.levelStartedAt = null;
+          job.progress.timeoutMs = null;
           break;
         }
 
@@ -555,6 +572,8 @@ export class PrefillBenchManager {
       if (job.status === "running") {
         job.status = "completed";
         job.progress.currentContext = null;
+        job.progress.levelStartedAt = null;
+        job.progress.timeoutMs = null;
         job.progress.message = "Done";
       }
     } catch (err) {

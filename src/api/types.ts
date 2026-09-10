@@ -753,6 +753,10 @@ export interface PrefillBenchProgress {
   completedLevels: number;
   totalLevels: number;
   message: string;
+  /** Epoch ms when the in-flight size started; null between levels. */
+  levelStartedAt: number | null;
+  /** Abort ceiling for the in-flight size (ms); null between levels. */
+  timeoutMs: number | null;
 }
 
 export interface PrefillBenchJob {

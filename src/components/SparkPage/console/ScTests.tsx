@@ -37,9 +37,11 @@ const OFF_TITLE = "No engine running";
 const NO_PORT_TITLE = "No LLM port configured — enable LLM monitoring for this node";
 
 /**
- * Chip line: level progress, the size being measured right now, and the
- * throughput of the last level that finished (the runner only produces a
- * measurement per completed level — one request per size).
+ * Chip line: level progress, the size being measured right now with how long
+ * it has been running, and the throughput of the last level that finished.
+ * Prefill is not streamed, so elapsed time (not a percentage) is the only
+ * intra-level signal that exists — the poll drives the re-render, so the
+ * clock ticks once per second while a run is in flight.
  */
 function prefillChipLabel(job: PrefillBenchJob): string {
   const parts = [
@@ -48,15 +50,44 @@ function prefillChipLabel(job: PrefillBenchJob): string {
   ];
   if (job.progress.currentContext != null) {
     parts.push(formatContextSize(job.progress.currentContext));
+    if (job.progress.levelStartedAt != null) {
+      parts.push(formatElapsed(Date.now() - job.progress.levelStartedAt));
+    }
   }
   const last = job.results[job.results.length - 1];
   if (last && last.prefillTps > 0) parts.push(`${Math.round(last.prefillTps)} tok/s`);
   return parts.join(" · ");
 }
 
-/** Hover detail: phase message + one line per measured level. */
+/** Compact duration for the chip: `42s`, `1m 12s`, `36m`. */
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  if (total < 60) return `${total}s`;
+  const m = Math.floor(total / 60);
+  const s = total - m * 60;
+  return s === 0 ? `${m}m` : `${m}m ${s}s`;
+}
+
+/** Abort ceilings round up — the cap is an upper bound. */
+function formatCap(ms: number): string {
+  return `${Math.ceil(ms / 60_000)}m`;
+}
+
+/** Hover detail: phase message (with the in-flight timer and its cap) + one line per measured level. */
 function prefillChipTitle(job: PrefillBenchJob): string {
-  const lines = [job.progress.message || "Prefill benchmark running"];
+  const lines: string[] = [];
+  if (job.progress.currentContext != null && job.progress.levelStartedAt != null) {
+    const elapsed = formatElapsed(Date.now() - job.progress.levelStartedAt);
+    const cap =
+      job.progress.timeoutMs != null
+        ? `, cap ${formatCap(job.progress.timeoutMs)}`
+        : "";
+    lines.push(
+      `Prefilling ${formatContextSize(job.progress.currentContext)} for ${elapsed}${cap}`
+    );
+  } else {
+    lines.push(job.progress.message || "Prefill benchmark running");
+  }
   for (const r of job.results) {
     lines.push(
       `${formatContextSize(r.targetTokens)} · ${r.prefillTps.toFixed(1)} tok/s · TTFT ${formatTtft(r.ttftMs)}`
