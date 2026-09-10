@@ -1,5 +1,5 @@
 services:
-  sparkdash:
+  sparkcontrol:
     build:
       context: .
       dockerfile: Dockerfile
