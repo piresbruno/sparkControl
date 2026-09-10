@@ -99,6 +99,18 @@ export class LlmProbe {
     // Cumulative total output tokens (generation) as reported by the LLM server
     this.totalOutputTokens = 0;
 
+    /**
+     * Liveness evidence for the "engine busy but no measurable rate" window
+     * (a long prefill reports nothing until it completes):
+     *  - lastOutputAt: when the output counter last grew (null until observed)
+     *  - busySinceAt: when the request set last went from idle to non-idle
+     * Both are epoch ms, tracked centrally in _getSnapshot() for every backend.
+     */
+    this.lastOutputAt = null;
+    this.busySinceAt = null;
+    this._lastSeenOutputTokens = null;
+    this._wasBusy = false;
+
     // vLLM inference metrics from /metrics (null when not vLLM / missing series)
     // Metric names follow stock vLLM Prometheus exposition (versions may differ).
     this.kvCacheUsage = null; // 0–1 fraction
@@ -238,6 +250,10 @@ export class LlmProbe {
     this.slotsActive = 0;
     this.slotsTotal = 0;
     this.totalOutputTokens = 0;
+    this.lastOutputAt = null;
+    this.busySinceAt = null;
+    this._lastSeenOutputTokens = null;
+    this._wasBusy = false;
     this.kvCacheUsage = null;
     this.requestsRunning = null;
     this.requestsWaiting = null;
@@ -1354,7 +1370,37 @@ export class LlmProbe {
     return { level, auth, scope, label, detail };
   }
 
+  /**
+   * Track liveness evidence that the rates cannot express. A long prefill
+   * reports no prompt tokens until it completes (vLLM increments the counter
+   * per finished request), so generation and prefill tok/s both read 0 while
+   * the engine is in fact working. Consumers show "busy for Xs · no output for
+   * Ys" from these two timestamps instead of guessing from the rates.
+   *
+   * Centralized here because every backend funnels through _getSnapshot().
+   */
+  _trackActivityHeartbeat() {
+    const now = Date.now();
+    const out = Number(this.totalOutputTokens) || 0;
+    if (this._lastSeenOutputTokens == null) {
+      // First sample of a process: the counter's history is unknown, so don't
+      // claim an output timestamp until we see it grow.
+      this._lastSeenOutputTokens = out;
+    } else if (out > this._lastSeenOutputTokens) {
+      this._lastSeenOutputTokens = out;
+      this.lastOutputAt = now;
+    }
+
+    const busy =
+      (Number(this.requestsRunning) || Number(this.slotsActive) || 0) > 0 ||
+      (Number(this.requestsWaiting) || 0) > 0;
+    if (busy && !this._wasBusy) this.busySinceAt = now;
+    else if (!busy && this._wasBusy) this.busySinceAt = null;
+    this._wasBusy = busy;
+  }
+
   _getSnapshot() {
+    this._trackActivityHeartbeat();
     const metricsLive = this.serverIsOpenAI !== null && this.authOpen !== false;
     return {
       available: metricsLive,
@@ -1370,6 +1416,8 @@ export class LlmProbe {
       cachedPrefillTps: this.cachedPrefillTps,
       uncachedPrefillTps: this.uncachedPrefillTps,
       totalOutputTokens: this.totalOutputTokens,
+      lastOutputAt: this.lastOutputAt,
+      busySinceAt: this.busySinceAt,
       kvCacheUsage: this.kvCacheUsage,
       requestsRunning: this.requestsRunning,
       requestsWaiting: this.requestsWaiting,
@@ -1399,6 +1447,8 @@ export class LlmProbe {
       cachedPrefillTps: null,
       uncachedPrefillTps: null,
       totalOutputTokens: 0,
+      lastOutputAt: null,
+      busySinceAt: null,
       kvCacheUsage: null,
       requestsRunning: null,
       requestsWaiting: null,

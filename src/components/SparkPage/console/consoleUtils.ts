@@ -59,6 +59,21 @@ export function fmtUptimeShort(sec: number | null | undefined): string {
   return `${days}d ${hours % 24}h`;
 }
 
+/** Elapsed ms → "12s" / "2m 14s" / "1h 3m" (console chip voice). */
+export function fmtElapsedMs(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms)) return "—";
+  const total = Math.max(0, Math.round(ms / 1000));
+  if (total < 60) return `${total}s`;
+  if (total < 3600) {
+    const m = Math.floor(total / 60);
+    const s = total - m * 60;
+    return s === 0 ? `${m}m` : `${m}m ${s}s`;
+  }
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total - h * 3600) / 60);
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
 /** ISO/HF model id → short console name (last path segment). */
 export function shortModelName(id: string | null | undefined): string {
   if (!id) return "—";
@@ -84,7 +99,7 @@ export const ACTIVITY_LABEL: Record<EngineActivity, string> = {
 };
 
 export const ACTIVITY_TIP =
-  "Derived activity — queued: requests waiting > 0 · decoding: running + gen tok/s > 0 · prefilling: running + prefill tok/s > 0 · processing: running but both 0 (poll gap / cached-only). GPU busy while engine silent = weight loading, CUDA-graph capture, warmup or a foreign process → follow the live log.";
+  "Derived activity — queued: requests waiting > 0 · decoding: running + gen tok/s > 0 · prefilling: running + prefill tok/s > 0 · processing: running but both 0 (poll gap / cached-only). A long prefill on a big context also reads as processing with 0 tok/s: the engine reports prompt tokens only when the request finishes, so use the busy/output clocks. GPU busy while engine silent = weight loading, CUDA-graph capture, warmup or a foreign process → follow the live log.";
 
 /**
  * Pure per-tick classification. `gpuUsage` is 0–100 (metrics.gpu.usage).

@@ -24,6 +24,7 @@ import {
 import {
   ACTIVITY_LABEL,
   ACTIVITY_TIP,
+  fmtElapsedMs,
   fmtInt,
   fmtPct,
   fmtSeconds,
@@ -227,6 +228,23 @@ function ServingHero({
   const directUrl = spark.lanIp ? `http://${spark.lanIp}:${port}/v1` : null;
   const proxyUrl = `${window.location.protocol}//${window.location.host}/llm/${encodeURIComponent(spark.id)}/${port}/v1`;
 
+  // ── Liveness clocks ─────────────────────────────────────────────────────
+  // Both rates read 0 while a long prefill runs (the engine reports prompt
+  // tokens only when the request finishes), so "how long busy" and "how long
+  // without output" are the evidence that the engine is working, not wedged.
+  // Rendered from the poll cadence — each snapshot re-render advances them.
+  const now = Date.now();
+  const busySinceAt = llm?.busySinceAt ?? null;
+  const busySuffix =
+    running > 0 && busySinceAt != null ? ` · ${fmtElapsedMs(now - busySinceAt)}` : "";
+  // Output age counts the newest of (last token, current busy stretch): a fresh
+  // request that has produced nothing yet is silent from the moment it arrived.
+  const outputAt =
+    llm?.lastOutputAt != null && busySinceAt != null
+      ? Math.max(llm.lastOutputAt, busySinceAt)
+      : (llm?.lastOutputAt ?? busySinceAt);
+  const silentForMs = running > 0 && outputAt != null ? now - outputAt : null;
+
   // ── Activity pill ───────────────────────────────────────────────────────
   const pill = available ? (
     <span
@@ -236,7 +254,7 @@ function ServingHero({
     >
       <ScLed state={activity && activity !== "waiting" ? "live" : "off"} />
       {activity
-        ? `${ACTIVITY_LABEL[activity]} · ${fmtInt(running)} req · ${fmtTps(llm?.generationTps)} tok/s`
+        ? `${ACTIVITY_LABEL[activity]}${busySuffix} · ${fmtInt(running)} req · ${fmtTps(llm?.generationTps)} tok/s`
         : "—"}
     </span>
   ) : gpuSilent ? (
@@ -269,7 +287,12 @@ function ServingHero({
           <span className="dial__value">{available ? fmtTps(genVal) : "—"}</span>
           <span className="dial__unit">tok/s</span>
         </div>
-        <span className="dial__split">total {fmtInt(llm?.totalOutputTokens ?? 0)} out tok</span>
+        <span className="dial__split">
+          total {fmtInt(llm?.totalOutputTokens ?? 0)} out tok
+          {running > 0 && genVal === 0 && silentForMs != null
+            ? ` · no output ${fmtElapsedMs(silentForMs)}`
+            : ""}
+        </span>
         <ScSeg pct={available ? Math.min(100, (genVal / genScale) * 100) : 0} tone="accent" />
         <ScHist values={Array.from(genHistory)} w={196} h={26} tone="accent" />
       </div>

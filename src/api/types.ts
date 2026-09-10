@@ -316,6 +316,14 @@ export interface LlmMetrics {
   uncachedPrefillTps?: number | null;
   /** Cumulative total output (generation) tokens as reported by the LLM server */
   totalOutputTokens: number;
+  /**
+   * Epoch ms when the output counter last grew. null until an increase has been
+   * observed (per process) — the only liveness evidence while a long prefill
+   * runs, since both rates read 0 until it completes.
+   */
+  lastOutputAt?: number | null;
+  /** Epoch ms when requests went from idle to busy; null while idle. */
+  busySinceAt?: number | null;
   /** vLLM KV cache usage fraction (0–1). null when backend !== vllm or unreachable. */
   kvCacheUsage?: number | null;
   /** vLLM running request count. null when unavailable. */
