@@ -25,6 +25,7 @@ Format: version sections are listed newest first.
 - **Models tab = NAS catalog only** — per the approved mockup: HF download form + Name/Runtime/Repository/Size/Delete table with a summary chip and stale/modelctl badges. The per-node matrix, node select, serving controls and active-jobs panel are removed — per-node model management lives on the node detail page (Models channel); a pointer note says so.
 
 ### Fixed
+- **NAS node errored on every unified-memory poll** — the joined remote command ended with `nvidia-smi`, whose exit status became the SSH exit status; a NAS box has `/proc/meminfo` but no `nvidia-smi`, so each poll reported `SSH failed` (exit 127, empty stderr) and the memory card stayed empty. The optional tool is now `|| true`-guarded like the other probes.
 - **LLM proxy upstream idle timeout 5 → 10 min** — `IDLE_TIMEOUT_MS` covers the gap between upstream bytes (connect included) and still resets on every byte; long prefills / slow engines no longer get killed at 5 minutes of silence.
 - **Dashboard WS connect** — the initial snapshot goes only to the connecting client; previously every open tab received a duplicate full snapshot (and re-render) whenever another tab opened.
 - **Monitor lifecycle races** — collections that straddle `stop()` / config swaps are discarded (run-generation + in-flight token guards): a stale poll can no longer flip `online` or commit old-host metrics / CPU rate baselines under a new config, and can't clear the new lifecycle's in-flight guard.
