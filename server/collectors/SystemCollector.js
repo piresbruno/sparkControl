@@ -1304,7 +1304,10 @@ export class SystemCollector {
       const cmd = [
         "grep -E 'MemTotal|MemAvailable' /proc/meminfo 2>/dev/null",
         "echo '---'",
-        "nvidia-smi --query-compute-apps=pid,process_name,used_gpu_memory --format=csv,noheader,nounits 2>/dev/null",
+        // Last command decides the SSH exit status: a host without nvidia-smi
+        // (NAS boxes) must not fail the whole poll — the compute-apps section
+        // is simply empty there.
+        "nvidia-smi --query-compute-apps=pid,process_name,used_gpu_memory --format=csv,noheader,nounits 2>/dev/null || true",
       ].join("; ");
 
       const output = await sshExec(this.spark, cmd);
