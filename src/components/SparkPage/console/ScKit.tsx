@@ -183,7 +183,7 @@ export function ScSeg({
   tone = "neutral",
 }: {
   pct: number;
-  tone?: "success" | "warning" | "accent" | "neutral";
+  tone?: "success" | "warning" | "accent" | "neutral" | "danger";
 }) {
   return (
     <div className="seg">

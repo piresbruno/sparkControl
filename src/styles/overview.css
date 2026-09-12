@@ -1,0 +1,130 @@
+/* ─── Overview landing page — additions to the console kit ───────────────
+   The overview reuses the v3 instrument-console primitives (module/plate/
+   key/gauge/seg/hist/led/chip/mlabel) from console.css via the shared
+   .spark-console ancestor. This file adds ONLY what the console never had:
+   the overview card's own name/stat/tps/wait/empty voice and the rack's
+   batch-update block. Every selector is scoped under .spark-console so
+   nothing leaks into other pages. */
+
+/* Card node name (button when selectable, plain span otherwise) */
+.spark-console .ocard-name {
+  font-family: var(--mono);
+  font-size: var(--fs-15);
+  font-weight: 700;
+  color: var(--color-text-strong);
+  letter-spacing: -0.01em;
+  border: 0;
+  padding: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.spark-console .ocard-name:hover {
+  text-decoration: underline;
+}
+
+/* Secondary stats: two-column mono readouts under a hairline */
+.spark-console .ocard-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2) var(--space-4);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-3);
+}
+.spark-console .ocard-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.spark-console .ocard-stat__v {
+  font-family: var(--mono);
+  font-size: var(--fs-13);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.spark-console .ocard-stat__v--success {
+  color: var(--color-success);
+}
+.spark-console .ocard-stat__v--warning {
+  color: var(--color-warning);
+}
+.spark-console .ocard-stat__v--danger {
+  color: var(--color-danger);
+}
+.spark-console .ocard-stat__v--accent {
+  color: var(--color-accent);
+}
+.spark-console .ocard-stat__v--wrap {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* tok/s hero split (generation | prefill) */
+.spark-console .ocard-tps {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-3);
+}
+.spark-console .ocard-tps > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+}
+.spark-console .ocard-tps > div + div {
+  border-left: 1px solid var(--color-border);
+}
+
+/* Waiting-for-metrics cell */
+.spark-console .ocard-wait {
+  display: flex;
+  min-height: 120px;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Empty-state module variant */
+.spark-console .ocard-empty {
+  align-items: center;
+  text-align: center;
+  gap: var(--space-2);
+  padding: var(--space-6);
+}
+.spark-console .ocard-empty p {
+  margin: 0;
+}
+
+/* Batch-update block living in the rack keys */
+.spark-console .obatch {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 150px;
+  align-items: flex-end;
+}
+.spark-console .obatch-msg {
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+}
+.spark-console .obatch-msg--ok {
+  color: var(--color-success);
+}
+.spark-console .obatch-msg--err {
+  color: var(--color-danger);
+}
+.spark-console .obatch__dismiss {
+  padding: 1px 6px;
+  font-size: var(--fs-10);
+  border-radius: 5px;
+}

@@ -580,6 +580,9 @@
 .spark-console .fill--warning {
   --fill-color: var(--color-warning);
 }
+.spark-console .fill--danger {
+  --fill-color: var(--color-danger);
+}
 .spark-console .fill--accent {
   --fill-color: var(--color-accent);
 }

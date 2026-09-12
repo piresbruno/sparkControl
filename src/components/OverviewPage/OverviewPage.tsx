@@ -18,10 +18,13 @@ import {
   wakeAllSparks,
 } from "../../api/client";
 import { ConfirmShutdownDialog } from "../ConfirmShutdownDialog";
-import { ActivityIcon, PowerOffIcon, PowerOnIcon, RotateIcon } from "../ui/icons";
-import { MetricBar } from "../ui/MetricBar";
+import { PowerOffIcon, PowerOnIcon, RotateIcon } from "../ui/icons";
 import { agoLabel, fmtStore, matchStoreMount, versionIsNewer } from "../NasPage/nasUtils";
 import { fmtUptimeShort } from "../SparkPage/console/consoleUtils";
+import { ScHist, ScLed, ScSeg } from "../SparkPage/console/ScKit";
+import { useMetricsHistoryTail } from "../../hooks/metricsStore";
+import "../../styles/console.css";
+import "../../styles/overview.css";
 
 interface OverviewPageProps {
   sparks: SparkSnapshot[];
@@ -47,44 +50,48 @@ function fmtStorage(mb: number, unit: boolean): string {
   return unit ? `${s} ${label}` : s;
 }
 
-function MiniStat({
+function OcardStat({
   label,
   value,
   tone = "default",
-  bold = true,
   title,
   wrap = false,
 }: {
   label: string;
   value: string;
   tone?: "default" | "accent" | "warning" | "danger" | "success";
-  bold?: boolean;
   title?: string;
   /** Allow value to wrap (no ellipsis trim) — used for long model ids. */
   wrap?: boolean;
 }) {
   const toneClass =
     tone === "danger"
-      ? "text-danger"
+      ? " ocard-stat__v--danger"
       : tone === "warning"
-        ? "text-warning"
+        ? " ocard-stat__v--warning"
         : tone === "accent"
-          ? "text-accent"
+          ? " ocard-stat__v--accent"
           : tone === "success"
-            ? "text-success"
-            : "text-text";
+            ? " ocard-stat__v--success"
+            : "";
   return (
-    <div className="flex min-w-0 flex-col gap-0.5">
-      <span className="text-[10px] tracking-wide text-muted">{label}</span>
-      <span
-        className={`font-tabular text-[13px] ${
-          wrap
-            ? "whitespace-normal break-words leading-snug [overflow-wrap:anywhere]"
-            : "truncate"
-        } ${bold ? "font-semibold" : ""} ${toneClass}`}
-        title={title}
-      >
+    <div className="ocard-stat">
+      <span className="mlabel">{label}</span>
+      <span className={`ocard-stat__v${toneClass}${wrap ? " ocard-stat__v--wrap" : ""}`} title={title}>
         {value}
+      </span>
+    </div>
+  );
+}
+
+/** Rack data-plate field (same local pattern as SparkPage/NasPage). */
+function dataField(k: string, v: string | null) {
+  if (v == null) return null;
+  return (
+    <div className="plate__f">
+      <span className="plate__k">{k}</span>
+      <span className="plate__v" title={v}>
+        {v}
       </span>
     </div>
   );
@@ -111,195 +118,229 @@ function SparkCard({
   const usage = gpu?.usage ?? 0;
   const tempRaw = gpu?.temperature ?? 0;
   const displayTemp = temperatureUnit === "fahrenheit" ? celsiusToFahrenheit(tempRaw) : tempRaw;
-  const tempLabel = temperatureUnit === "fahrenheit" ? `${displayTemp}°F` : `${displayTemp}°C`;
+  const tempUnit = temperatureUnit === "fahrenheit" ? "°F" : "°C";
+  const tempLabel = `${displayTemp}${tempUnit}`;
   const vramPct = gpu?.vram?.percentage ?? um?.percentage ?? 0;
   const vramUsed = gpu?.vram?.used ?? um?.used ?? 0;
   const vramTotal = gpu?.vram?.total ?? um?.total ?? 0;
   const vramAvail = gpu?.vram?.available ?? um?.available ?? 0;
 
-  // Temperature bar: cool → success, warm → warning, hot → danger
-  const tempBarColor =
-    tempRaw > 85 ? "bg-danger" : tempRaw > 65 ? "bg-warning" : tempRaw > 40 ? "bg-accent" : "bg-success";
-  // Usage bar: accent for moderate, warning high, danger critical
-  const usageBarColor = usage > 85 ? "bg-danger" : usage > 60 ? "bg-warning" : "bg-accent";
-  // VRAM allocation: accent normal → warning/danger as it fills
-  const vramBarColor = vramPct > 85 ? "bg-danger" : vramPct > 60 ? "bg-warning" : "bg-accent";
+  // Sparkline tails for the gauge feet. Hooks run unconditionally — the
+  // gauges they feed render conditionally.
+  const vramHist = useMetricsHistoryTail(spark.id, "unifiedMemory.percentage");
+  const ramHist = useMetricsHistoryTail(spark.id, "ram.percentage");
+  const gpuTempHist = useMetricsHistoryTail(spark.id, "gpu.temp");
+  const cpuTempHist = useMetricsHistoryTail(spark.id, "cpu.temp");
+  const gpuUsageHist = useMetricsHistoryTail(spark.id, "gpu.usage");
+
+  // Gauge tones (same thresholds as the old MetricBar colours):
+  // cool → success, warm → warning, hot → danger.
+  const vramTone = vramPct > 85 ? "danger" : vramPct > 60 ? "warning" : "accent";
+  const tempTone =
+    tempRaw > 85 ? "danger" : tempRaw > 65 ? "warning" : tempRaw > 40 ? "accent" : "success";
+  const usageTone = usage > 85 ? "danger" : usage > 60 ? "warning" : "accent";
+  const gaugeCell = (tone: "danger" | "warning" | "accent" | "success") =>
+    tone === "danger" ? " gauge--danger" : tone === "warning" ? " gauge--warn" : "";
+  // ScHist has no danger tone — degrade to warning.
+  const histTone = (tone: "danger" | "warning" | "accent" | "success") =>
+    tone === "danger" ? "warning" : tone;
 
   return (
-    <div
-      className="overview-card flex flex-col"
-      style={{
-        padding: "var(--density-card-pad)",
-        gap: "var(--density-card-gap)",
-        ...(online ? {} : { opacity: 0.6 }),
-      }}
-    >
+    <div className="module" style={online ? undefined : { opacity: 0.6 }}>
       {/* Card header */}
-      <div className="flex items-center gap-2.5">
-        <span
-          className={`h-2 w-2 shrink-0 rounded-full ${online ? "bg-success dot-glow-success" : "bg-danger"}`}
-        />
-        <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-text-strong">
+      <div className="spread">
+        <div className="row">
+          <ScLed state={online ? "live" : "off"} />
           {onSelect ? (
-            <button
-              type="button"
-              onClick={() => onSelect(spark.id)}
-              className="text-left font-inherit text-inherit hover:underline"
-            >
+            <button type="button" className="ocard-name" onClick={() => onSelect(spark.id)}>
               {spark.name}
             </button>
           ) : (
-            spark.name
+            <span className="ocard-name">{spark.name}</span>
           )}
-        </span>
-        {(() => {
-          const role = resolveSparkRole(spark);
-          const text =
-            role === "head" ? "Head" : role === "worker" ? "Worker" : "Standalone";
-          const title =
-            role === "head"
-              ? "Cluster head Spark"
-              : role === "worker"
-                ? spark.workerLabel?.trim()
-                  ? `${spark.workerLabel.trim()} · distributed LLM worker`
-                  : "Distributed LLM worker"
-                : spark.llmMonitoring === false
-                  ? "Standalone — LLM monitoring off"
-                  : "Standalone Spark";
-          return (
+          {(() => {
+            const role = resolveSparkRole(spark);
+            const text =
+              role === "head" ? "Head" : role === "worker" ? "Worker" : "Standalone";
+            const title =
+              role === "head"
+                ? "Cluster head Spark"
+                : role === "worker"
+                  ? spark.workerLabel?.trim()
+                    ? `${spark.workerLabel.trim()} · distributed LLM worker`
+                    : "Distributed LLM worker"
+                  : spark.llmMonitoring === false
+                    ? "Standalone — LLM monitoring off"
+                    : "Standalone Spark";
+            return (
+              <span className="chip chip--accent" title={title}>
+                {text}
+              </span>
+            );
+          })()}
+        </div>
+        <div className="row">
+          {spark.comfyMonitoring ? (
             <span
-              className="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-accent"
-              title={title}
+              className={`chip${
+                !spark.metrics?.comfy?.available
+                  ? ""
+                  : (spark.metrics.comfy.queueRunning ?? 0) > 0
+                    ? " chip--live"
+                    : (spark.metrics.comfy.queuePending ?? 0) > 0
+                      ? " chip--warn"
+                      : ""
+              }`}
+              title={
+                !spark.metrics?.comfy?.available
+                  ? "ComfyUI monitoring on — not reachable"
+                  : (spark.metrics.comfy.queueRunning ?? 0) > 0
+                    ? spark.metrics.comfy.activeJob?.title
+                      ? `ComfyUI running: ${spark.metrics.comfy.activeJob.title}`
+                      : "ComfyUI job running"
+                    : (spark.metrics.comfy.queuePending ?? 0) > 0
+                      ? `ComfyUI queue: ${spark.metrics.comfy.queuePending} pending`
+                      : "ComfyUI idle"
+              }
             >
-              {text}
+              {!spark.metrics?.comfy?.available
+                ? "Comfy"
+                : (spark.metrics.comfy.queueRunning ?? 0) > 0
+                  ? "Comfy · run"
+                  : (spark.metrics.comfy.queuePending ?? 0) > 0
+                    ? `Comfy · ${spark.metrics.comfy.queuePending}q`
+                    : "Comfy · idle"}
             </span>
-          );
-        })()}
-        {spark.comfyMonitoring ? (
-          <span
-            className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
-              !spark.metrics?.comfy?.available
-                ? "bg-border/60 text-muted"
-                : (spark.metrics.comfy.queueRunning ?? 0) > 0
-                  ? "bg-accent/15 text-accent"
-                  : (spark.metrics.comfy.queuePending ?? 0) > 0
-                    ? "bg-warning/15 text-warning"
-                    : "bg-border/60 text-muted"
-            }`}
-            title={
-              !spark.metrics?.comfy?.available
-                ? "ComfyUI monitoring on — not reachable"
-                : (spark.metrics.comfy.queueRunning ?? 0) > 0
-                  ? spark.metrics.comfy.activeJob?.title
-                    ? `ComfyUI running: ${spark.metrics.comfy.activeJob.title}`
-                    : "ComfyUI job running"
-                  : (spark.metrics.comfy.queuePending ?? 0) > 0
-                    ? `ComfyUI queue: ${spark.metrics.comfy.queuePending} pending`
-                    : "ComfyUI idle"
-            }
-          >
-            {!spark.metrics?.comfy?.available
-              ? "Comfy"
-              : (spark.metrics.comfy.queueRunning ?? 0) > 0
-                ? "Comfy · run"
-                : (spark.metrics.comfy.queuePending ?? 0) > 0
-                  ? `Comfy · ${spark.metrics.comfy.queuePending}q`
-                  : "Comfy · idle"}
-          </span>
-        ) : null}
-        <span className="text-[10px] uppercase tracking-wide text-muted">
-          {online ? "online" : "offline"}
-        </span>
+          ) : null}
+          <span className="mlabel">{online ? "online" : "offline"}</span>
+        </div>
       </div>
 
       {!online || !gpu ? (
-        <div className="flex h-[120px] items-center justify-center">
-          <span className="text-[13px] text-muted">
-            {online ? "Waiting for metrics…" : "Host unreachable"}
-          </span>
+        <div className="ocard-wait">
+          <span className="empty-note">{online ? "Waiting for metrics…" : "Host unreachable"}</span>
         </div>
       ) : (
         <>
-          {/* Three headline bars: GPU alloc, Temp, Usage */}
-          <div className="flex flex-col gap-3.5">
-            <MetricBar
-              label="VRAM"
-              value={vramUsed}
-              max={vramTotal}
-              color={vramBarColor}
-              caption={vramTotal > 0 ? `${fmtStorage(vramUsed, false)} / ${fmtStorage(vramTotal, true)}` : "—"}
-            />
+          {/* Boxed gauges: VRAM, RAM (host), GPU/Temperature, CPU, Usage */}
+          <div className="gauge-grid" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
+            <div className={`gauge${gaugeCell(vramTone)}`}>
+              <div className="gauge__top">
+                <span className="mlabel">VRAM</span>
+                <span className="gauge__value">
+                  {vramTotal > 0 ? fmtStorage(vramUsed, false) : "—"}
+                  <small>{vramTotal > 0 ? ` /${fmtStorage(vramTotal, true)}` : ""}</small>
+                </span>
+              </div>
+              <ScSeg pct={vramPct} tone={vramTone} />
+              <div className="gauge__foot">
+                <span>
+                  {vramTotal > 0
+                    ? `${fmtStorage(vramUsed, false)} / ${fmtStorage(vramTotal, true)}`
+                    : "—"}
+                </span>
+                <ScHist values={Array.from(vramHist)} w={84} h={14} tone={histTone(vramTone)} />
+              </div>
+            </div>
             {spark.kind === "host" && (() => {
               // Non-Spark hosts: system RAM is separate from discrete VRAM.
               const ram = spark.metrics.ram;
               const rUsed = ram?.used ?? 0;
               const rTotal = ram?.total ?? 0;
               const rPct = rTotal > 0 ? Math.round((rUsed / rTotal) * 100) : 0;
-              const ramBarColor = rPct > 85 ? "bg-danger" : rPct > 60 ? "bg-warning" : "bg-accent";
+              const ramTone: "danger" | "warning" | "accent" =
+                rPct > 85 ? "danger" : rPct > 60 ? "warning" : "accent";
               return (
-                <MetricBar
-                  label="RAM"
-                  value={rUsed}
-                  max={rTotal}
-                  color={ramBarColor}
-                  caption={rTotal > 0 ? `${fmtStorage(rUsed, false)} / ${fmtStorage(rTotal, true)}` : "—"}
-                />
+                <div className={`gauge${gaugeCell(ramTone)}`}>
+                  <div className="gauge__top">
+                    <span className="mlabel">RAM</span>
+                    <span className="gauge__value">
+                      {rTotal > 0 ? fmtStorage(rUsed, false) : "—"}
+                      <small>{rTotal > 0 ? ` /${fmtStorage(rTotal, true)}` : ""}</small>
+                    </span>
+                  </div>
+                  <ScSeg pct={rPct} tone={ramTone} />
+                  <div className="gauge__foot">
+                    <span>
+                      {rTotal > 0
+                        ? `${fmtStorage(rUsed, false)} / ${fmtStorage(rTotal, true)}`
+                        : "—"}
+                    </span>
+                    <ScHist values={Array.from(ramHist)} w={84} h={14} tone={histTone(ramTone)} />
+                  </div>
+                </div>
               );
             })()}
-            <MetricBar
-              label={
-                spark.kind === "host" || (spark.metrics.cpu?.temperature ?? 0) > 0
-                  ? "GPU"
-                  : "Temperature"
-              }
-              value={displayTemp}
-              max={temperatureUnit === "fahrenheit" ? 212 : 100}
-              color={tempBarColor}
-              caption={tempLabel}
-            />
+            <div className={`gauge${gaugeCell(tempTone)}`}>
+              <div className="gauge__top">
+                <span className="mlabel">
+                  {spark.kind === "host" || (spark.metrics.cpu?.temperature ?? 0) > 0
+                    ? "GPU"
+                    : "Temperature"}
+                </span>
+                <span className="gauge__value">
+                  {displayTemp}
+                  <small>{` ${tempUnit}`}</small>
+                </span>
+              </div>
+              <ScSeg pct={Math.min(100, displayTemp)} tone={tempTone} />
+              <div className="gauge__foot">
+                <span>{tempLabel}</span>
+                <ScHist values={Array.from(gpuTempHist)} w={84} h={14} tone={histTone(tempTone)} />
+              </div>
+            </div>
             {(spark.metrics.cpu?.temperature ?? 0) > 0 && (() => {
               const cpuRaw = spark.metrics.cpu?.temperature ?? 0;
               const cpuDisplay =
                 temperatureUnit === "fahrenheit" ? celsiusToFahrenheit(cpuRaw) : cpuRaw;
-              const cpuLabel =
-                temperatureUnit === "fahrenheit" ? `${cpuDisplay}°F` : `${cpuDisplay}°C`;
-              const cpuBarColor =
-                cpuRaw > 95 ? "bg-danger" : cpuRaw > 85 ? "bg-warning" : cpuRaw > 50 ? "bg-accent" : "bg-success";
+              const cpuTone =
+                cpuRaw > 95 ? "danger" : cpuRaw > 85 ? "warning" : cpuRaw > 50 ? "accent" : "success";
               return (
-                <MetricBar
-                  label="CPU"
-                  value={cpuDisplay}
-                  max={temperatureUnit === "fahrenheit" ? 212 : 100}
-                  color={cpuBarColor}
-                  caption={cpuLabel}
-                />
+                <div className={`gauge${gaugeCell(cpuTone)}`}>
+                  <div className="gauge__top">
+                    <span className="mlabel">CPU</span>
+                    <span className="gauge__value">
+                      {cpuDisplay}
+                      <small>{` ${tempUnit}`}</small>
+                    </span>
+                  </div>
+                  <ScSeg pct={Math.min(100, cpuDisplay)} tone={cpuTone} />
+                  <div className="gauge__foot">
+                    <span>{`${cpuDisplay}${tempUnit}`}</span>
+                    <ScHist values={Array.from(cpuTempHist)} w={84} h={14} tone={histTone(cpuTone)} />
+                  </div>
+                </div>
               );
             })()}
-            {gpu?.throttle?.thermal && (
-              <div
-                className="rounded border border-danger/40 bg-danger/10 px-2 py-1 text-[11px] font-medium text-danger"
-                title={gpu.throttle.detail || "GPU thermal slowdown engaged"}
-              >
-                Thermal throttle
+            <div className={`gauge${gaugeCell(usageTone)}`}>
+              <div className="gauge__top">
+                <span className="mlabel">Usage</span>
+                <span className="gauge__value">
+                  {usage}
+                  <small> %</small>
+                </span>
               </div>
-            )}
-            <MetricBar
-              label="Usage"
-              value={usage}
-              max={100}
-              color={usageBarColor}
-              caption={`${usage}%`}
-            />
+              <ScSeg pct={usage} tone={usageTone} />
+              <div className="gauge__foot">
+                <span>{usage}%</span>
+                <ScHist values={Array.from(gpuUsageHist)} w={84} h={14} tone={histTone(usageTone)} />
+              </div>
+            </div>
           </div>
+          {gpu?.throttle?.thermal && (
+            <span className="chip chip--err" title={gpu.throttle.detail || "GPU thermal slowdown engaged"}>
+              Thermal throttle
+            </span>
+          )}
 
           {/* Secondary stats */}
-          <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2.5 border-t border-border pt-3.5">
-            <MiniStat
+          <div className="ocard-stats">
+            <OcardStat
               label="GPU Power"
               value={`${gpu?.power?.draw ?? 0}W / ${gpu?.power?.limit ?? 0}W`}
             />
             {vramAvail > 0 && (
-              <MiniStat
+              <OcardStat
                 label="Available"
                 value={formatMb(vramAvail)}
                 tone={vramAvail < 4096 ? "danger" : vramAvail < 16384 ? "warning" : "accent"}
@@ -314,11 +355,10 @@ function SparkCard({
                 spark.metrics.storage.find((d) => d.device === "nvme0n1p2");
               if (rootDisk) {
                 return (
-                  <MiniStat
+                  <OcardStat
                     label="Storage"
                     value={`${fmtStorage(rootDisk.used, false)} / ${fmtStorage(rootDisk.total, true)}`}
                     tone={rootDisk.percentage > 85 ? "danger" : rootDisk.percentage > 60 ? "warning" : "default"}
-                    bold={false}
                   />
                 );
               }
@@ -344,7 +384,7 @@ function SparkCard({
                   llm?.backend === "vllm" ? "vLLM" : llm?.backend ?? "Model";
                 return (
                   <>
-                    <MiniStat
+                    <OcardStat
                       label="Head"
                       value={headSpark?.name ?? spark.workerLabel?.trim() ?? "unassigned"}
                       tone="accent"
@@ -357,7 +397,7 @@ function SparkCard({
                             : "No head configured for this worker"
                       }
                     />
-                    <MiniStat
+                    <OcardStat
                       label={backendLabel}
                       value={llm?.modelId ?? (isLlmDetectionEnabled(spark) ? "no model serving" : "not monitored")}
                       tone={llm ? "accent" : "default"}
@@ -371,7 +411,7 @@ function SparkCard({
                       wrap
                     />
                     {spark.modelctlEnabled && (
-                      <MiniStat
+                      <OcardStat
                         label="modelctl"
                         value={
                           // Card only renders stats when online (see the
@@ -401,7 +441,7 @@ function SparkCard({
               const llm = Array.isArray(llmArr) ? llmArr.find((l) => l.available) : null;
               if (!llm) return null;
               return (
-                <MiniStat
+                <OcardStat
                   label={
                     llm.backend === "vllm"
                       ? "vLLM"
@@ -429,18 +469,14 @@ function SparkCard({
             const llm = Array.isArray(llmArr) ? llmArr.find((l) => l.available) : null;
             if (!llm) return null;
             return (
-              <div className="mt-3.5 grid grid-cols-2 gap-2 border-t border-border pt-3">
-                <div className="text-center">
-                  <span className="font-tabular text-[28px] font-bold leading-none text-text-strong">
-                    {llm.generationTps.toFixed(0)}
-                  </span>
-                  <span className="text-sm font-normal text-muted"> tok/s</span>
+              <div className="ocard-tps">
+                <div>
+                  <span className="dial__value">{llm.generationTps.toFixed(0)}</span>
+                  <span className="dial__unit"> tok/s</span>
                 </div>
-                <div className="border-l border-border text-center">
-                  <span className="font-tabular text-[28px] font-bold leading-none text-text-strong">
-                    {llm.prefillTps.toFixed(0)}
-                  </span>
-                  <span className="text-sm font-normal text-muted"> prefill</span>
+                <div>
+                  <span className="dial__value">{llm.prefillTps.toFixed(0)}</span>
+                  <span className="dial__unit"> prefill</span>
                 </div>
               </div>
             );
@@ -490,60 +526,45 @@ function NasSparkCard({
   const modelCount = data?.modelCount ?? null;
 
   return (
-    <div
-      className="overview-card flex flex-col"
-      style={{
-        padding: "var(--density-card-pad)",
-        gap: "var(--density-card-gap)",
-        ...(online ? {} : { opacity: 0.6 }),
-      }}
-    >
+    <div className="module" style={online ? undefined : { opacity: 0.6 }}>
       {/* Card header */}
-      <div className="flex items-center gap-2.5">
-        <span
-          className={`h-2 w-2 shrink-0 rounded-full ${online ? "bg-success dot-glow-success" : "bg-danger"}`}
-        />
-        <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-text-strong">
+      <div className="spread">
+        <div className="row">
+          <ScLed state={online ? "live" : "off"} />
           {onSelect ? (
-            <button
-              type="button"
-              onClick={() => onSelect(spark.id)}
-              className="text-left font-inherit text-inherit hover:underline"
-            >
+            <button type="button" className="ocard-name" onClick={() => onSelect(spark.id)}>
               {spark.name}
             </button>
           ) : (
-            spark.name
+            <span className="ocard-name">{spark.name}</span>
           )}
-        </span>
-        <span
-          className="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-accent"
-          title="Model-store node — serves nothing"
-        >
-          NAS
-        </span>
-        <span className="text-[10px] uppercase tracking-wide text-muted">
-          {online ? "online" : "offline"}
-        </span>
+          <span className="chip chip--accent" title="Model-store node — serves nothing">
+            NAS
+          </span>
+        </div>
+        <div className="row">
+          <span className="mlabel">{online ? "online" : "offline"}</span>
+        </div>
       </div>
 
       {/* Hero: store capacity, not VRAM */}
-      <MetricBar
-        label="Store"
-        value={used}
-        max={total}
-        color="bg-accent"
-        caption={
-          mount
-            ? `${fmtStore(used)} / ${fmtStore(total)}`
-            : root
-              ? "— / —"
-              : "no store path"
-        }
-        subCaption={mount ? `${fmtStore(mount.available)} free` : undefined}
-      />
+      <div className="gauge-grid" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
+        <div className="gauge">
+          <div className="gauge__top">
+            <span className="mlabel">Store</span>
+            <span className="gauge__value">
+              {mount ? `${fmtStore(used)} / ${fmtStore(total)}` : root ? "— / —" : "no store path"}
+            </span>
+          </div>
+          <ScSeg pct={mount?.percentage ?? 0} tone="accent" />
+          <div className="gauge__foot">
+            <span>{mount ? `${fmtStore(mount.available)} free` : ""}</span>
+            <span>{!mount && root ? "—" : ""}</span>
+          </div>
+        </div>
+      </div>
 
-      <div className="flex flex-wrap items-center gap-1.5">
+      <div className="row">
         <span className="chip" title="modelctl list — published entries">
           {modelCount == null ? "…" : `${modelCount} model${modelCount === 1 ? "" : "s"}`}
         </span>
@@ -567,9 +588,9 @@ function NasSparkCard({
         ) : null}
       </div>
 
-      <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-2.5 border-t border-border pt-3">
-        <MiniStat label="Store path" value={root || "—"} bold={false} title={root || undefined} wrap />
-        <MiniStat
+      <div className="ocard-stats">
+        <OcardStat label="Store path" value={root || "—"} title={root || undefined} wrap />
+        <OcardStat
           label="Catalog"
           value={
             data?.catalog && !data.catalog.error
@@ -579,26 +600,34 @@ function NasSparkCard({
                 : "…"
           }
           tone={data?.catalog && !data.catalog.error ? "success" : "default"}
-          bold={false}
           title={data?.catalog?.error ?? undefined}
         />
       </div>
 
       {runningJob ? (
-        <div className="flex items-center gap-2" title={`${runningJob.name || runningJob.kind}`}>
+        <div className="row" title={`${runningJob.name || runningJob.kind}`}>
           <span className="bench-status-pill bench-status-pill--running">running</span>
-          <span className="min-w-0 flex-1 truncate text-[11px] text-muted">
+          <span className="ocard-stat__v" style={{ flex: 1 }}>
             {runningJob.name || runningJob.kind}
           </span>
         </div>
       ) : null}
 
-      <div className="mt-auto border-t border-border pt-2 text-[10px] text-muted">
-        <span className="font-tabular">{spark.lanIp || "—"}</span>
+      <div
+        className="bus-hint font-tabular"
+        style={{
+          marginTop: "auto",
+          borderTop: "1px solid var(--color-border)",
+          paddingTop: "var(--space-2)",
+        }}
+      >
+        <span>{spark.lanIp || "—"}</span>
         <span> · </span>
         <span>up {online ? fmtUptimeShort(spark.uptime) : "—"}</span>
         {spark.hardware?.device ? (
-          <span className="ml-2 truncate">{spark.hardware.device}</span>
+          <span style={{ marginLeft: "var(--space-3)", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {spark.hardware.device}
+          </span>
         ) : null}
       </div>
     </div>
@@ -806,18 +835,15 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
   if (visibleSparks.length === 0) {
     const allOffline = hideOffline && sparks.length > 0;
     return (
-      <div className="panel mx-auto mt-16 max-w-md p-8 text-center">
-        <div className="mx-auto mb-4 flex h-10 w-10 items-center justify-center rounded-full bg-accent-soft text-accent">
-          <ActivityIcon className="h-5 w-5" />
+      <div className="spark-console">
+        <div className="module ocard-empty" style={{ maxWidth: 420, margin: "64px auto 0" }}>
+          <span className="mlabel">{allOffline ? "All Sparks are offline" : "No Sparks registered"}</span>
+          <p className="empty-note">
+            {allOffline
+              ? "Auto-hide is enabled and no Sparks are currently online."
+              : "Click the + tab to add a DGX Spark unit."}
+          </p>
         </div>
-        <h2 className="text-sm font-semibold text-text-strong">
-          {allOffline ? "All Sparks are offline" : "No Sparks registered"}
-        </h2>
-        <p className="mt-1 text-xs text-muted">
-          {allOffline
-            ? "Auto-hide is enabled and no Sparks are currently online."
-            : "Click the + tab to add a DGX Spark unit."}
-        </p>
       </div>
     );
   }
@@ -825,69 +851,85 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
   const onlineCount = visibleSparks.filter((s) => s.online).length;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--density-overview-rhythm)" }}>
-      <div className="flex flex-wrap items-end justify-between gap-6">
-        <h1
-          className="font-normal leading-tight tracking-tight text-text-strong"
-          style={{ fontSize: "var(--density-overview-title)" }}
-        >
-          Overview
-        </h1>
-        <div className="flex flex-wrap items-end justify-end gap-3">
+    <div
+      className="spark-console"
+      style={{ display: "flex", flexDirection: "column", gap: "var(--density-overview-rhythm)" }}
+    >
+      <header className="module rack" aria-label="Overview">
+        <div className="rack__id">
+          <span className="rack__name">Overview</span>
+          <span className="chip" title="Nodes online">
+            <ScLed state={onlineCount > 0 ? "success" : "danger"} />
+            {onlineCount}/{visibleSparks.length} online
+          </span>
+        </div>
+        <div className="plate" role="group" aria-label="Fleet data plate">
+          {dataField("Nodes", String(visibleSparks.length))}
+          {dataField("Online", String(onlineCount))}
+          {hermesMonitoredCount > 0 && dataField("Hermes", String(hermesMonitoredCount))}
+          {hermesPendingUpdateCount > 0 && dataField("Updates", String(hermesPendingUpdateCount))}
+        </div>
+        <div className="rack__keys">
           {batchMsg && (
-            <span className={`text-[11px] ${batchMsg.tone === "ok" ? "text-success" : "text-danger"}`}>
+            <span className={`obatch-msg ${batchMsg.tone === "ok" ? "obatch-msg--ok" : "obatch-msg--err"}`}>
               {batchMsg.text}
             </span>
           )}
           {batchProg && (
-            <div className="flex flex-col items-end gap-1">
-              <span className="flex items-center gap-1.5 text-[11px] text-muted">
-                <RotateIcon className="h-3 w-3" />
-                Updating Hermes — {batchProg.done}/{batchProg.total}
+            <div className="obatch">
+              <span className="row" style={{ gap: 5 }}>
+                <span className="mlabel">Updating Hermes</span>
+                <span className="ocard-stat__v">
+                  {batchProg.done}/{batchProg.total}
+                </span>
                 {batchProg.failed > 0 && (
-                  <span className="text-danger">({batchProg.failed} failed)</span>
+                  <span
+                    style={{
+                      fontFamily: "var(--mono)",
+                      fontSize: "var(--fs-11)",
+                      color: "var(--color-danger)",
+                    }}
+                  >
+                    {batchProg.failed} failed
+                  </span>
                 )}
                 <button
                   type="button"
+                  className="key obatch__dismiss"
                   onClick={() => setBatchRun(null)}
                   aria-label="Dismiss update progress"
                   title="Dismiss"
-                  className="rounded p-0.5 text-muted transition-colors hover:bg-surface-hover hover:text-text"
                 >
-                  <span className="text-xs leading-none">✕</span>
+                  ✕
                 </button>
               </span>
-              <div className="h-1 w-36 overflow-hidden rounded-full bg-border">
+              <div className="job-progress">
                 <div
-                  className={`h-full rounded-full transition-[width] duration-300 ease-out ${
-                    batchProg.failed > 0 ? "bg-danger" : "bg-accent"
-                  }`}
+                  className="job-progress__fill"
                   style={{
                     width: `${batchProg.total > 0 ? Math.round((batchProg.done / batchProg.total) * 100) : 0}%`,
+                    background:
+                      batchProg.failed > 0 ? "var(--color-danger)" : "var(--color-accent)",
                   }}
                 />
               </div>
             </div>
           )}
           {sparks.length > 0 && (
-            <div className="flex flex-wrap items-center justify-end gap-1.5">
+            <>
               {hermesMonitoredCount > 0 && (
                 <button
                   type="button"
                   onClick={() => void handleUpdateAllHermes()}
                   disabled={batchLoading}
                   title="Run `hermes update` on every Spark with Hermes Agent enabled"
-                  className={`flex items-center gap-1 rounded-md border bg-surface-elevated px-2.5 py-1.5 text-[11px] transition-colors disabled:opacity-50 ${
-                    hermesPendingUpdateCount > 0
-                      ? "border-warning/40 text-warning hover:bg-warning/15"
-                      : "border-border text-muted hover:bg-surface-hover hover:text-text"
-                  }`}
+                  className={`key${hermesPendingUpdateCount > 0 ? " key--run" : ""}`}
                 >
                   <RotateIcon className="h-3 w-3" />
                   Update Hermes
                   {hermesPendingUpdateCount > 0 && (
                     <span
-                      className="ml-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-warning px-1 text-[9px] font-bold leading-none text-white"
+                      className="chip chip--warn"
                       title={`${hermesPendingUpdateCount} Spark${hermesPendingUpdateCount === 1 ? "" : "s"} with a Hermes update available`}
                     >
                       {hermesPendingUpdateCount}
@@ -900,7 +942,7 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
                 onClick={() => void handleWakeAll()}
                 disabled={batchLoading}
                 title="Wake all Sparks that have a MAC configured (WoL)"
-                className="flex items-center gap-1 rounded-md border border-border bg-surface-elevated px-2.5 py-1.5 text-[11px] text-muted hover:bg-success/20 hover:text-success transition-colors disabled:opacity-50"
+                className="key"
               >
                 <PowerOnIcon className="h-3 w-3" />
                 Wake All
@@ -910,19 +952,15 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
                 onClick={() => setShutdownOpen(true)}
                 disabled={batchLoading || onlineShutdownCount === 0}
                 title="Shut down all online Sparks"
-                className="flex items-center gap-1 rounded-md border border-border bg-surface-elevated px-2.5 py-1.5 text-[11px] text-muted transition-colors hover:bg-danger/20 hover:text-danger disabled:opacity-50"
+                className="key key--danger"
               >
                 <PowerOffIcon className="h-3 w-3" />
                 Shutdown All
               </button>
-            </div>
+            </>
           )}
-          <span className="online-chip">
-            <span className="dot" />
-            {onlineCount}/{visibleSparks.length} online
-          </span>
         </div>
-      </div>
+      </header>
       <ConfirmShutdownDialog
         open={shutdownOpen}
         onClose={() => setShutdownOpen(false)}
