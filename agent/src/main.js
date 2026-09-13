@@ -14,7 +14,7 @@
  *
  * Protocol (proto 1):
  *  → hello      {type:"hello", sparkId, token, proto:1, agentVersion}
- *  ← welcome    {type:"welcome", proto:1, sparkId, config:{intervals, llmPorts, role, llmMonitoring, agentVersion}}
+ *  ← welcome    {type:"welcome", proto:1, sparkId, config:{intervals, llmPorts, role, llmMonitoring, kind, nasRoot, agentVersion}}
  *  ← config-update {config}
  *  → metrics    {domain, data}        ← llm {ports:[snapshot]}   → pong
  *  ← job-run    {reqId, script(b64), args[]}
@@ -340,7 +340,8 @@ export async function main() {
   const sparkStub = {
     id: cfg.sparkId,
     isLocal: true,
-    kind: "spark",
+    kind: cfg.kind || "spark",
+    nasRoot: String(cfg.nasRoot || ""),
     disabledDevices: cfg.disabledDevices || [],
     disabledInterfaces: cfg.disabledInterfaces || [],
   };
@@ -388,6 +389,8 @@ export async function main() {
         llmPorts = msg.config?.llmPorts || llmPorts;
         role = msg.config?.role || role;
         llmMonitoring = msg.config?.llmMonitoring !== false;
+        sparkStub.kind = msg.config?.kind || sparkStub.kind;
+        sparkStub.nasRoot = String(msg.config?.nasRoot ?? sparkStub.nasRoot);
         await syncLlmProbes();
         startLoops();
         backoff = RECONNECT_MIN_MS;
@@ -400,6 +403,8 @@ export async function main() {
         llmPorts = msg.config?.llmPorts || llmPorts;
         role = msg.config?.role || role;
         llmMonitoring = msg.config?.llmMonitoring !== false;
+        sparkStub.kind = msg.config?.kind || sparkStub.kind;
+        sparkStub.nasRoot = String(msg.config?.nasRoot ?? sparkStub.nasRoot);
         await syncLlmProbes();
         startLoops();
         if (msg.config?.token) {

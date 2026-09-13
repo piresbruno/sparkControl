@@ -14,7 +14,7 @@
   --space-4: 16px;
   --space-6: 24px;
   --card-pad: var(--density-card-pad, 14px);
-  --gap: var(--density-page-gap, 10px);
+  --gap: var(--density-page-gap, 13px);
   --fs-10: 10px;
   --fs-11: 11px;
   --fs-12: 12px;
@@ -702,7 +702,6 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-left: auto;
   flex-wrap: wrap;
 }
 /* Existing SparkActions buttons take the instrument-key face inside the plate. */
@@ -718,7 +717,7 @@
 /* ── Resources: gauge bank ─────────────────────────────────────────────── */
 .spark-console .gauge-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-3);
 }
 .spark-console .gauge {
@@ -1507,43 +1506,6 @@
   color: var(--color-muted);
 }
 
-/* ── Expert disclosure ("full panels" legacy strip) ────────────────────── */
-.spark-console .sc-disclosure {
-  border: 1px dashed var(--color-border-strong);
-  border-radius: var(--mod-radius);
-  background: transparent;
-  padding: 0 var(--space-3);
-  min-width: 0;
-}
-.spark-console .sc-disclosure > summary {
-  list-style: none;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 0;
-  font-family: var(--mono);
-  font-size: var(--fs-10);
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--color-muted);
-}
-.spark-console .sc-disclosure > summary::-webkit-details-marker {
-  display: none;
-}
-.spark-console .sc-disclosure > summary:hover {
-  color: var(--color-text);
-}
-.spark-console .sc-disclosure[open] > summary {
-  border-bottom: 1px solid var(--color-border);
-}
-.spark-console .sc-disclosure__body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap);
-  padding: var(--space-3) 0 var(--space-3);
-}
 
 /* ── Responsive ────────────────────────────────────────────────────────── */
 @media (max-width: 1180px) {
@@ -1599,7 +1561,33 @@
   .spark-console .console {
     grid-template-columns: minmax(0, 1fr);
   }
+  /* Channel rail becomes a horizontal strip between the rack and the body
+     instead of disappearing — navigation stays reachable on narrow screens. */
   .spark-console .rail {
+    grid-column: 1;
+    position: static;
+    flex-direction: row;
+    align-items: stretch;
+    overflow-x: auto;
+    padding-bottom: 0;
+    scrollbar-width: none;
+  }
+  .spark-console .rail::-webkit-scrollbar {
+    display: none;
+  }
+  .spark-console .rail__cap {
+    display: none;
+  }
+  .spark-console .rail__ch {
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: auto;
+    padding: 7px 12px 8px;
+    white-space: nowrap;
+  }
+  .spark-console .rail__bus {
     display: none;
   }
   .spark-console .console__body {
@@ -1615,5 +1603,26 @@
   }
   .spark-console .ch-head__note {
     display: none;
+  }
+  /* Racks and data plates wrap instead of overflowing on phones. */
+  .spark-console .rack {
+    flex-wrap: wrap;
+  }
+  .spark-console .plate {
+    flex-wrap: wrap;
+  }
+  .spark-console .plate__f {
+    flex: 1 1 auto;
+    min-width: 96px;
+  }
+  .spark-console .launch-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Phones: single-column instrument banks */
+@media (max-width: 480px) {
+  .spark-console .gauge-grid {
+    grid-template-columns: 1fr;
   }
 }

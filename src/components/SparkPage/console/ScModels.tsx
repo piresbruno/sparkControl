@@ -33,6 +33,7 @@ import {
 import { ScChip, ScModule, ScSubpanel } from "./ScKit";
 import { fmtGB, fmtInt, fmtSeconds, shortModelName, tokenizeLogLine } from "./consoleUtils";
 import { jobPct } from "../../NasPage/nasUtils";
+import { Pager } from "../../../ui/Pager";
 
 interface ScModelsProps {
   spark: SparkSnapshot;
@@ -107,6 +108,7 @@ const STATUS_TONE: Record<MctlJob["status"], string> = {
 };
 
 const LOG_CAP = 200;
+const MODEL_PAGE_SIZE = 10;
 
 export function ScModels({
   spark,
@@ -287,11 +289,30 @@ export function ScModels({
     ...(nasModels ?? []).filter((m) => !nodeNames.includes(m.name)),
   ];
 
-  // Default selection: the serving model, else the first node model.
+  // ── List controls: search + pagination (shared Pager with the catalog) ──
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(0);
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? merged.filter(
+        (m) =>
+          m.name.toLowerCase().includes(q) ||
+          shortModelName(m.name).toLowerCase().includes(q)
+      )
+    : merged;
+  const pageCount = Math.max(1, Math.ceil(filtered.length / MODEL_PAGE_SIZE));
+  const safePage = Math.min(page, pageCount - 1);
+  const pagedModels = filtered.slice(safePage * MODEL_PAGE_SIZE, (safePage + 1) * MODEL_PAGE_SIZE);
+
+  // Default selection: the serving model, else the first node model — and the
+  // list opens on that model's page so the selection is visible immediately.
   useEffect(() => {
     if (selectedName || !nodeModels?.length) return;
     const serving = nodeModels.find((m) => isServing(m.name));
-    if (serving) setSelectedName(serving.name);
+    if (serving) {
+      setSelectedName(serving.name);
+      setPage(Math.floor(nodeModels.indexOf(serving) / MODEL_PAGE_SIZE));
+    }
   }, [nodeModels, selectedName, isServing]);
 
   // Drop the selection once the name exists nowhere (deleted locally, absent on NAS).
@@ -639,6 +660,16 @@ export function ScModels({
               </span>
             ) : null}
           </div>
+          <input
+            type="text"
+            placeholder="search models…"
+            aria-label="Search models"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setPage(0);
+            }}
+          />
           {nodeModelsErr ? <ScChip tone="err">{nodeModelsErr}</ScChip> : null}
           {nodeModels == null ? (
             <p className="empty-note" style={{ margin: 0 }}>
@@ -651,7 +682,12 @@ export function ScModels({
                   No models on this node{nasModels?.length ? " (NAS catalog listed below)" : ""}.
                 </p>
               ) : null}
-              {merged.map((m) => {
+              {merged.length > 0 && filtered.length === 0 ? (
+                <p className="empty-note" style={{ margin: 0 }}>
+                  No models match “{query.trim()}”.
+                </p>
+              ) : null}
+              {pagedModels.map((m) => {
                 const onNode = nodeNames.includes(m.name);
                 const serving = onNode && isServing(m.name);
                 return (
@@ -682,7 +718,19 @@ export function ScModels({
               })}
             </div>
           )}
+          <Pager page={safePage} pageCount={pageCount} total={filtered.length} onPage={setPage} />
           <div className="hairline" />
+          {selectedModel ? (
+            <p className="legend" style={{ margin: 0 }}>
+              selected ·{" "}
+              <span style={{ color: "var(--color-text-strong)", fontFamily: "var(--mono)" }}>
+                {shortModelName(selectedModel.name)}
+              </span>
+              {!filtered.some((m) => m.name === selectedModel.name)
+                ? " — filtered out of the list above"
+                : ""}
+            </p>
+          ) : null}
           <p className="legend" style={{ margin: 0 }}>
             <span className="tag-serving">serving</span> live in the Serving card above
             <span style={{ color: "var(--color-border-strong)" }}>·</span>

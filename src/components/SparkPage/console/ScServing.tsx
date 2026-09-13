@@ -1,20 +1,17 @@
 /**
  * CH·02 Serving — v3 instrument console.
  * One hero bay per configured LLM port (activity chip, dials, endpoint rows,
- * 12-stat readout matrix), worker passthrough, and the Expert-panels
- * disclosure carrying the legacy LlmPanel/ComfyPanel UI.
+ * 12-stat readout matrix) and worker passthrough.
  *
  * Markup mirrors mockups/node-detail-v3.html (.hero / .dials / .bay /
- * .readouts) and src/styles/console.css; stat semantics mirror LlmPanel.tsx.
+ * .readouts) and src/styles/console.css.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { LlmMetrics, ServingStatus, SparkSnapshot } from "../../../api/types";
 import { useMetricsHistoryTail } from "../../../hooks/metricsStore";
-import { VLLM_METRIC_INFO } from "../LlmPanel";
 import {
   ScChip,
   ScCopy,
-  ScDisclosure,
   ScHist,
   ScInfo,
   ScLed,
@@ -30,6 +27,7 @@ import {
   fmtSeconds,
   fmtTps,
   shortModelName,
+  VLLM_METRIC_INFO,
 } from "./consoleUtils";
 import { useEngineActivity } from "./useEngineActivity";
 import { servingSince, useServingLifecycle } from "./useServingLifecycle";
@@ -54,13 +52,10 @@ interface ScServingProps {
   onRemovePort: (port: number) => void;
   /** Scroll + flash the CH·03 launch panel. */
   onServeNew: () => void;
-  comfyOn: boolean;
   workerHeadId: string | null;
   /** null = head config not resolved yet; string = head spark id (xref target). */
   headSparkName: string | null;
   onNavigate?: (id: string | null) => void;
-  /** Legacy LlmPanel(s) + ComfyPanel + add-port UI, composed by SparkPage. */
-  children?: ReactNode;
 }
 
 /** Backend label map — copied from LlmPanel.tsx BackendBadge. */
@@ -592,7 +587,6 @@ export function ScServing({
   headSparkName,
   workerHeadId,
   onNavigate,
-  children,
 }: ScServingProps) {
   const lifecycle = useServingLifecycle(spark.id, llmOn && role !== "worker");
   const gpuUsage = spark.metrics.gpu?.usage ?? null;
@@ -691,12 +685,5 @@ export function ScServing({
     );
   }
 
-  return (
-    <>
-      {body}
-      {children ? (
-        <ScDisclosure title="Expert panels: LLM engines + ComfyUI">{children}</ScDisclosure>
-      ) : null}
-    </>
-  );
+  return <>{body}</>;
 }

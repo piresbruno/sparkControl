@@ -162,12 +162,12 @@
   --density-root-font: 112%;
   --density-shell-pad: 20px;
   --density-header-gap: 16px;
-  --density-page-gap: 10px;
+  --density-page-gap: 13px;
   --density-panel-pad: 13px;
   --density-panel-title-mb: 9px;
   --density-card-pad: 14px;
-  --density-card-gap: 8px;
-  --density-overview-rhythm: 16px;
+  --density-card-gap: 10px;
+  --density-overview-rhythm: 18px;
   --density-overview-title: 24px;
   --radius-panel: 14px;
   --radius-sm: 8px;
@@ -307,13 +307,10 @@ input:disabled {
   }
 }
 
-/* Mobile: no gray background, no card rounding, no card gap */
+/* Mobile: no gray background, cards keep their breathing room */
 @media (max-width: 700px) {
   body {
     background: var(--color-surface);
-  }
-  .overview-page {
-    gap: 0 !important;
   }
 }
 

@@ -40,28 +40,7 @@ export function DiskIcon({ className }: IconProps) {
   );
 }
 
-export function NetworkIcon({ className }: IconProps) {
-  return (
-    <svg {...baseProps(className)}>
-      <path d="M5 12.55a11 11 0 0 1 14.08 0" />
-      <path d="M1.42 9a16 16 0 0 1 21.16 0" />
-      <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
-      <line x1="12" y1="20" x2="12.01" y2="20" />
-    </svg>
-  );
-}
 
-export function BotIcon({ className }: IconProps) {
-  return (
-    <svg {...baseProps(className)}>
-      <rect x="4" y="8" width="16" height="12" rx="2" />
-      <path d="M12 8V4M9 2h6" />
-      <circle cx="9" cy="14" r="1.2" fill="currentColor" stroke="none" />
-      <circle cx="15" cy="14" r="1.2" fill="currentColor" stroke="none" />
-      <path d="M2 14v2M22 14v2" />
-    </svg>
-  );
-}
 
 /** Chevron pointing down; rotate -90° when a section is collapsed. */
 export function ChevronDownIcon({ className }: IconProps) {
@@ -83,16 +62,6 @@ export function ExternalLinkIcon({ className }: IconProps) {
   );
 }
 
-/** ComfyUI / image-workflow service. */
-export function ComfyIcon({ className }: IconProps) {
-  return (
-    <svg {...baseProps(className)}>
-      <rect x="3" y="5" width="18" height="14" rx="2" />
-      <circle cx="9" cy="11" r="2" />
-      <path d="M3 16l5-4 3 2 4-5 6 7" />
-    </svg>
-  );
-}
 
 export function GearIcon({ className = "" }: { className?: string }) {
   return (
@@ -169,14 +138,6 @@ export function GridIcon({ className = "" }: { className?: string }) {
   );
 }
 
-export function MemoryIcon({ className = "" }: { className?: string }) {
-  return (
-    <svg {...baseProps(className)}>
-      <rect x="2" y="6" width="20" height="12" rx="2" />
-      <path d="M6 12h4M14 12h4" />
-    </svg>
-  );
-}
 
 /** Four-point spark — the sparkControl brand glyph (filled, accent-colored). */
 export function SparkIcon({ className = "" }: { className?: string }) {

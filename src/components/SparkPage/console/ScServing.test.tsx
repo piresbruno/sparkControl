@@ -58,7 +58,6 @@ function renderServing(llm: LlmMetrics, gpuUsage = 96) {
       onAddPort={vi.fn()}
       onRemovePort={vi.fn()}
       onServeNew={vi.fn()}
-      comfyOn={false}
       workerHeadId={null}
       headSparkName={null}
     />
