@@ -123,6 +123,11 @@ export function ingestSnapshots(sparks: SparkSnapshot[], at: number = Date.now()
     if (m.gpu) {
       pushHistory(`${s.id}:gpu.usage`, m.gpu.usage, at);
       pushHistory(`${s.id}:gpu.temp`, m.gpu.temperature, at);
+      // Discrete VRAM (kind "host" nodes) trends as its own series so the
+      // VRAM gauge sparkline never plots the unified-memory (RAM) series.
+      if (m.gpu.vram) {
+        pushHistory(`${s.id}:gpu.vram`, m.gpu.vram.percentage, at);
+      }
     }
     if (m.cpu) {
       pushHistory(`${s.id}:cpu.usage`, m.cpu.usage, at);

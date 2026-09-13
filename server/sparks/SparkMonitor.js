@@ -105,6 +105,8 @@ export class SparkMonitor {
       tailscale: null,
     };
     this._lastUpdate = {};
+    /** Per-domain last-collection success — fleet-energy freshness contract (FleetEnergyRuntime). */
+    this._metricCollectionSuccessful = {};
 
     // Hardware summary: kind "spark" uses the static DGX Spark specs; kind
     // "host" (dedicated GPU Linux box) detects real hardware once in the
@@ -435,6 +437,7 @@ export class SparkMonitor {
         break;
     }
     this._lastUpdate[domain] = now;
+    this._metricCollectionSuccessful[domain] = true;
   }
 
   /** Called on registry connect/disconnect events. */
@@ -709,7 +712,9 @@ export class SparkMonitor {
           break;
       }
       this._lastUpdate[domain] = Date.now();
+      this._metricCollectionSuccessful[domain] = true;
     } catch (err) {
+      this._metricCollectionSuccessful[domain] = false;
       console.error(`[SparkMonitor] ${this.spark.id} ${domain} poll error:`, err.message);
     } finally {
       if (this._inflight[domain] === pollToken) this._inflight[domain] = false;
@@ -736,7 +741,9 @@ export class SparkMonitor {
       if (!this._running || this._runGeneration !== runGeneration) return;
       this._metrics.storage = result;
       this._lastUpdate[domain] = Date.now();
+      this._metricCollectionSuccessful[domain] = true;
     } catch (err) {
+      this._metricCollectionSuccessful[domain] = false;
       console.error(`[SparkMonitor] ${this.spark.id} ${domain} refresh error:`, err.message);
     } finally {
       if (this._inflight[domain] === refreshToken) this._inflight[domain] = false;

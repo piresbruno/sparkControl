@@ -75,7 +75,10 @@ export function ScResources({
   const role = resolveSparkRole(spark);
   // Hist tails (metricsStore keys — appended on every WS ingest). Same keys
   // the overview cards trend.
-  const vramHist = useMetricsHistoryTail(spark.id, "unifiedMemory.percentage");
+  const vramHist = useMetricsHistoryTail(
+    spark.id,
+    metrics.gpu?.vram ? "gpu.vram" : "unifiedMemory.percentage"
+  );
   const ramHist = useMetricsHistoryTail(spark.id, "ram.percentage");
   const usageHist = useMetricsHistoryTail(spark.id, "gpu.usage");
   const cpuUsageHist = useMetricsHistoryTail(spark.id, "cpu.usage");

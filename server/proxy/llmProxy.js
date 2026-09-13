@@ -38,6 +38,7 @@ import { Router } from "express";
 import { isAllowedTargetHost } from "../validate.js";
 import { llmProbeHost } from "../collectors/llmHost.js";
 import { TRACE_MAX_REQ_BODY, TRACE_MAX_RES_BODY } from "../config.js";
+import { createInflightRegistry } from "./inflightRegistry.js";
 
 /** Idle timeout between upstream bytes (connect included). */
 const IDLE_TIMEOUT_MS = 600_000;
