@@ -1,6 +1,7 @@
 import type {
   DecodeBenchJob,
   DecodeBenchListResponse,
+  FleetEnergy,
   HermesBatchUpdateResponse,
   HermesUpdatesResponse,
   LlmMetrics,
@@ -527,6 +528,12 @@ export function listLlmClients(params: { sparkId?: string } = {}): Promise<LlmCl
 /** Flush: cancel every in-flight request from one client. */
 export function flushLlmClient(clientId: string): Promise<{ success: boolean; cancelled: number }> {
   return apiFetch(`/api/llm/clients/${encodeURIComponent(clientId)}`, { method: "DELETE" });
+}
+
+// ─── Fleet energy ─────────────────────────────────────────
+/** Fleet-wide estimated power/energy snapshot (Overview card hides itself on errors). */
+export function fetchFleetEnergy(): Promise<FleetEnergy> {
+  return apiFetch("/api/fleet-energy");
 }
 
 // ─── Model ops + serving (Part B) ─────────────────────────

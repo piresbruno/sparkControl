@@ -32,6 +32,11 @@ import { showcaseManager } from "./collectors/ShowcaseManager.js";
 import { llmProbeHost } from "./collectors/llmHost.js";
 import { llmDaily } from "./collectors/LlmDaily.js";
 import { compareSemver, getLatestRelease } from "./collectors/HermesReleases.js";
+import { FleetEnergyTracker } from "./energy/FleetEnergyTracker.js";
+import {
+  createFleetEnergyRuntime,
+  registerFleetEnergyRoute,
+} from "./energy/FleetEnergyRuntime.js";
 
 dotenv.config();
 
@@ -145,6 +150,18 @@ function orderedSnapshots() {
 
 // ─── Express app ─────────────────────────────────────────
 const app = express();
+
+// ─── Fleet energy ────────────────────────────────────────
+// Scope is captured at construction; setFleetEnergyTracker re-checks it on
+// every registry add/update/remove (FleetEnergyMembership contract).
+const fleetEnergyTracker = new FleetEnergyTracker({ nodeIds: registry.sparkIds });
+registry.setFleetEnergyTracker(fleetEnergyTracker);
+registerFleetEnergyRoute(app, fleetEnergyTracker);
+const energyRuntime = createFleetEnergyRuntime({
+  tracker: fleetEnergyTracker,
+  orderedSnapshots,
+  monitors,
+});
 const server = createServer(app);
 
 // ─── Analysis reverse proxy (A2) — BEFORE express.json so raw bodies tee ──
@@ -2658,6 +2675,7 @@ server.listen(PORT, BIND_HOST, () => {
     );
   }
   startAllMonitors();
+  energyRuntime.start(); // 2 s fleet-energy sampling once monitors are up
 });
 
 // ─── Graceful shutdown ─────────────────────────────────
@@ -2692,6 +2710,11 @@ function shutdown(signal) {
     monitors.clear();
   } catch (err) {
     console.error("[sparkControl] error during shutdown:", err.message);
+  }
+  try {
+    energyRuntime.stop(); // clears the sampler timer, closes + flushes the tracker
+  } catch (err) {
+    console.error("[sparkControl] failed to stop fleet energy runtime:", err.message);
   }
   try {
     closeTraceStore();

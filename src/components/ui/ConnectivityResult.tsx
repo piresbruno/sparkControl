@@ -10,7 +10,7 @@ export function ConnectivityResult({ result }: { result: SparkTestResponse }) {
         {result.ok ? "All required capabilities passed." : "One or more required capabilities failed."}
       </p>
       <ul className="mt-1 space-y-1">
-        {result.capabilities.map((capability) => (
+        {(result.capabilities ?? []).map((capability) => (
           <li key={capability.id} className={capability.status === "fail" ? "text-danger" : "text-muted"}>
             <strong>{capability.label}:</strong>{" "}
             {capability.status === "pass" ? "Pass" : capability.status === "fail" ? "Fail" : "Skipped"}

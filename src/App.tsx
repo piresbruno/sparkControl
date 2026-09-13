@@ -12,6 +12,7 @@ import { ShowcasePage } from "./components/ShowcasePage/ShowcasePage";
 import { ThemeSwitch } from "./components/ThemeSwitch";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { GearIcon, SparkIcon } from "./components/ui/icons";
+import { ConnectionBanner } from "./components/ui/ConnectionBanner";
 import { OVERVIEW_ID, ANALYSIS_ID, MODELS_ID } from "./constants";
 
 /** Sentinel tab ids — refreshFromApi must never bounce these back to a spark. */
@@ -109,7 +110,8 @@ function placeholderSnapshot(
 }
 
 function DashboardApp() {
-  const { sparks, activeId, setActiveId, activeSpark, connected } = useSnapshot();
+  const { sparks, activeId, setActiveId, activeSpark, connected, lastValidSnapshotAt, snapshotError, refreshInterval } =
+    useSnapshot();
   const navigate = useRoute(setActiveId);
   const [showAdd, setShowAdd] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -176,6 +178,15 @@ function DashboardApp() {
       document.documentElement.setAttribute("data-density", settings.density);
     }
   }, [settings?.density]);
+
+  // Telemetry-health banner clock: 1 s tick so data age and staleness re-render.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const tick = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(tick);
+  }, []);
+  const stale =
+    lastValidSnapshotAt != null && now - lastValidSnapshotAt > 3 * (refreshInterval ?? 2000);
 
   const refreshFromApi = useCallback(async () => {
     try {
@@ -249,6 +260,13 @@ function DashboardApp() {
   return (
     <div className="min-h-screen p-0 text-text sm:p-8">
       <div className="dashboard-shell">
+        <ConnectionBanner
+          connected={connected}
+          lastValidSnapshotAt={lastValidSnapshotAt}
+          snapshotError={snapshotError}
+          now={now}
+          stale={stale}
+        />
         <header className="flex flex-wrap items-center gap-3" style={{ marginBottom: "var(--density-header-gap)" }}>
           <button
             type="button"
