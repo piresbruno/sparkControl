@@ -61,6 +61,7 @@ function OcardStat({
   tone = "default",
   title,
   wrap = false,
+  full = false,
 }: {
   label: string;
   value: string;
@@ -68,6 +69,8 @@ function OcardStat({
   title?: string;
   /** Allow value to wrap (no ellipsis trim) — used for long model ids. */
   wrap?: boolean;
+  /** Span the full stats row (both grid columns) — used for wide readouts. */
+  full?: boolean;
 }) {
   const toneClass =
     tone === "danger"
@@ -80,7 +83,7 @@ function OcardStat({
             ? " ocard-stat__v--success"
             : "";
   return (
-    <div className="ocard-stat">
+    <div className={`ocard-stat${full ? " ocard-stat--full" : ""}`}>
       <span className="mlabel">{label}</span>
       <span className={`ocard-stat__v${toneClass}${wrap ? " ocard-stat__v--wrap" : ""}`} title={title}>
         {value}
@@ -511,6 +514,7 @@ function SparkCard({
                             : "success"
                       }
                       wrap
+                      full
                       title={`${ACTIVITY_LABEL[activity]} · ${running} run · ${waiting} wait`}
                     />
                   )}
@@ -608,7 +612,7 @@ function NasSparkCard({
       </div>
 
       {/* Hero: store capacity, not VRAM */}
-      <div className="gauge-grid" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
+      <div className="gauge-grid ocard-store-grid">
         <div className="gauge">
           <div className="gauge__top">
             <span className="mlabel">Store</span>

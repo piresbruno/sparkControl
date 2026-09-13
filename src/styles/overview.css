@@ -40,6 +40,11 @@
   grid-column: 1 / -1;
 }
 
+/* NAS card store hero: single gauge spanning the full card width */
+.spark-console .ocard-store-grid {
+  grid-template-columns: 1fr;
+}
+
 /* Secondary stats: two-column mono readouts under a hairline */
 .spark-console .ocard-stats {
   display: grid;
@@ -70,6 +75,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.spark-console .ocard-stat--full {
+  grid-column: 1 / -1;
 }
 .spark-console .ocard-stat__v--success {
   color: var(--color-success);
