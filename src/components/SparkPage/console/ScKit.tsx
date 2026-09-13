@@ -195,6 +195,25 @@ export function ScSeg({
   );
 }
 
+// ─── Gauge tone helpers (shared: overview cards + ScResources) ──────────
+export type GaugeTone = "danger" | "warning" | "accent" | "success";
+
+/** Worse of two gauge tones so neither condition hides behind the other. */
+export function worstTone(a: GaugeTone, b: GaugeTone): GaugeTone {
+  const rank = { success: 0, accent: 1, warning: 2, danger: 3 } as const;
+  return rank[a] >= rank[b] ? a : b;
+}
+
+/** Gauge container modifier for a tone ("" for accent/success). */
+export function gaugeCell(tone: GaugeTone): string {
+  return tone === "danger" ? " gauge--danger" : tone === "warning" ? " gauge--warn" : "";
+}
+
+/** ScHist has no danger tone — degrade to warning. */
+export function histTone(tone: GaugeTone): "warning" | "accent" | "success" {
+  return tone === "danger" ? "warning" : tone;
+}
+
 /** Copy-to-clipboard button with check feedback. */
 export function ScCopy({ text, title }: { text: string; title: string }) {
   const [copied, setCopied] = useState(false);

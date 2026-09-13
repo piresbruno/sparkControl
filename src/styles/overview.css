@@ -148,3 +148,19 @@
   font-size: var(--fs-10);
   border-radius: 5px;
 }
+
+/* Overview header: data-plate labels and instrument keys share one height */
+.spark-console .rack--overview {
+  --rack-ctl-h: 38px;
+}
+.spark-console .rack--overview .plate {
+  height: var(--rack-ctl-h);
+}
+.spark-console .rack--overview .plate__f {
+  padding-top: 3px;
+  padding-bottom: 3px;
+  justify-content: center;
+}
+.spark-console .rack--overview .rack__keys .key {
+  min-height: var(--rack-ctl-h);
+}

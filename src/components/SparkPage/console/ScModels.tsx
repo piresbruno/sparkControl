@@ -39,6 +39,10 @@ interface ScModelsProps {
   spark: SparkSnapshot;
   modelctlEnabled: boolean;
   modelctl: ModelctlStatus | null;
+  /** True when the node's modelctl is behind the latest GitHub release tag. */
+  modelctlUpdateAvailable: boolean;
+  /** Latest release tag (for the CTA label); null when the probe failed. */
+  modelctlLatest: string | null;
   onModelctlInstalled: () => Promise<unknown> | void;
   jobs: MctlJob[];
   onCancelJob: (jobId: string) => void;
@@ -114,6 +118,8 @@ export function ScModels({
   spark,
   modelctlEnabled,
   modelctl,
+  modelctlUpdateAvailable,
+  modelctlLatest,
   onModelctlInstalled,
   jobs,
   onCancelJob,
@@ -562,15 +568,31 @@ export function ScModels({
     );
   }
 
-
   return (
     <>
       {/* ── Jobs strip ─────────────────────────────────────────────────── */}
       <ScModule label="Jobs">
         <div className="spread">
           <span className="mlabel">Jobs · this node</span>
-          <span className="mono" style={{ fontSize: "var(--fs-10)", color: "var(--color-muted)" }}>
-            7-day retention on node
+          <span className="row" style={{ gap: 6 }}>
+            {modelctlUpdateAvailable && modelctl?.installed ? (
+              <button
+                type="button"
+                className="key key--primary"
+                disabled={installRunning || runningJobCount > 0}
+                title={
+                  installRunning || runningJobCount > 0
+                    ? "— one job runs at a time on this node"
+                    : `Update modelctl to ${modelctlLatest ?? "latest"} — runs the install-modelctl job (uv tool install --force)`
+                }
+                onClick={() => void handleInstall()}
+              >
+                ⟳ Update modelctl{modelctlLatest ? ` → ${modelctlLatest}` : ""}
+              </button>
+            ) : null}
+            <span className="mono" style={{ fontSize: "var(--fs-10)", color: "var(--color-muted)" }}>
+              7-day retention on node
+            </span>
           </span>
         </div>
         {sortedJobs.length === 0 ? (

@@ -5,10 +5,12 @@ import {
   addLlmPort,
   removeLlmPort,
   fetchSparks,
+  fetchModelctlRelease,
   modelctlStatus as fetchModelctlStatus,
   listJobs,
   cancelJob,
 } from "../../api/client";
+import { versionIsNewer } from "../NasPage/nasUtils";
 import { SparkActions } from "./SparkActions";
 import { ScChHead, ScModule } from "./console/ScKit";
 import { ScResources } from "./console/ScResources";
@@ -98,6 +100,8 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
   const [allCfg, setAllCfg] = useState<SparkConfig[] | null>(null);
   const cfg = allCfg?.find((s) => s.id === spark.id) ?? null;
   const [modelctl, setModelctl] = useState<ModelctlStatus | null>(null);
+  // Latest modelctl GitHub release tag (repo builds releases; server 15-min cache).
+  const [mctlRelease, setMctlRelease] = useState<string | null>(null);
   const [jobs, setJobs] = useState<MctlJob[]>([]);
   // Increments when the Serving CTA asks Models to scroll+flash the launch panel.
   const [launchSignal, setLaunchSignal] = useState(0);
@@ -149,6 +153,13 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
   useEffect(() => {
     if (!modelctlEnabled || !spark.online) return;
     void refreshModelctl();
+    let dead = false;
+    fetchModelctlRelease()
+      .then((r) => !dead && setMctlRelease(r.latest))
+      .catch(() => !dead && setMctlRelease(null));
+    return () => {
+      dead = true;
+    };
   }, [modelctlEnabled, spark.online, refreshModelctl]);
 
   // Jobs poll: 1s while anything runs on this node, 15s otherwise.
@@ -214,6 +225,11 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
     [spark.id]
   );
 
+
+  // "modelctl up" gate: a newer release tag exists than what the node runs.
+  // False until both sides are known — no CTA on a failed/absent probe.
+  const mctlUpdateAvailable =
+    modelctlEnabled && versionIsNewer(mctlRelease, modelctl?.version ?? null);
   const jobsRunning = jobs.some((j) => j.status === "running");
   const anyEngine = llmOn && (metrics.llm ?? []).some((l) => l?.available);
   const tailscaleOn = Boolean(spark.tailscaleMonitoring);
@@ -373,6 +389,8 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
             spark={spark}
             modelctlEnabled={modelctlEnabled}
             modelctl={modelctl}
+            modelctlUpdateAvailable={mctlUpdateAvailable}
+            modelctlLatest={mctlRelease}
             onModelctlInstalled={refreshModelctl}
             jobs={jobs}
             onCancelJob={handleCancelJob}

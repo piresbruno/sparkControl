@@ -337,7 +337,7 @@ describe("OverviewPage grouped gauges + NAS store root", () => {
     expect(screen.queryByText("Usage")).toBeNull();
   });
 
-  it("GPU gauge foot shows utilization and SM clocks when available", () => {
+  it("GPU gauge foot shows utilization and the current SM clock when available", () => {
     const node = snap("g2", {
       name: "ClockedGPU",
       role: "head",
@@ -362,7 +362,20 @@ describe("OverviewPage grouped gauges + NAS store root", () => {
       } as unknown as SparkSnapshot["metrics"],
     });
     render(<OverviewPage sparks={[node]} temperatureUnit="celsius" />);
-    expect(screen.getByText("67% · 2.0/3.9 GHz")).toBeTruthy();
+    // Current clock only — the max is not shown (user requirement).
+    expect(screen.getByText("67% · 2.0 GHz")).toBeTruthy();
+  });
+
+  it("CPU gauge foot appends the current CPU clock when reported", () => {
+    const node = snap("g4", {
+      name: "ClockedCPU",
+      role: "head",
+      metrics: {
+        cpu: { usage: 12, temperature: 55, draw: 20, tdp: 65, clockMHz: 2654 },
+      } as unknown as SparkSnapshot["metrics"],
+    });
+    render(<OverviewPage sparks={[node]} temperatureUnit="celsius" />);
+    expect(screen.getByText("12% · 20/65 W · 2.7 GHz")).toBeTruthy();
   });
 
   it("status stat renders unwrapped-capable full text (wrap class set)", () => {
