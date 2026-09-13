@@ -27,6 +27,15 @@ const DEFAULTS = Object.freeze({
   traceCaptureBodies: true,
   /** Analysis section: optional exact-origin CORS allowlist for /llm proxy. */
   traceProxyAllowedOrigins: [],
+  /** Analysis (A4): max concurrent proxied in-flight requests per spark/port (0 = unlimited). */
+  proxyMaxInflightPerPort: 8,
+  /** Analysis (A4): trace body caps in bytes (ceiling 16 MiB enforced in clamp). */
+  traceMaxReqBody: 4 * 1024 * 1024,
+  traceMaxResBody: 4 * 1024 * 1024,
+  /** Analysis (A4): trace retention window in days. */
+  traceRetentionDays: 7,
+  /** Analysis (A4): display labels for proxied client ids (12-hex → label). */
+  clientLabels: {},
   /** modelctl integration (B1). */
   modelctl: Object.freeze({
     nasRoot: "/mnt/nas/llm-models",
@@ -115,12 +124,61 @@ function _clampSettings(settings) {
       (o) => typeof o === "string" && (o.startsWith("http://") || o.startsWith("https://"))
     );
   }
+  // Analysis (A4): in-flight cap — non-negative integer; 0 disables the cap.
+  if (
+    typeof s.proxyMaxInflightPerPort !== "number" ||
+    !Number.isInteger(s.proxyMaxInflightPerPort) ||
+    s.proxyMaxInflightPerPort < 0 ||
+    s.proxyMaxInflightPerPort > 1024
+  ) {
+    s.proxyMaxInflightPerPort = DEFAULTS.proxyMaxInflightPerPort;
+  }
+  // Analysis (A4): body caps in bytes — clamp-with-reset (1 KiB – 16 MiB).
+  if (
+    typeof s.traceMaxReqBody !== "number" ||
+    !Number.isFinite(s.traceMaxReqBody) ||
+    s.traceMaxReqBody < 1024 ||
+    s.traceMaxReqBody > 16 * 1024 * 1024
+  ) {
+    s.traceMaxReqBody = DEFAULTS.traceMaxReqBody;
+  }
+  if (
+    typeof s.traceMaxResBody !== "number" ||
+    !Number.isFinite(s.traceMaxResBody) ||
+    s.traceMaxResBody < 1024 ||
+    s.traceMaxResBody > 16 * 1024 * 1024
+  ) {
+    s.traceMaxResBody = DEFAULTS.traceMaxResBody;
+  }
+  // Analysis (A4): retention in days (1–365).
+  if (
+    typeof s.traceRetentionDays !== "number" ||
+    !Number.isFinite(s.traceRetentionDays) ||
+    s.traceRetentionDays < 1 ||
+    s.traceRetentionDays > 365
+  ) {
+    s.traceRetentionDays = DEFAULTS.traceRetentionDays;
+  }
+  // Analysis (A4): client label map — validated + copied.
+  s.clientLabels = _clampClientLabels(s.clientLabels);
   // modelctl (B1): per-key deep merge so partial patches don't wipe siblings
   s.modelctl = _mergeModelctl(s.modelctl);
   // agent: never accept a token through settings — tokenConfigured is derived
   // at runtime from ensure/rotate (patch/file values always ignored).
   s.agent = { tokenConfigured: false };
   return s;
+}
+
+/** Validate + copy a clientLabels map (12-hex keys → string labels ≤64 chars). */
+function _clampClientLabels(v) {
+  const out = {};
+  if (!v || typeof v !== "object" || Array.isArray(v)) return out;
+  for (const [k, label] of Object.entries(v)) {
+    if (/^[0-9a-f]{12}$/.test(k) && typeof label === "string" && label.length > 0 && label.length <= 64) {
+      out[k] = label;
+    }
+  }
+  return out;
 }
 
 /**
@@ -175,6 +233,7 @@ export function getSettings() {
     ..._settings,
     modelctl: { ..._settings.modelctl },
     traceProxyAllowedOrigins: [..._settings.traceProxyAllowedOrigins],
+    clientLabels: { ..._settings.clientLabels },
     agent: { tokenConfigured: _agentTokenConfigured },
   };
 }

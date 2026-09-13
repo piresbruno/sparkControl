@@ -50,7 +50,9 @@ test("record + list round trip; lean list omits bodies, get() returns them", () 
 });
 
 test("body caps: reqBody capped at 32 KiB, resText at 64 KiB (UTF-8 aware)", () => {
-  const s = store();
+  // Explicit overrides pin the legacy caps; a default store now follows the
+  // traceMaxReqBody / traceMaxResBody settings knobs (4 MiB).
+  const s = new TraceStore({ dbPath: ":memory:", maxReqBody: TRACE_MAX_REQ, maxResBody: TRACE_MAX_RES });
   const bigReq = "x".repeat(TRACE_MAX_REQ + 5000);
   // Multi-byte: é is 2 bytes; cap counts UTF-8 bytes, not JS chars.
   const bigRes = "é".repeat(TRACE_MAX_RES); // 2 bytes per char → 2× cap
@@ -61,6 +63,7 @@ test("body caps: reqBody capped at 32 KiB, resText at 64 KiB (UTF-8 aware)", () 
   assert.equal(Buffer.byteLength(full.resText, "utf8"), TRACE_MAX_RES);
   // Clean boundary: even number of 2-byte chars or no partial char.
   assert.ok(full.resText.length % 1 === 0);
+  s.stop();
 });
 
 test("filters: sparkId, port, source, method combine with AND", () => {

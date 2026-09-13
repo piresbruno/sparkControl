@@ -2,7 +2,7 @@
  * llmProxy (A2) — built-in reverse proxy in front of cluster LLM engines.
  *
  * Factory with DI for tests: createLlmProxy({ registry, secrets, settings,
- * traceStore }) returns an Express Router. Mounted at "/llm" BEFORE
+ * traceStore, inflight }) returns an Express Router. Mounted at "/llm" BEFORE
  * express.json() so the raw request body can be tee'd (capped accumulator)
  * while being piped straight through — the proxy never buffers the whole body.
  *
@@ -20,8 +20,12 @@
  *    = content-delta count with tokensEstimated=true (prompt never estimated).
  *  - Recording only when settings.traceCapture is on; successful GETs to
  *    probe-style paths (/health, /metrics, …) are never recorded.
- *  - Upstream errors recorded with status:null and answered 502. 300 s idle
+ *  - Upstream errors recorded with status:null and answered 502. 600 s idle
  *    timeout between upstream bytes; no overall timeout.
+ *  - A4: every request registers in the in-flight registry (visible via
+ *    /api/llm/active, cancellable by id); a downstream (client) abort destroys
+ *    the upstream socket; cancels record traces as `cancelled (<reason>)`;
+ *    optional per-spark/port concurrency cap answers 429.
  *  - CORS off by default; optional exact-origin allowlist (echo origin +
  *    enumerated Allow-Headers/Methods; OPTIONS → 204 locally, allowlisted
  *    origins only). Never `*`.
@@ -29,6 +33,7 @@
  *    /agent-ws + /ws endpoints own their paths).
  */
 import http from "http";
+import crypto from "crypto";
 import { Router } from "express";
 import { isAllowedTargetHost } from "../validate.js";
 import { llmProbeHost } from "../collectors/llmHost.js";
@@ -48,17 +53,41 @@ const PROBE_PATHS = new Set([
   "/get_server_info",
 ]);
 
+/** Stable pseudo-client id: first 12 hex chars of sha256(ip + "\n" + UA). */
+function _clientId(ip, ua) {
+  return crypto
+    .createHash("sha256")
+    .update(`${ip ?? ""}\n${ua ?? ""}`)
+    .digest("hex")
+    .slice(0, 12);
+}
+
+/** Tool names from a chat-completions / messages request body (OpenAI
+ * tools[].function.name or Anthropic tools[].name). */
+function _toolNames(parsed) {
+  const tools = parsed?.tools;
+  if (!Array.isArray(tools)) return null;
+  const names = [];
+  for (const t of tools) {
+    const n = t?.function?.name ?? t?.name;
+    if (typeof n === "string" && n) names.push(n);
+  }
+  return names.length > 0 ? names : null;
+}
+
 /**
  * @param {{
  *   registry: { getSpark(id: string): object | null },
  *   secrets?: { getLlmKey(sparkId: string, port: number): string | null },
  *   settings: () => ({ traceCapture?: boolean, traceCaptureBodies?: boolean,
- *                      traceProxyAllowedOrigins?: string[] }),
+ *                      traceProxyAllowedOrigins?: string[],
+ *                      proxyMaxInflightPerPort?: number }),
  *   traceStore: { record(entry: object): unknown },
+ *   inflight?: ReturnType<typeof import("./inflightRegistry.js").createInflightRegistry>,
  * }} deps
  * @returns {Router}
  */
-export function createLlmProxy({ registry, secrets, settings, traceStore }) {
+export function createLlmProxy({ registry, secrets, settings, traceStore, inflight = createInflightRegistry() }) {
   const router = Router();
 
   router.all("/:sparkId/:port/*splat", handler);
@@ -88,6 +117,16 @@ export function createLlmProxy({ registry, secrets, settings, traceStore }) {
     const cfg = settings() || {};
     const capture = cfg.traceCapture !== false; // default true
     const captureBodies = cfg.traceCaptureBodies !== false; // default true
+    // Per-request body caps from live settings (A4); config consts are the
+    // fallback for DI tests that pass a bare knobs object.
+    const maxReqBody =
+      Number.isFinite(cfg.traceMaxReqBody) && cfg.traceMaxReqBody > 0
+        ? cfg.traceMaxReqBody
+        : TRACE_MAX_REQ_BODY;
+    const maxResBody =
+      Number.isFinite(cfg.traceMaxResBody) && cfg.traceMaxResBody > 0
+        ? cfg.traceMaxResBody
+        : TRACE_MAX_RES_BODY;
 
     // ─── CORS (default OFF; exact-origin allowlist only) ──
     const allowlist = Array.isArray(cfg.traceProxyAllowedOrigins)
@@ -113,6 +152,33 @@ export function createLlmProxy({ registry, secrets, settings, traceStore }) {
     const upstreamPathOnly = qIdx >= 0 ? upstreamPath.slice(0, qIdx) : upstreamPath;
     const upstreamQuery = qIdx >= 0 ? upstreamPath.slice(qIdx + 1) : "";
 
+    // ─── In-flight tracking (A4) ─────────────────────────
+    const clientIp = req.ip || req.socket?.remoteAddress || null;
+    const clientUa =
+      typeof req.headers["user-agent"] === "string"
+        ? req.headers["user-agent"].slice(0, 256)
+        : null;
+    const clientId = _clientId(clientIp, clientUa);
+    const inflightId = inflight.register({
+      sparkId,
+      port,
+      path: upstreamPathOnly,
+      method: req.method,
+      startedAt: start,
+      clientIp,
+      clientUa,
+      clientId,
+    });
+    // Concurrency cap per spark/port (0 disables). The count is
+    // self-inclusive, so the check is strictly greater-than.
+    const inflightCap = Number.isFinite(cfg.proxyMaxInflightPerPort)
+      ? cfg.proxyMaxInflightPerPort
+      : 0;
+    if (inflightCap > 0 && inflight.list({ sparkId, port }).length > inflightCap) {
+      inflight.unregister(inflightId);
+      return res.status(429).json({ error: "in-flight cap exceeded", retryAfterMs: 2000 });
+    }
+
     const headers = { ...req.headers };
     delete headers.host;
     delete headers.connection;
@@ -132,8 +198,9 @@ export function createLlmProxy({ registry, secrets, settings, traceStore }) {
     // Capped request-body tee (never buffers the whole body).
     const reqChunks = [];
     let reqBytes = 0;
+    let reqTools = null;
     req.on("data", (chunk) => {
-      if (reqBytes < TRACE_MAX_REQ_BODY) {
+      if (reqBytes < maxReqBody) {
         reqChunks.push(chunk);
         reqBytes += chunk.length;
       }
@@ -163,6 +230,35 @@ export function createLlmProxy({ registry, secrets, settings, traceStore }) {
     };
 
     upstreamReq.on("error", (err) => finishError(err));
+    inflight.attach(inflightId, upstreamReq);
+
+    // Downstream-abort propagation (A4): a dropped client socket (tab close,
+    // fetch cancel) destroys the upstream request so the engine stops
+    // decoding. NB: on Node ≥15 `req` "close" fires when the request message
+    // completes (not on socket drop) — `res` "close" is the abort signal, and
+    // the `finished` guard skips the normal-completion case.
+    res.on("close", () => {
+      if (!finished && !res.writableEnded) {
+        inflight.cancel(inflightId, "client disconnect");
+      }
+    });
+
+    // Patch model/stream onto the live entry + extract requested tools once
+    // the body is known.
+    req.on("end", () => {
+      let parsed = null;
+      try {
+        parsed = JSON.parse(Buffer.concat(reqChunks).toString("utf8"));
+      } catch {
+        /* truncated or non-JSON body — leave as-is */
+      }
+      const e = inflight.get(inflightId);
+      if (e && parsed && typeof parsed === "object") {
+        if (typeof parsed.model === "string") e.model = parsed.model;
+        e.stream = parsed.stream === true;
+      }
+      reqTools = _toolNames(parsed);
+    });
 
     // Forward the raw body straight through (works for bodyless methods too).
     req.pipe(upstreamReq);
@@ -171,6 +267,8 @@ export function createLlmProxy({ registry, secrets, settings, traceStore }) {
       responseHeadersAt = Date.now();
       bumpIdle();
       const isSSE = /text\/event-stream/i.test(String(upRes.headers["content-type"] || ""));
+      const liveEntry = inflight.get(inflightId);
+      if (liveEntry) liveEntry.stream = isSSE;
 
       // Pass upstream headers through, minus hop-by-hop fields Node manages.
       const outHeaders = { ...upRes.headers };
@@ -189,11 +287,12 @@ export function createLlmProxy({ registry, secrets, settings, traceStore }) {
       let deltaCount = 0;
       let lastUsage = null;
       let finishReason = null;
+      let usedTools = null; // name → count, aggregated from SSE events
 
       upRes.on("data", (chunk) => {
         bumpIdle();
         if (ttftMs == null) ttftMs = Date.now() - start;
-        if (resBytes < TRACE_MAX_RES_BODY) {
+        if (resBytes < maxResBody) {
           resChunks.push(chunk);
           resBytes += chunk.length;
         }
@@ -207,7 +306,12 @@ export function createLlmProxy({ registry, secrets, settings, traceStore }) {
           }
           // Guard the parse buffer itself (a pathological engine without
           // blank lines must not grow unbounded).
-          if (sseText.length > TRACE_MAX_RES_BODY) sseText = "";
+          if (sseText.length > maxResBody) sseText = "";
+        }
+        if (liveEntry) {
+          if (ttftMs != null && liveEntry.ttftMs == null) liveEntry.ttftMs = ttftMs;
+          liveEntry.contentLen = contentLen;
+          liveEntry.deltaCount = deltaCount;
         }
       });
 
@@ -229,6 +333,23 @@ export function createLlmProxy({ registry, secrets, settings, traceStore }) {
             deltaCount += 1;
           }
           if (choice?.finish_reason != null) finishReason = choice.finish_reason;
+          const toolCalls = choice?.delta?.tool_calls;
+          if (Array.isArray(toolCalls)) {
+            for (const tc of toolCalls) {
+              const n = tc?.function?.name;
+              if (typeof n === "string" && n) {
+                usedTools = usedTools || new Map();
+                usedTools.set(n, (usedTools.get(n) || 0) + 1);
+              }
+            }
+          }
+          if (obj?.type === "content_block_start" && obj?.content_block?.type === "tool_use") {
+            const n = obj.content_block.name;
+            if (typeof n === "string" && n) {
+              usedTools = usedTools || new Map();
+              usedTools.set(n, (usedTools.get(n) || 0) + 1);
+            }
+          }
           if (obj?.usage && typeof obj.usage === "object") lastUsage = obj.usage;
         }
       }
@@ -243,6 +364,7 @@ export function createLlmProxy({ registry, secrets, settings, traceStore }) {
           status: upRes.statusCode || 0,
           ttftMs: ttftMs ?? (responseHeadersAt ? responseHeadersAt - start : null),
         });
+        inflight.unregister(inflightId);
         res.end();
       });
       upRes.on("error", (err) => {
@@ -255,6 +377,7 @@ export function createLlmProxy({ registry, secrets, settings, traceStore }) {
           finished = true;
           _record({ status: upRes.statusCode || null, error: err.message });
         }
+        inflight.unregister(inflightId);
         try {
           res.end();
         } catch {
@@ -265,6 +388,8 @@ export function createLlmProxy({ registry, secrets, settings, traceStore }) {
       upRes.pipe(res);
 
       function _record({ status, ttftMs: t, error }) {
+        const cancelledBy = inflight.get(inflightId)?.cancelledBy ?? null;
+        if (cancelledBy) error = `cancelled (${cancelledBy})`;
         if (!capture) return;
         // GET-noise exclusion: successful GETs to probe-style paths.
         if (!error && req.method === "GET" && (status || 0) < 400 && PROBE_PATHS.has(upstreamPathOnly)) {
@@ -323,9 +448,14 @@ export function createLlmProxy({ registry, secrets, settings, traceStore }) {
         let promptTokens = null;
         let completionTokens = null;
         let tokensEstimated = false;
+        let cachedTokens = null;
         if (lastUsage) {
           promptTokens = Number.isFinite(lastUsage.prompt_tokens) ? lastUsage.prompt_tokens : null;
           completionTokens = Number.isFinite(lastUsage.completion_tokens) ? lastUsage.completion_tokens : null;
+          const oai = lastUsage.prompt_tokens_details?.cached_tokens;
+          const ant = lastUsage.cache_read_input_tokens;
+          if (Number.isFinite(oai)) cachedTokens = Math.round(oai);
+          else if (Number.isFinite(ant)) cachedTokens = Math.round(ant);
         } else if (stream) {
           // Usage absent on a streamed completion → estimate from deltas.
           completionTokens = deltaCount > 0 ? deltaCount : contentLen > 0 ? 1 : 0;
@@ -350,6 +480,13 @@ export function createLlmProxy({ registry, secrets, settings, traceStore }) {
           tokensEstimated,
           finishReason,
           error: error || null,
+          clientIp,
+          clientUa,
+          clientId,
+          toolsReq: reqTools,
+          toolsUsed: usedTools ? [...usedTools].map(([name, count]) => ({ name, count })) : null,
+          cachedTokens,
+          bodyTruncated: reqBytes >= maxReqBody || resBytes >= maxResBody,
           reqBody: captureBodies ? reqText : null,
           resText: captureBodies ? resText : null,
         });
@@ -363,10 +500,29 @@ export function createLlmProxy({ registry, secrets, settings, traceStore }) {
       }
       if (finished) return;
       finished = true;
-      const msg = err?.code ? `${err.code}: ${err.message}` : err?.message || "upstream request failed";
+      const cancelledBy = inflight.get(inflightId)?.cancelledBy ?? null;
+      inflight.unregister(inflightId);
+      const msg = cancelledBy
+        ? `cancelled (${cancelledBy})`
+        : err?.code
+          ? `${err.code}: ${err.message}`
+          : err?.message || "upstream request failed";
       if (!capture) {
         if (!res.headersSent) res.status(502).json({ error: msg });
         return;
+      }
+      // Recover model/stream from the request tee — cancelled/failed
+      // requests should still be attributable in the Analysis views.
+      let reqModel = null;
+      let reqStream = false;
+      try {
+        const parsed = JSON.parse(Buffer.concat(reqChunks).toString("utf8"));
+        if (parsed && typeof parsed === "object") {
+          if (typeof parsed.model === "string") reqModel = parsed.model;
+          reqStream = parsed.stream === true;
+        }
+      } catch {
+        /* truncated or non-JSON body */
       }
       traceStore.record({
         ts: start,
@@ -379,8 +535,8 @@ export function createLlmProxy({ registry, secrets, settings, traceStore }) {
           return q >= 0 ? upstreamPath.slice(0, q) : upstreamPath;
         })(),
         query: upstreamQuery || null,
-        model: null,
-        stream: false,
+        model: reqModel,
+        stream: reqStream,
         status: null,
         ttftMs: null,
         durMs: Date.now() - start,
@@ -391,6 +547,13 @@ export function createLlmProxy({ registry, secrets, settings, traceStore }) {
         error: msg,
         reqBody: null,
         resText: null,
+        clientIp,
+        clientUa,
+        clientId,
+        toolsReq: reqTools,
+        toolsUsed: null,
+        cachedTokens: null,
+        bodyTruncated: reqBytes >= maxReqBody,
       });
       if (!res.headersSent) res.status(502).json({ error: msg });
     }

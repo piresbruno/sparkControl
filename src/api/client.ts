@@ -5,6 +5,9 @@ import type {
   HermesUpdatesResponse,
   LlmMetrics,
   LlmDailyResponse,
+  LlmActiveResponse,
+  LlmStopAllResponse,
+  LlmClientsResponse,
   Settings,
   ShowcaseListResponse,
   ShowcaseSessionState,
@@ -15,9 +18,10 @@ import type {
   StartDecodeBenchRequest,
   PrefillBenchJob,
   PrefillBenchListResponse,
-  StartPrefillBenchRequest,
   TraceEntry,
+  StartPrefillBenchRequest,
   TraceListResponse,
+  TraceStatsResponse,
   JobKind,
   MctlJob,
   ModelctlStatus,
@@ -457,6 +461,10 @@ export function listTraces(params: {
   method?: string;
   since?: number;
   limit?: number;
+  /** A4: filter to one proxied client id. */
+  clientId?: string;
+  /** A4: server-side LIKE search over request/response bodies. */
+  q?: string;
 } = {}): Promise<TraceListResponse> {
   const q = new URLSearchParams();
   if (params.sparkId) q.set("sparkId", params.sparkId);
@@ -465,6 +473,8 @@ export function listTraces(params: {
   if (params.method) q.set("method", params.method);
   if (params.since != null) q.set("since", String(params.since));
   if (params.limit != null) q.set("limit", String(params.limit));
+  if (params.clientId) q.set("clientId", params.clientId);
+  if (params.q) q.set("q", params.q);
   const qs = q.toString();
   return apiFetch(`/api/traces${qs ? `?${qs}` : ""}`);
 }
@@ -475,6 +485,48 @@ export function getTrace(id: string): Promise<TraceEntry> {
 
 export function clearTraces(): Promise<{ success: boolean }> {
   return apiFetch("/api/traces", { method: "DELETE" });
+}
+
+// ─── A4: in-flight LLM visibility, cancel & clients ───────
+/** Union of all active LLM work (proxy + decode/prefill bench + showcase). */
+export function listLlmActive(params: { sparkId?: string } = {}): Promise<LlmActiveResponse> {
+  const q = new URLSearchParams();
+  if (params.sparkId) q.set("sparkId", params.sparkId);
+  const qs = q.toString();
+  return apiFetch(`/api/llm/active${qs ? `?${qs}` : ""}`);
+}
+
+/** Cancel one in-flight proxied request (404 when already gone). */
+export function cancelInflight(id: string): Promise<{ success: boolean }> {
+  return apiFetch(`/api/llm/inflight/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/** Stop every active LLM work item, optionally scoped to one Spark. */
+export function stopAllLlm(body: { sparkId?: string; reason?: string } = {}): Promise<LlmStopAllResponse> {
+  return apiFetch("/api/llm/stop-all", { method: "POST", body: JSON.stringify(body) });
+}
+
+/** Aggregated trace stats over a time window. */
+export function getTraceStats(params: { sparkId?: string; since?: number; until?: number } = {}): Promise<TraceStatsResponse> {
+  const q = new URLSearchParams();
+  if (params.sparkId) q.set("sparkId", params.sparkId);
+  if (params.since != null) q.set("since", String(params.since));
+  if (params.until != null) q.set("until", String(params.until));
+  const qs = q.toString();
+  return apiFetch(`/api/traces/stats${qs ? `?${qs}` : ""}`);
+}
+
+/** Live clients with in-flight requests + connected dashboard tab count. */
+export function listLlmClients(params: { sparkId?: string } = {}): Promise<LlmClientsResponse> {
+  const q = new URLSearchParams();
+  if (params.sparkId) q.set("sparkId", params.sparkId);
+  const qs = q.toString();
+  return apiFetch(`/api/llm/clients${qs ? `?${qs}` : ""}`);
+}
+
+/** Flush: cancel every in-flight request from one client. */
+export function flushLlmClient(clientId: string): Promise<{ success: boolean; cancelled: number }> {
+  return apiFetch(`/api/llm/clients/${encodeURIComponent(clientId)}`, { method: "DELETE" });
 }
 
 // ─── Model ops + serving (Part B) ─────────────────────────

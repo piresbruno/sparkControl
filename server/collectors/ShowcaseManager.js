@@ -280,6 +280,37 @@ export class ShowcaseManager {
     return { sessionId: session.sessionId, status: session.status };
   }
 
+  /**
+   * Running sessions with live stream progress (A4 unified active view).
+   * @param {string} [sparkId] — omit to enumerate across all sparks.
+   * @returns {Array<object>}
+   */
+  listActive(sparkId) {
+    const out = [];
+    for (const session of this.sessions.values()) {
+      if (session.status !== "running") continue;
+      if (sparkId != null && session.sparkId !== sparkId) continue;
+      const streams = Array.isArray(session.streams) ? session.streams : [];
+      out.push({
+        sessionId: session.sessionId,
+        sparkId: session.sparkId,
+        status: session.status,
+        port: session.port ?? null,
+        model: session.modelId ?? null,
+        startedAt: session.startedAt ?? null,
+        streams: streams.map((s) => ({
+          streamId: s.streamId,
+          label: s.label ?? null,
+          status: s.status,
+          tokenCount: s.tokenCount ?? 0,
+          liveTokPerSec: s.liveTokPerSec ?? 0,
+          peakTokPerSec: s.peakTokPerSec ?? 0,
+        })),
+      });
+    }
+    return out;
+  }
+
   touch(sparkId, sessionId) {
     const session = this.sessions.get(sessionId);
     if (!session || session.sparkId !== sparkId) return false;
