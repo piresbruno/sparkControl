@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { HOST_PATHS, GPU_MEMORY_JSON_PATH, DGX_SPARK, HARDWARE_DEFAULTS, POLL_INTERVAL_NVERR } from "../config.js";
 import { normalizeMac, WOL_INTERFACE } from "../wol.js";
+import { getSettings } from "../settings.js";
 import { sshExec } from "./ssh.js";
 import { shellQuote } from "../util/shellQuote.js";
 
@@ -686,7 +687,9 @@ export class SystemCollector {
     // Stat the configured root directly and surface its containing filesystem
     // so the NAS cards can match it by label (matchStoreMount).
     const storeRoot =
-      this.spark.kind === "nas" ? String(this.spark.nasRoot || "").trim() : "";
+      this.spark.kind === "nas"
+        ? String(this.spark.nasRoot || getSettings()?.modelctl?.nasRoot || "").trim()
+        : "";
     if (storeRoot && !disks.some((d) => d.label === storeRoot)) {
       try {
         const stat = await this._statfs(this._resolveDiskPath(storeRoot));
@@ -1212,10 +1215,12 @@ export class SystemCollector {
       // usually a plain directory of a larger filesystem or an NFS mount, so
       // it never appears in the local-filesystem listing by itself.
       const storeRoot =
-        this.spark.kind === "nas" ? String(this.spark.nasRoot || "").trim() : "";
+        this.spark.kind === "nas"
+          ? String(this.spark.nasRoot || getSettings()?.modelctl?.nasRoot || "").trim()
+          : "";
       const cmd =
         "df -l -B1 -T -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs -x proc -x sysfs -x devpts -x cgroup -x cgroup2 2>/dev/null" +
-        (storeRoot ? `; df -B1 -T ${shellQuote(storeRoot)} 2>/dev/null` : "");
+        (storeRoot ? `; df -B1 -T ${shellQuote(storeRoot)} 2>/dev/null || true` : "");
       const output = await sshExec(this.spark, cmd);
       // Two df invocations → drop every "Filesystem ..." header line.
       const lines = output
@@ -1241,6 +1246,9 @@ export class SystemCollector {
         const parts = line.split(/\s+/);
         if (parts.length < 7) continue;
         const [fsys, type, size, used, avail, pct, mount] = parts;
+        // Locale-proof: a localized df header row is the only row whose size
+        // column is non-numeric (e.g. de_DE "1B-Blöcke") — never parse it.
+        if (!Number.isFinite(parseInt(size, 10))) continue;
 
         if (mount === "/boot/efi" || mount.includes("/snap")) continue;
         if (PSEUDO.has((type || "").toLowerCase())) continue;

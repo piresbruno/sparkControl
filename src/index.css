@@ -285,11 +285,6 @@ input:disabled {
   width: var(--bar-pct, 0%);
 }
 
-.sparkline-box {
-  width: var(--spark-w, 60px);
-  height: var(--spark-h, 16px);
-}
-
 /* ─── Dashboard shell (floating console) ──────────────── */
 .dashboard-shell {
   max-width: 1440px;

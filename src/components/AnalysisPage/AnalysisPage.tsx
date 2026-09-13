@@ -10,6 +10,9 @@ import {
   listLlmActive,
   listLlmClients,
   cancelInflight,
+  cancelDecodeBench,
+  cancelPrefillBench,
+  cancelShowcase,
   stopAllLlm,
   getTraceStats,
   flushLlmClient,
@@ -315,11 +318,20 @@ export function AnalysisPage() {
     };
   }, [view, summaryRange, sparkId]);
 
-  // A4 handlers.
-  const handleCancelInflight = useCallback(
-    async (id: string) => {
+  // A4 handler — routes each source to its owning manager. Client-panel rows
+  // are proxy registry entries by construction (sparkId unused there).
+  const handleCancelActive = useCallback(
+    async (source: LlmActiveItem["source"], id: string, sparkId: string) => {
       try {
-        await cancelInflight(id);
+        if (source === "proxy") {
+          await cancelInflight(id);
+        } else if (source === "decode-bench") {
+          await cancelDecodeBench(sparkId, id);
+        } else if (source === "prefill-bench") {
+          await cancelPrefillBench(sparkId, id);
+        } else if (source === "showcase") {
+          await cancelShowcase(sparkId, id);
+        }
         // Optimistic removal only — the 2 s poll reconciles both lists.
         // An un-awaited refetch here can still contain the id (the server
         // unregisters on the async terminal path) and would flicker the row.
@@ -328,7 +340,7 @@ export function AnalysisPage() {
         console.error("Analysis: cancel failed:", err);
       }
     },
-    [sparkId]
+    []
   );
 
   const handleStopAll = useCallback(async () => {
@@ -521,7 +533,7 @@ export function AnalysisPage() {
                     type="button"
                     className="text-xs rounded border border-border bg-surface px-2 py-0.5 text-muted"
                     aria-label={`Cancel ${it.id}`}
-                    onClick={() => void handleCancelInflight(it.id)}
+                    onClick={() => void handleCancelActive(it.source, it.id, it.sparkId)}
                   >
                     Cancel
                   </button>
@@ -588,7 +600,7 @@ export function AnalysisPage() {
                             type="button"
                             className="text-xs rounded border border-border bg-surface px-2 py-0.5 text-muted"
                             aria-label={`Cancel ${r.id}`}
-                            onClick={() => void handleCancelInflight(r.id)}
+                            onClick={() => void handleCancelActive("proxy", r.id, "")}
                           >
                             Cancel
                           </button>

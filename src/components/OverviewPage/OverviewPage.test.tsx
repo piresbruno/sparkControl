@@ -11,6 +11,7 @@ vi.mock("../../api/client", () => ({
   listJobs: vi.fn(),
   fetchModelctlRelease: vi.fn(),
   fetchNasCatalog: vi.fn(),
+  fetchFleetEnergy: vi.fn(() => Promise.reject(new Error("unavailable in test"))),
 }));
 
 import {

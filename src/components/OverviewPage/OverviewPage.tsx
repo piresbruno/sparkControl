@@ -18,6 +18,8 @@ import {
   wakeAllSparks,
 } from "../../api/client";
 import { ConfirmShutdownDialog } from "../ConfirmShutdownDialog";
+import { FleetAlertStrip } from "./FleetAlertStrip";
+import { FleetEnergyCard } from "./FleetEnergyCard";
 import { PowerOffIcon, PowerOnIcon, RotateIcon } from "../ui/icons";
 import { agoLabel, fmtStore, matchStoreMount, versionIsNewer } from "../NasPage/nasUtils";
 import { ACTIVITY_LABEL, ACTIVITY_TIP, fmtUptimeShort } from "../SparkPage/console/consoleUtils";
@@ -144,7 +146,10 @@ function SparkCard({
 
   // Sparkline tails for the gauge feet. Hooks run unconditionally — the
   // gauges they feed render conditionally.
-  const vramHist = useMetricsHistoryTail(spark.id, "unifiedMemory.percentage");
+  const vramHist = useMetricsHistoryTail(
+    spark.id,
+    spark.metrics.gpu?.vram ? "gpu.vram" : "unifiedMemory.percentage"
+  );
   const ramHist = useMetricsHistoryTail(spark.id, "ram.percentage");
   const gpuUsageHist = useMetricsHistoryTail(spark.id, "gpu.usage");
   const cpuUsageHist = useMetricsHistoryTail(spark.id, "cpu.usage");
@@ -1016,6 +1021,8 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
           )}
         </div>
       </header>
+      <FleetAlertStrip sparks={sparks} onSelect={onSelectSpark} />
+      <FleetEnergyCard nodeCount={visibleSparks.length} />
       <ConfirmShutdownDialog
         open={shutdownOpen}
         onClose={() => setShutdownOpen(false)}
