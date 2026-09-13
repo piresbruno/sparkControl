@@ -180,6 +180,7 @@ import { getAgentRegistry } from "./agent/agentRegistry.js";
 import { buildInstallAgentScript, buildUpdateAgentScript } from "./agent/agentBootstrap.js";
 import { shellQuote } from "./util/shellQuote.js";
 import { getTraceStore, closeTraceStore } from "./collectors/TraceStore.js";
+import { getInflightRegistry, closeInflightRegistry } from "./proxy/inflightRegistry.js";
 import {
   POLL_INTERVAL_GPU,
   POLL_INTERVAL_CPU,
@@ -263,11 +264,13 @@ const agentDataRings = (() => {
 
 const traceStore = getTraceStore();
 traceStore.startRetentionTimer();
+const inflight = getInflightRegistry();
 app.use("/llm", createLlmProxy({
   registry,
   secrets: null, // per-port keys resolve from the spark object (registry._withSecrets)
   settings: getSettings,
   traceStore,
+  inflight,
 }));
 
 app.use(express.json());
@@ -445,7 +448,7 @@ app.put("/api/settings", (req, res) => {
 });
 
 // ─── Analysis traces (A4) ─────────────────────────────────
-/** GET /api/traces — lean list (no bodies). ?sparkId=&port=&source=&method=&since=&limit= */
+/** GET /api/traces — lean list (no bodies). ?sparkId=&port=&source=&method=&clientId=&since=&q=&limit= */
 app.get("/api/traces", (req, res) => {
   const q = req.query;
   const port = q.port != null && q.port !== "" ? Number(q.port) : undefined;
@@ -459,8 +462,22 @@ app.get("/api/traces", (req, res) => {
     port,
     source: q.source || undefined,
     method: q.method || undefined,
+    clientId: q.clientId || undefined,
     since: Number.isFinite(since) ? since : undefined,
+    q: q.q || undefined,
     limit: Number.isFinite(limit) ? limit : undefined,
+  }));
+});
+
+/** GET /api/traces/stats — aggregated trace stats (A4). ?sparkId=&since=&until= (epoch ms) */
+app.get("/api/traces/stats", (req, res) => {
+  const q = req.query;
+  const since = q.since != null && q.since !== "" ? Number(q.since) : undefined;
+  const until = q.until != null && q.until !== "" ? Number(q.until) : undefined;
+  res.json(traceStore.stats({
+    sparkId: q.sparkId || undefined,
+    since: Number.isFinite(since) ? since : undefined,
+    until: Number.isFinite(until) ? until : undefined,
   }));
 });
 
@@ -481,6 +498,167 @@ app.delete("/api/traces", (_req, res) => {
   }
 });
 
+/** DELETE /api/llm/inflight/:id — cancel one proxied in-flight request (A4). */
+app.delete("/api/llm/inflight/:id", (req, res) => {
+  const ok = inflight.cancel(req.params.id, "user");
+  if (!ok) return res.status(404).json({ error: "In-flight request not found" });
+  res.json({ success: true });
+});
+
+/** GET /api/llm/active — union of live LLM work for a spark (A4). */
+app.get("/api/llm/active", (req, res) => {
+  const sparkId = req.query.sparkId || undefined;
+  const labels = getSettings().clientLabels || {};
+  const now = Date.now();
+  const items = [];
+
+  for (const e of inflight.list(sparkId ? { sparkId } : {})) {
+    items.push({
+      source: "proxy",
+      id: e.id,
+      sparkId: e.sparkId,
+      port: e.port,
+      model: e.model,
+      path: e.path,
+      stream: e.stream,
+      startedAt: e.startedAt,
+      elapsedMs: now - e.startedAt,
+      cancelable: true,
+      clientId: e.clientId,
+      clientLabel: (e.clientId && labels[e.clientId]) || null,
+      progress: {
+        tokensSoFar: Math.round((e.contentLen || 0) / 4),
+        estimate: true,
+      },
+    });
+  }
+
+  for (const sid of sparkId ? [sparkId] : registry.sparkIds) {
+    const decodeJob = decodeBenchManager.getActive(sid);
+    if (decodeJob && decodeJob.status === "running") {
+      items.push({
+        source: "decode-bench",
+        id: decodeJob.benchId,
+        sparkId: sid,
+        port: decodeJob.config?.port ?? null,
+        model: decodeJob.config?.modelId ?? null,
+        path: null,
+        stream: null,
+        startedAt: decodeJob.startedAt,
+        elapsedMs: now - decodeJob.startedAt,
+        cancelable: true,
+        progress: { ...decodeJob.progress },
+      });
+    }
+    const prefillJob = prefillBenchManager.getActive(sid);
+    if (prefillJob && prefillJob.status === "running") {
+      items.push({
+        source: "prefill-bench",
+        id: prefillJob.benchId,
+        sparkId: sid,
+        port: prefillJob.config?.port ?? null,
+        model: prefillJob.config?.modelId ?? null,
+        path: null,
+        stream: null,
+        startedAt: prefillJob.startedAt,
+        elapsedMs: now - prefillJob.startedAt,
+        cancelable: true,
+        progress: { ...prefillJob.progress },
+      });
+    }
+    for (const s of showcaseManager.listActive(sid)) {
+      items.push({
+        source: "showcase",
+        id: s.sessionId,
+        sparkId: sid,
+        port: s.port,
+        model: s.model,
+        path: null,
+        stream: null,
+        startedAt: s.startedAt,
+        elapsedMs: s.startedAt != null ? now - s.startedAt : 0,
+        cancelable: true,
+        progress: {
+          tokensSoFar: s.streams.reduce((n, x) => n + (x.tokenCount || 0), 0),
+          liveTokPerSec: s.streams.reduce((n, x) => n + (x.liveTokPerSec || 0), 0),
+        },
+      });
+    }
+  }
+
+  res.json({ items });
+});
+
+/** GET /api/llm/clients — live proxied clients grouped by clientId (A4). */
+app.get("/api/llm/clients", (req, res) => {
+  const sparkId = req.query.sparkId || undefined;
+  const labels = getSettings().clientLabels || {};
+  const now = Date.now();
+  const byClient = new Map();
+  for (const e of inflight.list(sparkId ? { sparkId } : {})) {
+    const key = e.clientId ?? "unknown";
+    let c = byClient.get(key);
+    if (!c) {
+      c = {
+        clientId: key,
+        clientIp: e.clientIp,
+        clientUa: e.clientUa,
+        label: labels[key] ?? null,
+        inflight: [],
+      };
+      byClient.set(key, c);
+    }
+    c.inflight.push({
+      id: e.id,
+      path: e.path,
+      model: e.model,
+      stream: e.stream,
+      startedAt: e.startedAt,
+      elapsedMs: now - e.startedAt,
+      tokensEst: Math.round((e.contentLen || 0) / 4),
+    });
+  }
+  const clients = [...byClient.values()]
+    .map((c) => ({ ...c, inflightCount: c.inflight.length }))
+    .sort((a, b) => b.inflightCount - a.inflightCount);
+  res.json({ clients, dashboardClients: wss.clients.size });
+});
+
+/** DELETE /api/llm/clients/:clientId — flush every in-flight request of one client (A4). */
+app.delete("/api/llm/clients/:clientId", (req, res) => {
+  const cancelled = inflight.cancelAll({ clientId: req.params.clientId }, "flush client");
+  res.json({ success: true, cancelled });
+});
+
+/** POST /api/llm/stop-all — cancel every active LLM workload (A4). */
+app.post("/api/llm/stop-all", (req, res) => {
+  const body = req.body || {};
+  const sparkId =
+    typeof body.sparkId === "string" && body.sparkId ? body.sparkId : undefined;
+  const reason =
+    typeof body.reason === "string" && body.reason ? body.reason : "stop-all";
+  const counts = { showcase: 0, decodeBench: 0, prefillBench: 0, proxy: 0 };
+
+  for (const sid of sparkId ? [sparkId] : registry.sparkIds) {
+    const decodeJob = decodeBenchManager.getActive(sid);
+    if (decodeJob && decodeJob.status === "running") {
+      decodeBenchManager.cancel(sid, decodeJob.benchId);
+      counts.decodeBench += 1;
+    }
+    const prefillJob = prefillBenchManager.getActive(sid);
+    if (prefillJob && prefillJob.status === "running") {
+      prefillBenchManager.cancel(sid, prefillJob.benchId);
+      counts.prefillBench += 1;
+    }
+  }
+  for (const s of showcaseManager.listActive(sparkId)) {
+    showcaseManager.cancel(s.sparkId, s.sessionId, reason);
+    counts.showcase += 1;
+  }
+  counts.proxy = inflight.cancelAll(sparkId ? { sparkId } : {}, reason);
+  forceBroadcast();
+  res.json(counts);
+});
 
 app.get("/api/sparks/:id/metrics", (req, res) => {
   const monitor = monitors.get(req.params.id);
@@ -2539,4 +2717,4 @@ function shutdown(signal) {
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 
-export { app, server, wss, registry, modelctl, remoteJobs };
+export { app, server, wss, registry, modelctl, remoteJobs, inflight, decodeBenchManager, prefillBenchManager, showcaseManager };

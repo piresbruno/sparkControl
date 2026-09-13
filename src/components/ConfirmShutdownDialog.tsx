@@ -4,6 +4,7 @@ import { useModalPresence } from "../hooks/useModalPresence";
 import { PowerOffIcon } from "./ui/icons";
 
 const CONFIRM_PHRASE = "poweroff";
+const DEFAULT_WARNING = "This powers off hardware. Running containers and sessions will stop.";
 
 interface ConfirmShutdownDialogProps {
   open: boolean;
@@ -12,6 +13,10 @@ interface ConfirmShutdownDialogProps {
   title: string;
   description: string;
   confirmLabel?: string;
+  /** Typed confirmation phrase (default "poweroff"). Lowercase, compared case-insensitively. */
+  confirmPhrase?: string;
+  /** Warning-box copy (default: hardware poweroff note). */
+  warningNote?: string;
 }
 
 function useEscape(enabled: boolean, onClose: () => void) {
@@ -32,6 +37,8 @@ export function ConfirmShutdownDialog({
   title,
   description,
   confirmLabel = "Shut down",
+  confirmPhrase,
+  warningNote,
 }: ConfirmShutdownDialogProps) {
   const [phrase, setPhrase] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
@@ -61,8 +68,9 @@ export function ConfirmShutdownDialog({
       document.body.style.overflow = prev;
     };
   }, [mounted]);
-
-  const phraseOk = phrase.trim().toLowerCase() === CONFIRM_PHRASE;
+  const requiredPhrase = confirmPhrase ?? CONFIRM_PHRASE;
+  const warning = warningNote ?? DEFAULT_WARNING;
+  const phraseOk = phrase.trim().toLowerCase() === requiredPhrase;
   const canConfirm = phraseOk && acknowledged && !submitting;
 
   const handleConfirm = async () => {
@@ -102,7 +110,7 @@ export function ConfirmShutdownDialog({
 
           <div className="rounded-md border border-danger/35 bg-danger/10 px-3 py-2.5">
             <p className="text-[11px] font-medium text-danger">
-              This powers off hardware. Running containers and sessions will stop.
+              {warning}
             </p>
           </div>
 
@@ -119,7 +127,7 @@ export function ConfirmShutdownDialog({
 
           <div>
             <label className="mb-1 block text-xs text-muted">
-              Type <span className="font-mono text-danger">{CONFIRM_PHRASE}</span> to confirm
+              Type <span className="font-mono text-danger">{requiredPhrase}</span> to confirm
             </label>
             <input
               ref={inputRef}
@@ -136,7 +144,7 @@ export function ConfirmShutdownDialog({
                 }
               }}
               className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 font-mono text-xs text-text outline-none focus:border-danger"
-              placeholder={CONFIRM_PHRASE}
+              placeholder={requiredPhrase}
             />
           </div>
         </div>

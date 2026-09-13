@@ -576,6 +576,8 @@ export interface Settings {
   };
   /** C4: agent token state (token itself never leaves the secrets store). */
   agent: { tokenConfigured: boolean };
+  /** A4: display labels for proxied client ids (key = 12-hex clientId). */
+  clientLabels: Record<string, string>;
 }
 
 export interface SparksListResponse {
@@ -933,12 +935,116 @@ export interface TraceEntry {
   finishReason: string | null;
   error: string | null;
   reqBody?: string | null;
+  /** A4: client identity captured by the proxy (rev 2 columns). */
+  clientIp: string | null;
+  clientUa: string | null;
+  clientId: string | null;
+  /** Tool names parsed from the request body; null when none/absent. */
+  toolsReq: string[] | null;
+  /** Aggregated tool usage from the response stream. */
+  toolsUsed: { name: string; count: number }[] | null;
+  /** Engine-reported cached prompt tokens, when reported. */
+  cachedTokens: number | null;
+  /** True when either body hit its capture cap. */
+  bodyTruncated: boolean | null;
   resText?: string | null;
 }
 
 export interface TraceListResponse {
   traces: TraceEntry[];
   lastSeq: number;
+}
+
+// ─── A4: in-flight LLM visibility & cancel ─────────────────
+export type LlmActiveSource = "proxy" | "decode-bench" | "prefill-bench" | "showcase";
+
+export interface LlmActiveProgress {
+  tokensSoFar?: number;
+  estimate?: boolean;
+  liveTokPerSec?: number;
+  message?: string;
+  currentConcurrency?: number;
+  completedLevels?: number;
+  totalLevels?: number;
+}
+
+export interface LlmActiveItem {
+  source: LlmActiveSource;
+  id: string;
+  sparkId: string;
+  port: number | null;
+  model: string | null;
+  path: string | null;
+  stream: boolean | null;
+  startedAt: number;
+  elapsedMs: number;
+  cancelable: true;
+  clientId?: string | null;
+  clientLabel?: string | null;
+  progress: LlmActiveProgress;
+}
+
+export interface LlmActiveResponse {
+  items: LlmActiveItem[];
+}
+
+export interface LlmStopAllResponse {
+  showcase: number;
+  decodeBench: number;
+  prefillBench: number;
+  proxy: number;
+}
+
+export interface TraceStatRow {
+  key: string;
+  requests: number;
+  promptTokens: number;
+  completionTokens: number;
+  cachedTokens: number;
+  errors: number;
+  avgTtftMs: number;
+  avgDurMs: number;
+}
+
+export interface TraceStatsResponse {
+  totals: {
+    requests: number;
+    promptTokens: number;
+    completionTokens: number;
+    cachedTokens: number;
+    errors: number;
+    avgTtftMs: number;
+    avgDurMs: number;
+  };
+  byClient: TraceStatRow[];
+  byModel: TraceStatRow[];
+  byPath: TraceStatRow[];
+  byTool: TraceStatRow[];
+  byHour: TraceStatRow[];
+}
+
+export interface LlmClientInflight {
+  id: string;
+  path: string | null;
+  model: string | null;
+  stream: boolean | null;
+  startedAt: number;
+  elapsedMs: number;
+  tokensEst: number | null;
+}
+
+export interface LlmClientEntry {
+  clientId: string;
+  clientIp: string | null;
+  clientUa: string | null;
+  label: string | null;
+  inflightCount: number;
+  inflight: LlmClientInflight[];
+}
+
+export interface LlmClientsResponse {
+  clients: LlmClientEntry[];
+  dashboardClients: number;
 }
 
 // ─── Model ops + serving (Part B) ─────────────────────────
