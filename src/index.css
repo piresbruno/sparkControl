@@ -2866,3 +2866,36 @@ button.analysis-stat__row:hover {
   font-size: var(--fs-10);
   color: var(--color-muted);
 }
+
+/* ─── Connection banner (telemetry health) ────────────────── */
+.connection-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 6px 12px;
+  background: var(--color-surface-elevated);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  color: var(--color-muted-strong);
+  box-shadow: var(--shadow-card);
+}
+.connection-banner-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-warning);
+  animation: connection-banner-pulse 1.6s ease-in-out infinite;
+}
+@keyframes connection-banner-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}

@@ -21,6 +21,8 @@ export class SparkRegistry {
     this._passwords = new Map();
     /** @type {Map<string, Record<string, string>>} sparkId -> { portStr -> apiKey } */
     this._llmApiKeys = new Map();
+    /** @type {import("../energy/FleetEnergyTracker.js").FleetEnergyTracker | null} attached energy tracker; re-scoped on membership changes */
+    this._fleetEnergyTracker = null;
     this._listeners = new Set();
     this._load();
   }
@@ -37,6 +39,12 @@ export class SparkRegistry {
 
   get sparkIds() {
     return this._sparks.map((s) => s.id);
+  }
+
+  /** Attach the fleet-energy tracker; every add/update/remove re-checks its scope. */
+  setFleetEnergyTracker(tracker) {
+    this._fleetEnergyTracker = tracker;
+    if (tracker) tracker.invalidateMembership(this.sparkIds);
   }
 
   /** Find a Spark by ID (includes in-memory secrets if present). */
@@ -359,6 +367,11 @@ export class SparkRegistry {
       } catch (err) {
         console.error("[SparkRegistry] Listener error:", err);
       }
+    }
+    // Membership-affecting mutations re-check the attached energy tracker's
+    // scope (reorder never changes membership).
+    if (action !== "reorder" && this._fleetEnergyTracker) {
+      this._fleetEnergyTracker.invalidateMembership(this.sparkIds);
     }
   }
 

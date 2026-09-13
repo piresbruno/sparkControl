@@ -549,6 +549,8 @@ export interface WsSnapshot {
   type: "snapshot";
   sparks: SparkSnapshot[];
   refreshInterval: number;
+  /** Server wall-clock epoch ms when this snapshot was generated (telemetry health). */
+  generatedAt?: number;
 }
 
 // ─── API responses ────────────────────────────────────────
@@ -584,12 +586,44 @@ export interface SparksListResponse {
   sparks: SparkConfig[];
 }
 
+/** GET /api/fleet-energy — fleet-wide estimated power/energy (FleetEnergyTracker.snapshot). */
+export interface FleetEnergy {
+  estimated: boolean;
+  membershipChanged: boolean;
+  restartRequired: boolean;
+  trackedNodeIds: string[];
+  currentNodeIds: string[];
+  freshNodeCount: number;
+  currentWatts30s: number | null;
+  energy24hKwh: number | null;
+  energy31dKwh: number | null;
+  whPerOutputToken24h: number | null;
+  outputTokens24h: number;
+  coverage24hMs: number;
+  coverage31dMs: number;
+  nodeCoverage24hMs: Record<string, number>;
+  nodeCoverage31dMs: Record<string, number>;
+  hourlyWatts24h: Array<number | null>;
+}
+
+/** One capability row of testSparkConnectivity/summarizeConnectivity (server/connectivity.js). */
+export interface SparkCapability {
+  id: string;
+  label: string;
+  status: "pass" | "fail" | "skipped";
+  required: boolean;
+  message: string;
+  recovery: string | null;
+}
+
 export interface SparkTestResponse {
   id: string;
   ssh: { ok: boolean; message: string };
   llm: { ok: boolean; message: string };
   comfy?: { ok: boolean; message: string; skipped?: boolean };
   ok: boolean;
+  /** Present when the route answers via summarizeConnectivity; legacy ad-hoc routes omit it. */
+  capabilities?: SparkCapability[];
 }
 
 export interface ApiError {

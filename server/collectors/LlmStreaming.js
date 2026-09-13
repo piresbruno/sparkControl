@@ -1,3 +1,12 @@
+import { Agent, fetch as undiciFetch } from "undici";
+
+/**
+ * Dispatcher dedicated to long-lived LLM SSE streams: disables undici's
+ * 300 s headers/body idle timeouts. Must be paired with the undici fetch
+ * from the same install (Node's global fetch rejects foreign dispatchers).
+ */
+export const LLM_STREAM_AGENT = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
+
 /**
  * Shared OpenAI-compatible SSE streaming helpers used by DecodeBench, PrefillBench, and Showcase.
  *
@@ -34,11 +43,14 @@ export function sleep(ms, signal) {
       reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
       return;
     }
-    const t = setTimeout(resolve, ms);
     const onAbort = () => {
       clearTimeout(t);
       reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
     };
+    const t = setTimeout(() => {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
     if (signal) {
       signal.addEventListener("abort", onAbort, { once: true });
     }
@@ -551,11 +563,12 @@ async function runStreamingRequestOnce(
     const key = apiKey != null ? String(apiKey).trim() : "";
     if (key) headers.Authorization = `Bearer ${key}`;
 
-    const response = await fetch(url, {
+    const response = await undiciFetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
       signal,
+      dispatcher: LLM_STREAM_AGENT,
     });
 
     httpStatus = response.status;
