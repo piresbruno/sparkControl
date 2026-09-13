@@ -1,9 +1,7 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { ModelctlStatus, SparkConfig, SparkSnapshot, MctlJob } from "../../api/types";
 import { isLlmMonitoringEnabled, resolveSparkRole } from "../../api/sparkRole";
 import {
-  updateSpark,
-  refreshSparkMetric,
   addLlmPort,
   removeLlmPort,
   fetchSparks,
@@ -12,14 +10,7 @@ import {
   cancelJob,
 } from "../../api/client";
 import { SparkActions } from "./SparkActions";
-import { GpuPanel } from "./GpuPanel";
-import { RamPanel } from "./RamPanel";
-import { StoragePanel } from "./StoragePanel";
-import { NetworkPanel } from "./NetworkPanel";
-import { TailscalePanel } from "./TailscalePanel";
-import { LlmPanel } from "./LlmPanel";
-import { ComfyPanel } from "./ComfyPanel";
-import { ScChHead } from "./console/ScKit";
+import { ScChHead, ScModule } from "./console/ScKit";
 import { ScResources } from "./console/ScResources";
 import { ScServing } from "./console/ScServing";
 import { ScModels } from "./console/ScModels";
@@ -39,7 +30,7 @@ const JOBS_POLL_ACTIVE_MS = 1000;
 const JOBS_POLL_IDLE_MS = 15000;
 
 /** Channel anchors, in document order. */
-const CHANNEL_ANCHORS = ["sec-resources", "sec-serving", "sec-models", "sec-tests"] as const;
+const CHANNEL_ANCHORS = ["sec-resources", "sec-serving", "sec-models", "sec-tests", "sec-node"] as const;
 
 /**
  * Scroll-spy: which channel header is above the viewport line, rAF-throttled.
@@ -102,14 +93,7 @@ function dataField(k: string, v: string | null) {
 export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkPageProps) {
   const { metrics } = spark;
   const activeChannel = useChannelSpy();
-  const [disabledDevices, setDisabledDevices] = useState<string[]>(spark.disabledDevices || []);
-  const [disabledInterfaces, setDisabledInterfaces] = useState<string[]>(
-    spark.disabledInterfaces || []
-  );
   const [llmPorts, setLlmPorts] = useState<number[]>(spark.llmPorts ?? [spark.llmPort ?? 8888]);
-  const [storagePollDisabled, setStoragePollDisabled] = useState<boolean>(
-    spark.storagePollDisabled ?? false
-  );
   // Config-only fields the WS snapshot doesn't carry (modelctl opt-in, head name).
   const [allCfg, setAllCfg] = useState<SparkConfig[] | null>(null);
   const cfg = allCfg?.find((s) => s.id === spark.id) ?? null;
@@ -117,9 +101,6 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
   const [jobs, setJobs] = useState<MctlJob[]>([]);
   // Increments when the Serving CTA asks Models to scroll+flash the launch panel.
   const [launchSignal, setLaunchSignal] = useState(0);
-  // Add-port mini form (legacy parity; lives in the Serving disclosure).
-  const [showAddPort, setShowAddPort] = useState(false);
-  const [newPortDraft, setNewPortDraft] = useState("");
 
   const llmOn = isLlmMonitoringEnabled(spark);
   const role = resolveSparkRole(spark);
@@ -127,20 +108,8 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
 
   // Sync when spark data changes (WS push)
   useEffect(() => {
-    setDisabledDevices(spark.disabledDevices || []);
-  }, [spark.disabledDevices]);
-
-  useEffect(() => {
-    setDisabledInterfaces(spark.disabledInterfaces || []);
-  }, [spark.disabledInterfaces]);
-
-  useEffect(() => {
     if (spark.llmPorts) setLlmPorts(spark.llmPorts);
   }, [spark.llmPorts]);
-
-  useEffect(() => {
-    setStoragePollDisabled(spark.storagePollDisabled ?? false);
-  }, [spark.storagePollDisabled]);
 
   // Resolve configs (modelctlEnabled flag + names for the worker head link).
   useEffect(() => {
@@ -219,25 +188,6 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
     }
   }, []);
 
-  const handleStoragePollModeChange = useCallback(
-    async (disabled: boolean) => {
-      setStoragePollDisabled(disabled);
-      try {
-        await updateSpark(spark.id, { storagePollDisabled: disabled });
-        // When disabling auto-refresh, do one manual refresh immediately
-        if (disabled) {
-          refreshSparkMetric(spark.id, "storage").catch((err) =>
-            console.error("Failed to refresh storage after disabling auto-refresh:", err)
-          );
-        }
-      } catch (err) {
-        console.error("Failed to update storage poll mode:", err);
-        setStoragePollDisabled(!disabled); // revert
-      }
-    },
-    [spark.id]
-  );
-
   const handleAddPort = useCallback(
     async (port: number) => {
       if (!Number.isInteger(port) || port < 1 || port > 65535) return;
@@ -264,18 +214,8 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
     [spark.id]
   );
 
-  const commitAddPort = useCallback(() => {
-    const port = Number.parseInt(newPortDraft.trim(), 10);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) return;
-    void handleAddPort(port).then(() => {
-      setNewPortDraft("");
-      setShowAddPort(false);
-    });
-  }, [newPortDraft, handleAddPort]);
-
   const jobsRunning = jobs.some((j) => j.status === "running");
   const anyEngine = llmOn && (metrics.llm ?? []).some((l) => l?.available);
-  const comfyOn = Boolean(spark.comfyMonitoring);
   const tailscaleOn = Boolean(spark.tailscaleMonitoring);
   const primaryPort = llmPorts[0] ?? null;
   const primaryLlm = metrics.llm?.[0] ?? null;
@@ -286,118 +226,6 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
         ? null
         : (allCfg.find((s) => s.id === spark.workerHeadId)?.name ?? spark.workerHeadId)
       : null;
-
-  // ── Legacy affordances (Expert panels disclosures) ──────────────────
-  const renderLlmPanel = (port: number, portIndex: number, className?: string) => (
-    <LlmPanel
-      key={port}
-      llm={metrics.llm?.[portIndex] ?? null}
-      sparkId={spark.id}
-      llmPort={port}
-      llmPorts={llmPorts}
-      hasApiKey={Boolean(spark.llmApiKeyPorts?.includes(port))}
-      onRemovePort={portIndex > 0 ? handleRemovePort : undefined}
-      className={className}
-    />
-  );
-
-  const resourcesLegacy: ReactNode = (
-    <div className="grid gap-3 md:grid-cols-2">
-      <GpuPanel
-        gpu={metrics.gpu}
-        cpu={metrics.cpu}
-        sparkId={spark.id}
-        temperatureUnit={temperatureUnit}
-      />
-      <RamPanel
-        ram={metrics.ram}
-        cpu={metrics.cpu}
-        sparkId={spark.id}
-        temperatureUnit={temperatureUnit}
-      />
-      <StoragePanel
-        storage={metrics.storage}
-        sparkId={spark.id}
-        disabledDevices={disabledDevices}
-        onDisabledChange={setDisabledDevices}
-        storagePollDisabled={storagePollDisabled}
-        onStoragePollModeChange={handleStoragePollModeChange}
-      />
-      <NetworkPanel
-        network={metrics.network}
-        sparkId={spark.id}
-        disabledInterfaces={disabledInterfaces}
-        onDisabledChange={setDisabledInterfaces}
-      />
-      {tailscaleOn && <TailscalePanel tailscale={metrics.tailscale ?? null} />}
-    </div>
-  );
-
-  const servingLegacy: ReactNode = (
-    <div className="grid gap-3 md:grid-cols-2">
-      {llmOn && renderLlmPanel(primaryPort ?? spark.llmPort ?? 8888, 0)}
-      {llmPorts.slice(1).map((port, j) => renderLlmPanel(port, j + 1, "md:col-span-2"))}
-      {comfyOn && (
-        <ComfyPanel
-          comfy={metrics.comfy ?? null}
-          comfyPort={spark.comfyPort ?? 8188}
-          sparkId={spark.id}
-          lanIp={spark.lanIp}
-          className="md:col-span-2"
-        />
-      )}
-      {llmOn &&
-        (showAddPort ? (
-          <div className="rounded-lg border border-dashed border-border bg-surface p-3 md:col-span-2">
-            <div className="flex items-center gap-2">
-              <input
-                type="number"
-                min={1}
-                max={65535}
-                inputMode="numeric"
-                placeholder="Port number"
-                value={newPortDraft}
-                onChange={(e) => setNewPortDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    commitAddPort();
-                  }
-                }}
-                className="w-32 rounded-md border border-border bg-surface-elevated px-3 py-1.5 font-tabular text-sm text-text outline-none focus:border-accent"
-                autoFocus
-              />
-              <button
-                type="button"
-                onClick={() => commitAddPort()}
-                disabled={!newPortDraft.trim()}
-                className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50"
-              >
-                Add
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowAddPort(false);
-                  setNewPortDraft("");
-                }}
-                className="rounded border border-border px-3 py-1.5 text-xs text-muted hover:bg-surface-hover"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        ) : (
-          <button
-            type="button"
-            onClick={() => setShowAddPort(true)}
-            className="md:col-span-2 rounded-lg border border-dashed border-border bg-transparent p-3 text-xs text-muted hover:border-accent hover:text-accent transition-colors"
-          >
-            + Add LLM port
-          </button>
-        ))}
-    </div>
-  );
 
   // Rack plate values
   const hw = spark.hardware;
@@ -437,6 +265,154 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
               {role === "worker" && spark.workerLabel ? (
                 <span className="chip">{spark.workerLabel}</span>
               ) : null}
+            </div>
+          </div>
+          <SparkActions spark={spark} onEdit={onEdit} className="rack__keys" />
+        </header>
+
+        {/* ── Sticky channel rail ───────────────────────────────────── */}
+        <aside className="rail" aria-label="Console channels">
+          <span className="rail__cap">CH</span>
+          <RailChannel
+            target="sec-resources"
+            num="01"
+            short="Res"
+            title="Resources"
+            led={spark.online ? "accent" : "off"}
+            active={activeChannel === "sec-resources"}
+          />
+          <RailChannel
+            target="sec-serving"
+            num="02"
+            short="Srv"
+            title="Serving"
+            led={anyEngine ? "live" : "off"}
+            active={activeChannel === "sec-serving"}
+          />
+          <RailChannel
+            target="sec-models"
+            num="03"
+            short="Mdl"
+            title="Models"
+            led={jobsRunning ? "live" : modelctlEnabled ? "success" : "off"}
+            active={activeChannel === "sec-models"}
+          />
+          <RailChannel
+            target="sec-tests"
+            num="04"
+            short="Tst"
+            title="Tests"
+            led="off"
+            active={activeChannel === "sec-tests"}
+          />
+          <RailChannel
+            target="sec-node"
+            num="05"
+            short="Nd"
+            title="Node"
+            led={spark.online ? "accent" : "off"}
+            active={activeChannel === "sec-node"}
+          />
+          <div className="rail__bus" aria-hidden="true" />
+        </aside>
+
+        <div className="console__body">
+          {/* ── CH·01 Resources ─────────────────────────────────────── */}
+          <div id="sec-resources" />
+          <ScChHead
+            code="CH·01"
+            title="Resources"
+            note={
+              role === "worker"
+                ? "worker telemetry · no local engine"
+                : "unified memory · storage · network" + (tailscaleOn ? " · tailnet" : "")
+            }
+          />
+          <ScResources
+            spark={spark}
+            temperatureUnit={temperatureUnit}
+            tailscaleOn={tailscaleOn}
+            headSparkName={headSparkName}
+            workerHeadId={spark.workerHeadId ?? null}
+            onNavigate={onNavigate}
+          />
+
+          {/* ── CH·02 Serving ───────────────────────────────────────── */}
+          <div id="sec-serving" />
+          <ScChHead
+            code="CH·02"
+            title="Serving"
+            note={
+              role === "worker"
+                ? "workers serve through their head"
+                : "manage models in CH·03 below"
+            }
+          />
+          <ScServing
+            spark={spark}
+            llmOn={llmOn}
+            role={role}
+            llmPorts={llmPorts}
+            primaryPort={primaryPort}
+            onAddPort={handleAddPort}
+            onRemovePort={handleRemovePort}
+            onServeNew={() => setLaunchSignal((n) => n + 1)}
+            workerHeadId={spark.workerHeadId ?? null}
+            headSparkName={headSparkName}
+            onNavigate={onNavigate}
+          />
+
+          {/* ── CH·03 Models ────────────────────────────────────────── */}
+          <div id="sec-models" />
+          <ScChHead
+            code="CH·03"
+            title="Models"
+            note={modelctlEnabled ? "select a model to manage it on this node" : undefined}
+          />
+          <ScModels
+            spark={spark}
+            modelctlEnabled={modelctlEnabled}
+            modelctl={modelctl}
+            onModelctlInstalled={refreshModelctl}
+            jobs={jobs}
+            onCancelJob={handleCancelJob}
+            servingModelIds={servingModelIds}
+            llmPorts={llmPorts}
+            primaryPort={primaryPort}
+            launchSignal={launchSignal}
+            storageFreeGb={(() => {
+              // Collectors report storage available in MB (SystemCollector statfs/df paths).
+              const free = metrics.storage?.filter((s) => !s.disabled).map((s) => s.available ?? 0);
+              // Guard the FILTERED list — all devices disabled => empty spread => -Infinity.
+              return free && free.length > 0 ? Math.round(Math.max(...free) / 1024) : null;
+            })()}
+            onNavigate={onNavigate}
+          />
+
+          {/* ── CH·04 Tests ─────────────────────────────────────────── */}
+          <div id="sec-tests" />
+          <ScChHead
+            code="CH·04"
+            title="Tests"
+            note="run against the model in CH·02 · tagged so Analysis separates self-runs"
+          />
+          <ScTests
+            sparkId={spark.id}
+            primaryPort={llmOn ? primaryPort : null}
+            modelId={primaryLlm?.modelId ?? null}
+            contextLength={primaryLlm?.contextLength ?? null}
+            llmAvailable={Boolean(primaryLlm?.available)}
+          />
+
+          {/* ── CH·05 Node — demoted identity plate ────────────────── */}
+          <div id="sec-node" />
+          <ScChHead
+            code="CH·05"
+            title="Node"
+            note="identity plate · power keys top-right"
+          />
+          <ScModule label="Node">
+            <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
               {spark.transport === "agent" ? (
                 <span
                   className="chip chip--live"
@@ -480,147 +456,15 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
                 </span>
               ) : null}
             </div>
-          </div>
-          <div className="plate" role="group" aria-label="Node data plate">
-            {dataField("HW", hw.device ?? null)}
-            {dataField("SOC", soc)}
-            {dataField("Addr", spark.lanIp ?? cfg?.lanIp ?? null)}
-            {dataField("Up", spark.online ? fmtUptimeShort(spark.uptime) : "offline")}
-            {dataField("Pkg", pkgs)}
-          </div>
-          <SparkActions spark={spark} onEdit={onEdit} className="rack__keys" />
-        </header>
+            <div className="plate" role="group" aria-label="Node data plate">
+              {dataField("HW", hw.device ?? null)}
+              {dataField("SOC", soc)}
+              {dataField("Addr", spark.lanIp ?? cfg?.lanIp ?? null)}
+              {dataField("Up", spark.online ? fmtUptimeShort(spark.uptime) : "offline")}
+              {dataField("Pkg", pkgs)}
+            </div>
+          </ScModule>
 
-        {/* ── Sticky channel rail ───────────────────────────────────── */}
-        <aside className="rail" aria-label="Console channels">
-          <span className="rail__cap">CH</span>
-          <RailChannel
-            target="sec-resources"
-            num="01"
-            short="Res"
-            title="Resources"
-            led={spark.online ? "accent" : "off"}
-            active={activeChannel === "sec-resources"}
-          />
-          <RailChannel
-            target="sec-serving"
-            num="02"
-            short="Srv"
-            title="Serving"
-            led={anyEngine ? "live" : "off"}
-            active={activeChannel === "sec-serving"}
-          />
-          <RailChannel
-            target="sec-models"
-            num="03"
-            short="Mdl"
-            title="Models"
-            led={jobsRunning ? "live" : modelctlEnabled ? "success" : "off"}
-            active={activeChannel === "sec-models"}
-          />
-          <RailChannel
-            target="sec-tests"
-            num="04"
-            short="Tst"
-            title="Tests"
-            led="off"
-            active={activeChannel === "sec-tests"}
-          />
-          <div className="rail__bus" aria-hidden="true" />
-        </aside>
-
-        <div className="console__body">
-          {/* ── CH·01 Resources ─────────────────────────────────────── */}
-          <div id="sec-resources" />
-          <ScChHead
-            code="CH·01"
-            title="Resources"
-            note={
-              role === "worker"
-                ? "worker telemetry · no local engine"
-                : "unified memory · storage · network" + (tailscaleOn ? " · tailnet" : "")
-            }
-          />
-          <ScResources
-            spark={spark}
-            temperatureUnit={temperatureUnit}
-            tailscaleOn={tailscaleOn}
-            headSparkName={headSparkName}
-            workerHeadId={spark.workerHeadId ?? null}
-            onNavigate={onNavigate}
-          >
-            {resourcesLegacy}
-          </ScResources>
-
-          {/* ── CH·02 Serving ───────────────────────────────────────── */}
-          <div id="sec-serving" />
-          <ScChHead
-            code="CH·02"
-            title="Serving"
-            note={
-              role === "worker"
-                ? "workers serve through their head"
-                : "manage models in CH·03 below"
-            }
-          />
-          <ScServing
-            spark={spark}
-            llmOn={llmOn}
-            role={role}
-            llmPorts={llmPorts}
-            primaryPort={primaryPort}
-            onAddPort={handleAddPort}
-            onRemovePort={handleRemovePort}
-            onServeNew={() => setLaunchSignal((n) => n + 1)}
-            comfyOn={comfyOn}
-            workerHeadId={spark.workerHeadId ?? null}
-            headSparkName={headSparkName}
-            onNavigate={onNavigate}
-          >
-            {servingLegacy}
-          </ScServing>
-
-          {/* ── CH·03 Models ────────────────────────────────────────── */}
-          <div id="sec-models" />
-          <ScChHead
-            code="CH·03"
-            title="Models"
-            note={modelctlEnabled ? "select a model to manage it on this node" : undefined}
-          />
-          <ScModels
-            spark={spark}
-            modelctlEnabled={modelctlEnabled}
-            modelctl={modelctl}
-            onModelctlInstalled={refreshModelctl}
-            jobs={jobs}
-            onCancelJob={handleCancelJob}
-            servingModelIds={servingModelIds}
-            llmPorts={llmPorts}
-            primaryPort={primaryPort}
-            launchSignal={launchSignal}
-            storageFreeGb={(() => {
-              // Collectors report storage available in MB (SystemCollector statfs/df paths).
-              const free = metrics.storage?.filter((s) => !s.disabled).map((s) => s.available ?? 0);
-              // Guard the FILTERED list — all devices disabled => empty spread => -Infinity.
-              return free && free.length > 0 ? Math.round(Math.max(...free) / 1024) : null;
-            })()}
-            onNavigate={onNavigate}
-          />
-
-          {/* ── CH·04 Tests ─────────────────────────────────────────── */}
-          <div id="sec-tests" />
-          <ScChHead
-            code="CH·04"
-            title="Tests"
-            note="run against the model in CH·02 · tagged so Analysis separates self-runs"
-          />
-          <ScTests
-            sparkId={spark.id}
-            primaryPort={llmOn ? primaryPort : null}
-            modelId={primaryLlm?.modelId ?? null}
-            contextLength={primaryLlm?.contextLength ?? null}
-            llmAvailable={Boolean(primaryLlm?.available)}
-          />
         </div>
       </main>
     </div>

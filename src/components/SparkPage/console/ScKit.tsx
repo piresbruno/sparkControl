@@ -240,16 +240,3 @@ export function ScCopy({ text, title }: { text: string; title: string }) {
   );
 }
 
-/**
- * Expert-layer disclosure: the battle-tested legacy panels remain reachable
- * under a dashed strip so v3 loses no functionality (device toggles, storage
- * refresh, api keys, port management, benchmarks, daily chart).
- */
-export function ScDisclosure({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <details className="sc-disclosure">
-      <summary>▸ {title}</summary>
-      <div className="sc-disclosure__body">{children}</div>
-    </details>
-  );
-}

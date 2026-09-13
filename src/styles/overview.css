@@ -28,6 +28,18 @@
   text-decoration: underline;
 }
 
+/* Boxed gauges inside an overview card: 2-up, stacking on phones */
+.spark-console .ocard-gauges {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+/* Odd gauge count (e.g. VRAM + GPU + CPU on sparks): let the last cell span
+   the row instead of leaving an empty slot. */
+.spark-console .ocard-gauges .gauge:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+
 /* Secondary stats: two-column mono readouts under a hairline */
 .spark-console .ocard-stats {
   display: grid;
@@ -35,6 +47,14 @@
   gap: var(--space-2) var(--space-4);
   border-top: 1px solid var(--color-border);
   padding-top: var(--space-3);
+}
+
+/* Phones: single-column instrument banks inside overview cards */
+@media (max-width: 480px) {
+  .spark-console .ocard-gauges,
+  .spark-console .ocard-stats {
+    grid-template-columns: 1fr;
+  }
 }
 .spark-console .ocard-stat {
   display: flex;

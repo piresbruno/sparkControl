@@ -1,8 +1,7 @@
 /**
  * CH·01 Resources — v3 "instrument console" channel.
- * Gauge bank (Mem / Temp / GPU), bus strip (storage · network · tailnet),
- * worker→head attribution, and the expert-layer disclosure that keeps the
- * legacy GpuPanel/RamPanel/StoragePanel/NetworkPanel/TailscalePanel reachable.
+ * Gauge bank (Mem / Temp / GPU), bus strip (storage · network · tailnet) and
+ * worker→head attribution.
  *
  * All values come from `spark.metrics` (refreshed by the WS snapshot every
  * ~1 s — never re-fetched here); hist series tails come from metricsStore.
@@ -10,11 +9,11 @@
  * sizes in MB and `network` speeds in bytes/s (see SystemCollector.js), so we
  * widen MB → bytes before the consoleUtils byte-based formatters.
  */
-import { type MouseEvent, type ReactNode } from "react";
+import { type MouseEvent } from "react";
 import type { SparkSnapshot } from "../../../api/types";
 import { resolveSparkRole } from "../../../api/sparkRole";
 import { useMetricsHistoryTail } from "../../../hooks/metricsStore";
-import { ScDisclosure, ScHist, ScLed, ScModule, ScSeg } from "./ScKit";
+import { ScHist, ScLed, ScModule, ScSeg } from "./ScKit";
 import { fmtGB, fmtInt, fmtTBorGB } from "./consoleUtils";
 
 const MB = 1024 * 1024;
@@ -27,11 +26,9 @@ interface ScResourcesProps {
   headSparkName: string | null;
   workerHeadId: string | null;
   onNavigate?: (id: string | null) => void;
-  /** Legacy expert panels, composed by SparkPage. */
-  children?: ReactNode;
 }
 
-/** Mirror of NetworkPanel.formatSpeed — adaptive B/KB/MB/GB per second. */
+/** Adaptive B/KB/MB/GB per second. */
 function fmtSpeed(bytesPerSec: number | null | undefined): string {
   if (bytesPerSec == null || !Number.isFinite(bytesPerSec)) return "—";
   if (bytesPerSec >= 1024 ** 3) return `${(bytesPerSec / 1024 ** 3).toFixed(1)} GB/s`;
@@ -64,7 +61,6 @@ export function ScResources({
   headSparkName,
   workerHeadId,
   onNavigate,
-  children,
 }: ScResourcesProps) {
   const { metrics } = spark;
   const role = resolveSparkRole(spark);
@@ -91,7 +87,7 @@ export function ScResources({
   const memUsedGb = mem ? fmtGB(mem.used * MB).replace(/ (GB|MB)$/, "") : "—";
   const memTotalGb = mem ? fmtGB(mem.total * MB) : null;
 
-  // ── Temp gauge (GPU-first, CPU fallback; thresholds mirror GpuPanel/RamPanel) ──
+  // ── Temp gauge (GPU-first, CPU fallback) ────────────────────────────────
   const gpuTemp = metrics.gpu?.temperature ?? null;
   const cpuTemp = metrics.cpu?.temperature ?? null;
   const temp = gpuTemp ?? cpuTemp;
@@ -178,7 +174,7 @@ export function ScResources({
     <>
       {/* ── Gauge bank ─────────────────────────────────────────────────── */}
       <ScModule label="Gauges">
-        <div className="gauge-grid" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
+        <div className="gauge-grid">
           {/* Mem */}
           <div className={`gauge${memWarn ? " gauge--warn" : ""}`}>
             <div className="gauge__top">
@@ -318,11 +314,6 @@ export function ScResources({
           </div>
         </div>
       </ScModule>
-
-      {/* ── Expert layer: legacy panels stay reachable ─────────────────── */}
-      <ScDisclosure title="Expert panels: GPU, RAM, storage, network, tailnet">
-        {children ?? null}
-      </ScDisclosure>
     </>
   );
 }

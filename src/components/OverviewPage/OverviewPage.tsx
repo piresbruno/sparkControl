@@ -20,7 +20,8 @@ import {
 import { ConfirmShutdownDialog } from "../ConfirmShutdownDialog";
 import { PowerOffIcon, PowerOnIcon, RotateIcon } from "../ui/icons";
 import { agoLabel, fmtStore, matchStoreMount, versionIsNewer } from "../NasPage/nasUtils";
-import { fmtUptimeShort } from "../SparkPage/console/consoleUtils";
+import { ACTIVITY_LABEL, ACTIVITY_TIP, fmtUptimeShort } from "../SparkPage/console/consoleUtils";
+import { useEngineActivity } from "../SparkPage/console/useEngineActivity";
 import { ScHist, ScLed, ScSeg } from "../SparkPage/console/ScKit";
 import { useMetricsHistoryTail } from "../../hooks/metricsStore";
 import "../../styles/console.css";
@@ -31,6 +32,8 @@ interface OverviewPageProps {
   hideOffline?: boolean;
   temperatureUnit?: "celsius" | "fahrenheit";
   onSelectSpark?: (id: string) => void;
+  /** settings.modelctl.nasRoot — store-root fallback for NAS cards. */
+  defaultNasRoot?: string;
 }
 
 function celsiusToFahrenheit(c: number): number {
@@ -119,19 +122,32 @@ function SparkCard({
   const tempRaw = gpu?.temperature ?? 0;
   const displayTemp = temperatureUnit === "fahrenheit" ? celsiusToFahrenheit(tempRaw) : tempRaw;
   const tempUnit = temperatureUnit === "fahrenheit" ? "°F" : "°C";
-  const tempLabel = `${displayTemp}${tempUnit}`;
   const vramPct = gpu?.vram?.percentage ?? um?.percentage ?? 0;
   const vramUsed = gpu?.vram?.used ?? um?.used ?? 0;
   const vramTotal = gpu?.vram?.total ?? um?.total ?? 0;
   const vramAvail = gpu?.vram?.available ?? um?.available ?? 0;
 
+  // LLM engine activity (head/standalone only — workers render cluster
+  // attribution instead): same classifier the Serving console uses, with the
+  // 5s poll-gap hold. The hook call stays unconditional (rules of hooks);
+  // null engine → null activity → no Status stat.
+  const role = resolveSparkRole(spark);
+  const llm =
+    role === "worker"
+      ? null
+      : Array.isArray(spark.metrics.llm)
+        ? (spark.metrics.llm.find((l) => l.available) ?? null)
+        : null;
+  const activity = useEngineActivity(llm, usage);
+  const running = Math.round(llm?.requestsRunning ?? llm?.slotsActive ?? 0);
+  const waiting = Math.round(llm?.requestsWaiting ?? 0);
+
   // Sparkline tails for the gauge feet. Hooks run unconditionally — the
   // gauges they feed render conditionally.
   const vramHist = useMetricsHistoryTail(spark.id, "unifiedMemory.percentage");
   const ramHist = useMetricsHistoryTail(spark.id, "ram.percentage");
-  const gpuTempHist = useMetricsHistoryTail(spark.id, "gpu.temp");
-  const cpuTempHist = useMetricsHistoryTail(spark.id, "cpu.temp");
   const gpuUsageHist = useMetricsHistoryTail(spark.id, "gpu.usage");
+  const cpuUsageHist = useMetricsHistoryTail(spark.id, "cpu.usage");
 
   // Gauge tones (same thresholds as the old MetricBar colours):
   // cool → success, warm → warning, hot → danger.
@@ -139,6 +155,18 @@ function SparkCard({
   const tempTone =
     tempRaw > 85 ? "danger" : tempRaw > 65 ? "warning" : tempRaw > 40 ? "accent" : "success";
   const usageTone = usage > 85 ? "danger" : usage > 60 ? "warning" : "accent";
+  const cpuUsage = spark.metrics.cpu?.usage ?? 0;
+  const cpuUsageTone = cpuUsage > 85 ? "danger" : cpuUsage > 60 ? "warning" : "accent";
+  // Grouped gauges: temp is the headline value, usage drives the bar — tone
+  // follows the worse of the two so neither condition hides behind the other.
+  const worstTone = (
+    a: "danger" | "warning" | "accent" | "success",
+    b: "danger" | "warning" | "accent" | "success"
+  ) =>
+    ({ success: 0, accent: 1, warning: 2, danger: 3 } as const)[a] >=
+    ({ success: 0, accent: 1, warning: 2, danger: 3 } as const)[b]
+      ? a
+      : b;
   const gaugeCell = (tone: "danger" | "warning" | "accent" | "success") =>
     tone === "danger" ? " gauge--danger" : tone === "warning" ? " gauge--warn" : "";
   // ScHist has no danger tone — degrade to warning.
@@ -223,7 +251,7 @@ function SparkCard({
       ) : (
         <>
           {/* Boxed gauges: VRAM, RAM (host), GPU/Temperature, CPU, Usage */}
-          <div className="gauge-grid" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
+          <div className="ocard-gauges">
             <div className={`gauge${gaugeCell(vramTone)}`}>
               <div className="gauge__top">
                 <span className="mlabel">VRAM</span>
@@ -271,61 +299,69 @@ function SparkCard({
                 </div>
               );
             })()}
-            <div className={`gauge${gaugeCell(tempTone)}`}>
-              <div className="gauge__top">
-                <span className="mlabel">
-                  {spark.kind === "host" || (spark.metrics.cpu?.temperature ?? 0) > 0
-                    ? "GPU"
-                    : "Temperature"}
-                </span>
-                <span className="gauge__value">
-                  {displayTemp}
-                  <small>{` ${tempUnit}`}</small>
-                </span>
-              </div>
-              <ScSeg pct={Math.min(100, displayTemp)} tone={tempTone} />
-              <div className="gauge__foot">
-                <span>{tempLabel}</span>
-                <ScHist values={Array.from(gpuTempHist)} w={84} h={14} tone={histTone(tempTone)} />
-              </div>
-            </div>
-            {(spark.metrics.cpu?.temperature ?? 0) > 0 && (() => {
-              const cpuRaw = spark.metrics.cpu?.temperature ?? 0;
-              const cpuDisplay =
-                temperatureUnit === "fahrenheit" ? celsiusToFahrenheit(cpuRaw) : cpuRaw;
-              const cpuTone =
-                cpuRaw > 95 ? "danger" : cpuRaw > 85 ? "warning" : cpuRaw > 50 ? "accent" : "success";
+            {(() => {
+              const gpuTone = worstTone(tempTone, usageTone);
+              const smClock = gpu?.throttle?.smClockMHz ?? null;
+              const smClockMax = gpu?.throttle?.smClockMaxMHz ?? null;
+              const clockLabel =
+                smClock && smClockMax
+                  ? ` · ${(smClock / 1000).toFixed(1)}/${(smClockMax / 1000).toFixed(1)} GHz`
+                  : "";
               return (
-                <div className={`gauge${gaugeCell(cpuTone)}`}>
+                <div className={`gauge${gaugeCell(gpuTone)}`}>
                   <div className="gauge__top">
-                    <span className="mlabel">CPU</span>
+                    <span className="mlabel">GPU</span>
                     <span className="gauge__value">
-                      {cpuDisplay}
+                      {displayTemp}
                       <small>{` ${tempUnit}`}</small>
                     </span>
                   </div>
-                  <ScSeg pct={Math.min(100, cpuDisplay)} tone={cpuTone} />
+                  <ScSeg pct={Math.min(100, usage)} tone={gpuTone} />
                   <div className="gauge__foot">
-                    <span>{`${cpuDisplay}${tempUnit}`}</span>
-                    <ScHist values={Array.from(cpuTempHist)} w={84} h={14} tone={histTone(cpuTone)} />
+                    <span>{`${usage}%${clockLabel}`}</span>
+                    <ScHist values={Array.from(gpuUsageHist)} w={84} h={14} tone={histTone(gpuTone)} />
                   </div>
                 </div>
               );
             })()}
-            <div className={`gauge${gaugeCell(usageTone)}`}>
-              <div className="gauge__top">
-                <span className="mlabel">Usage</span>
-                <span className="gauge__value">
-                  {usage}
-                  <small> %</small>
-                </span>
-              </div>
-              <ScSeg pct={usage} tone={usageTone} />
-              <div className="gauge__foot">
-                <span>{usage}%</span>
-                <ScHist values={Array.from(gpuUsageHist)} w={84} h={14} tone={histTone(usageTone)} />
-              </div>
-            </div>
+            {(spark.metrics.cpu?.temperature ?? 0) > 0 || (spark.metrics.cpu?.usage ?? 0) > 0
+              ? (() => {
+                  const cpuRaw = spark.metrics.cpu?.temperature ?? 0;
+                  const cpuDisplay =
+                    cpuRaw > 0 && temperatureUnit === "fahrenheit"
+                      ? celsiusToFahrenheit(cpuRaw)
+                      : cpuRaw;
+                  const cpuTone = worstTone(
+                    cpuRaw > 95 ? "danger" : cpuRaw > 85 ? "warning" : cpuRaw > 50 ? "accent" : "success",
+                    cpuUsageTone
+                  );
+                  const tdp = spark.metrics.cpu?.tdp ?? 0;
+                  const draw = spark.metrics.cpu?.draw ?? 0;
+                  return (
+                    <div className={`gauge${gaugeCell(cpuTone)}`}>
+                      <div className="gauge__top">
+                        <span className="mlabel">CPU</span>
+                        <span className="gauge__value">
+                          {cpuRaw > 0 ? cpuDisplay : Math.round(cpuUsage)}
+                          <small>{cpuRaw > 0 ? ` ${tempUnit}` : " %"}</small>
+                        </span>
+                      </div>
+                      <ScSeg pct={Math.min(100, cpuUsage)} tone={cpuTone} />
+                      <div className="gauge__foot">
+                        <span>
+                          {Math.round(cpuUsage)}%
+                          {tdp > 0
+                            ? ` · ${Math.round(draw)}/${Math.round(tdp)} W`
+                            : cpuRaw > 0
+                              ? ` · ${cpuDisplay}${tempUnit}`
+                              : ""}
+                        </span>
+                        <ScHist values={Array.from(cpuUsageHist)} w={84} h={14} tone={histTone(cpuTone)} />
+                      </div>
+                    </div>
+                  );
+                })()
+              : null}
           </div>
           {gpu?.throttle?.thermal && (
             <span className="chip chip--err" title={gpu.throttle.detail || "GPU thermal slowdown engaged"}>
@@ -441,23 +477,40 @@ function SparkCard({
               const llm = Array.isArray(llmArr) ? llmArr.find((l) => l.available) : null;
               if (!llm) return null;
               return (
-                <OcardStat
-                  label={
-                    llm.backend === "vllm"
-                      ? "vLLM"
-                      : llm.backend === "ds4"
-                        ? "ds4"
-                        : llm.backend === "sglang"
-                          ? "sgLang"
-                          : llm.backend === "exl3"
-                            ? "EXL3"
-                            : llm.backend ?? "LLM"
-                  }
-                  value={llm.modelId ?? "unknown"}
-                  tone="accent"
-                  title={llm.modelId ?? undefined}
-                  wrap
-                />
+                <>
+                  <OcardStat
+                    label={
+                      llm.backend === "vllm"
+                        ? "vLLM"
+                        : llm.backend === "ds4"
+                          ? "ds4"
+                          : llm.backend === "sglang"
+                            ? "sgLang"
+                            : llm.backend === "exl3"
+                              ? "EXL3"
+                              : llm.backend ?? "LLM"
+                    }
+                    value={llm.modelId ?? "unknown"}
+                    tone="accent"
+                    title={llm.modelId ?? undefined}
+                    wrap
+                  />
+                  {activity && (
+                    <OcardStat
+                      label="Status"
+                      value={`${ACTIVITY_LABEL[activity]} · ${running} run · ${waiting} wait`}
+                      tone={
+                        activity === "gpu-silent"
+                          ? "warning"
+                          : activity === "waiting"
+                            ? "default"
+                            : "success"
+                      }
+                      wrap
+                      title={`${ACTIVITY_LABEL[activity]} · ${running} run · ${waiting} wait`}
+                    />
+                  )}
+                </>
               );
             })()}
           </div>
@@ -506,15 +559,18 @@ function NasSparkCard({
   spark,
   data,
   modelctl,
+  defaultNasRoot,
   onSelect,
 }: {
   spark: SparkSnapshot;
   data: NasCardData | null;
   modelctl: ModelctlStatus | null | undefined;
+  /** settings.modelctl.nasRoot — fallback when this node has no own path. */
+  defaultNasRoot?: string;
   onSelect?: (id: string) => void;
 }) {
   const online = spark.online;
-  const root = spark.nasRoot || "";
+  const root = (spark.nasRoot || defaultNasRoot || "").trim();
   const mount = matchStoreMount(spark.metrics?.storage ?? [], root);
   const used = mount?.used ?? 0;
   const total = mount?.total ?? 0;
@@ -634,7 +690,7 @@ function NasSparkCard({
   );
 }
 
-export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "celsius", onSelectSpark }: OverviewPageProps) {
+export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "celsius", defaultNasRoot = "", onSelectSpark }: OverviewPageProps) {
   const visibleSparks = hideOffline ? sparks.filter((s) => s.online) : sparks;
   const [batchLoading, setBatchLoading] = useState(false);
   const [batchMsg, setBatchMsg] = useState<{ text: string; tone: "ok" | "err" } | null>(null);
@@ -977,6 +1033,7 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
               spark={spark}
               data={nasData}
               modelctl={modelctlChecks[spark.id]}
+              defaultNasRoot={defaultNasRoot}
               onSelect={onSelectSpark}
             />
           ) : (

@@ -277,3 +277,135 @@ describe("OverviewPage NAS card", () => {
     expect(screen.getByText("queue downloads (2)")).toBeTruthy();
   });
 });
+
+describe("OverviewPage LLM status stat", () => {
+  it("head card shows engine activity with running/waiting counts", () => {
+    const head = snap("h3", {
+      name: "BusyHead",
+      role: "head",
+      metrics: {
+        llm: [llm({ requestsRunning: 2, requestsWaiting: 1 })],
+      } as SparkSnapshot["metrics"],
+    });
+    render(<OverviewPage sparks={[head]} temperatureUnit="celsius" />);
+    // Single match also proves workers don't duplicate the stat.
+    expect(screen.getByText("decoding · 2 run · 1 wait")).toBeTruthy();
+  });
+
+  it("idle engine renders waiting with zero counts", () => {
+    const head = snap("h4", {
+      name: "IdleHead",
+      role: "head",
+      metrics: {
+        llm: [llm({ requestsRunning: 0, requestsWaiting: 0, generationTps: 0 })],
+      } as SparkSnapshot["metrics"],
+    });
+    render(<OverviewPage sparks={[head]} temperatureUnit="celsius" />);
+    expect(screen.getByText("waiting · 0 run · 0 wait")).toBeTruthy();
+  });
+
+  it("worker cards never show the status stat, even with an available engine", () => {
+    const worker = snap("w5", {
+      name: "SoloWorker",
+      role: "worker",
+      workerHeadId: null,
+      metrics: {
+        llm: [llm({ requestsRunning: 3, requestsWaiting: 2 })],
+      } as SparkSnapshot["metrics"],
+    });
+    render(<OverviewPage sparks={[worker]} temperatureUnit="celsius" />);
+    // The worker's own probe serves the model stat…
+    expect(screen.getByText("Qwen3-32B-Q4")).toBeTruthy();
+    // …but no activity stat: workers render cluster attribution instead.
+    expect(screen.queryByText(/run · \d+ wait/)).toBeNull();
+  });
+});
+
+describe("OverviewPage grouped gauges + NAS store root", () => {
+  it("CPU gauge groups usage (bar/foot) with temperature (value) and drops the standalone Usage gauge", () => {
+    const node = snap("g1", {
+      name: "GroupedCPU",
+      role: "head",
+      metrics: {
+        cpu: { usage: 96, temperature: 72.5, draw: 45, tdp: 120 },
+      } as unknown as SparkSnapshot["metrics"],
+    });
+    render(<OverviewPage sparks={[node]} temperatureUnit="celsius" />);
+    // CPU headline value stays the temperature; the bar/foot carry usage+power.
+    expect(screen.getByText("96% · 45/120 W")).toBeTruthy();
+    // The old standalone GPU "Usage" gauge is gone — GPU usage lives in the GPU gauge.
+    expect(screen.queryByText("Usage")).toBeNull();
+  });
+
+  it("GPU gauge foot shows utilization and SM clocks when available", () => {
+    const node = snap("g2", {
+      name: "ClockedGPU",
+      role: "head",
+      metrics: {
+        gpu: {
+          temperature: 67,
+          usage: 67,
+          power: { draw: 44, limit: 120 },
+          vram: { used: 1000, total: 120000, percentage: 1, available: 100000 },
+          throttle: {
+            thermal: false,
+            hwSlowdown: false,
+            powerCap: false,
+            active: false,
+            reason: "ok",
+            smClockMHz: 1965,
+            smClockMaxMHz: 3930,
+            smClockPct: 50,
+            detail: "",
+          },
+        },
+      } as unknown as SparkSnapshot["metrics"],
+    });
+    render(<OverviewPage sparks={[node]} temperatureUnit="celsius" />);
+    expect(screen.getByText("67% · 2.0/3.9 GHz")).toBeTruthy();
+  });
+
+  it("status stat renders unwrapped-capable full text (wrap class set)", () => {
+    const head = snap("g3", {
+      name: "WrapHead",
+      role: "head",
+      metrics: {
+        llm: [llm({ requestsRunning: 2, requestsWaiting: 1 })],
+      } as SparkSnapshot["metrics"],
+    });
+    render(<OverviewPage sparks={[head]} temperatureUnit="celsius" />);
+    const el = screen.getByText("decoding · 2 run · 1 wait");
+    expect(el.className).toContain("ocard-stat__v--wrap");
+  });
+
+  it("NAS card falls back to the global defaultNasRoot when the node has no own path", async () => {
+    const nas = snap("nas2", {
+      name: "vault",
+      kind: "nas",
+      nasRoot: "",
+      metrics: {
+        gpu: null,
+        storage: [
+          {
+            device: "md0",
+            label: "/mnt/llms",
+            used: 10 * 1024 * 1024,
+            total: 16.5 * 1024 * 1024,
+            available: 6.5 * 1024 * 1024,
+            percentage: 61,
+            readSpeed: 0,
+            writeSpeed: 0,
+          },
+        ],
+      } as unknown as SparkSnapshot["metrics"],
+    });
+    // No default configured: the card can't know the store path.
+    render(<OverviewPage sparks={[nas]} temperatureUnit="celsius" />);
+    expect(screen.getByText("no store path")).toBeTruthy();
+    cleanup();
+    // Global settings.modelctl.nasRoot resolves the store mount.
+    render(<OverviewPage sparks={[nas]} temperatureUnit="celsius" defaultNasRoot="/mnt/llms" />);
+    await waitFor(() => expect(screen.getByText("10.0 TB / 16.5 TB")).toBeTruthy());
+    expect(screen.getByText("6.5 TB free")).toBeTruthy();
+  });
+});

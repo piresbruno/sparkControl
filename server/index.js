@@ -2359,6 +2359,8 @@ agentWss.on("connection", (ws) => {
         llmPorts: spark?.llmPorts || [],
         role: spark?.role || "standalone",
         llmMonitoring: spark?.llmMonitoring !== false,
+        kind: spark?.kind || "spark",
+        nasRoot: spark?.nasRoot || "",
       },
     }));
     console.log(`[agent-ws] ${hello.sparkId} connected (agent v${hello.agentVersion || "?"})`);

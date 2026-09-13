@@ -287,6 +287,7 @@ function DashboardApp() {
               sparks={displaySparks}
               hideOffline={settings?.autoHideOffline ?? false}
               temperatureUnit={settings?.temperatureUnit ?? "celsius"}
+              defaultNasRoot={settings?.modelctl?.nasRoot ?? ""}
               onSelectSpark={navigate}
             />
           ) : isAnalysis ? (

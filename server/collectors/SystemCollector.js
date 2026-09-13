@@ -3,6 +3,7 @@ import path from "path";
 import { HOST_PATHS, GPU_MEMORY_JSON_PATH, DGX_SPARK, HARDWARE_DEFAULTS, POLL_INTERVAL_NVERR } from "../config.js";
 import { normalizeMac, WOL_INTERFACE } from "../wol.js";
 import { sshExec } from "./ssh.js";
+import { shellQuote } from "../util/shellQuote.js";
 
 const NVERR_JOURNAL_CMD =
   'journalctl -k --no-pager -q --grep=NV_ERR_NO_MEMORY 2>/dev/null | grep -c NV_ERR_NO_MEMORY || true';
@@ -645,6 +646,35 @@ export class SystemCollector {
         );
       }
     }
+    // Model-store roots (kind "nas") are usually a plain directory inside a
+    // larger filesystem (or a network mount) — never their own lsblk line.
+    // Stat the configured root directly and surface its containing filesystem
+    // so the NAS cards can match it by label (matchStoreMount).
+    const storeRoot =
+      this.spark.kind === "nas" ? String(this.spark.nasRoot || "").trim() : "";
+    if (storeRoot && !disks.some((d) => d.label === storeRoot)) {
+      try {
+        const stat = await this._statfs(this._resolveDiskPath(storeRoot));
+        const total = stat.blocks * stat.bsize;
+        const used = (stat.blocks - stat.bfree) * stat.bsize;
+        const available = stat.bavail * stat.bsize;
+        disks.push({
+          device: "(store)",
+          label: storeRoot,
+          used: Math.round(used / 1024 / 1024),
+          total: Math.round(total / 1024 / 1024),
+          available: Math.round(available / 1024 / 1024),
+          percentage: used + available > 0 ? Math.round((used / (used + available)) * 100) : 0,
+          readSpeed: 0,
+          writeSpeed: 0,
+          disabled: false,
+        });
+      } catch (err) {
+        console.warn(
+          `[SystemCollector] store statfs failed for ${this.spark.id} root=${storeRoot}: ${err.message}`
+        );
+      }
+    }
 
     return disks;
   }
@@ -1133,11 +1163,22 @@ export class SystemCollector {
 
   async _getRemoteStorage() {
     try {
-      // Include root (/); exclude pseudo filesystems via -x and type filter
+      // Include root (/); exclude pseudo filesystems via -x and type filter.
+      // For NAS store nodes, also stat the configured store root directly
+      // (second df, without -l so network mounts are covered): the root is
+      // usually a plain directory of a larger filesystem or an NFS mount, so
+      // it never appears in the local-filesystem listing by itself.
+      const storeRoot =
+        this.spark.kind === "nas" ? String(this.spark.nasRoot || "").trim() : "";
       const cmd =
-        "df -l -B1 -T -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs -x proc -x sysfs -x devpts -x cgroup -x cgroup2 2>/dev/null";
+        "df -l -B1 -T -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs -x proc -x sysfs -x devpts -x cgroup -x cgroup2 2>/dev/null" +
+        (storeRoot ? `; df -B1 -T ${shellQuote(storeRoot)} 2>/dev/null` : "");
       const output = await sshExec(this.spark, cmd);
-      const lines = output.trim().split("\n").slice(1); // Skip header
+      // Two df invocations → drop every "Filesystem ..." header line.
+      const lines = output
+        .trim()
+        .split("\n")
+        .filter((l) => l.trim() && !l.startsWith("Filesystem"));
       const disks = [];
       const disabledDevices = this.spark.disabledDevices || [];
       const PSEUDO = new Set([
@@ -1160,6 +1201,8 @@ export class SystemCollector {
 
         if (mount === "/boot/efi" || mount.includes("/snap")) continue;
         if (PSEUDO.has((type || "").toLowerCase())) continue;
+        // The store-root df repeats any mount that already appeared above.
+        if (disks.some((d) => d.label === mount)) continue;
 
         const device = fsys.split("/").pop() || fsys;
         const isDisabled =
