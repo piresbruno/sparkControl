@@ -97,11 +97,12 @@ export class SystemCollector {
 
       // Temperature and power can run in parallel — power is now a pure
       // function of the usage fraction (no extra /proc/stat read).
-      const [temp, power] = await Promise.all([
+      const [temp, power, clockMHz] = await Promise.all([
         this._getCPUTemperature(),
         this._getCPUPower(usageFraction),
+        this._getCPUClock(),
       ]);
-      return { usage: cpuPercentage, temperature: temp, ...power };
+      return { usage: cpuPercentage, temperature: temp, ...power, clockMHz };
     } catch (err) {
       console.error(`[SystemCollector] CPU error for ${this.spark.id}:`, err.message);
       return this._defaultCpu();
@@ -567,6 +568,40 @@ export class SystemCollector {
     const idleWatts = tdp * 0.08;
     const draw = idleWatts + (tdp - idleWatts) * Math.min(frac, 1);
     return { draw: Math.round(draw * 10) / 10, tdp: Math.round(tdp) };
+  }
+
+  /**
+   * Current CPU clock, averaged across every core that exposes cpufreq
+   * (`/sys/devices/system/cpu/cpuN/cpufreq/scaling_cur_freq`, kHz). Local
+   * (or host-bind-mounted) sysfs only; returns null when unreadable.
+   * @returns {Promise<number|null>} MHz
+   */
+  async _getCPUClock() {
+    try {
+      const sysRoot = fs.existsSync(HOST_PATHS.SYS) ? HOST_PATHS.SYS : "/sys";
+      const cpuRoot = path.join(sysRoot, "devices/system/cpu");
+      if (!fs.existsSync(cpuRoot)) return null;
+      const cores = fs.readdirSync(cpuRoot).filter((e) => /^cpu\d+$/.test(e));
+      let sumKHz = 0;
+      let n = 0;
+      for (const core of cores) {
+        try {
+          const raw = fs
+            .readFileSync(path.join(cpuRoot, core, "cpufreq", "scaling_cur_freq"), "utf-8")
+            .trim();
+          const khz = parseInt(raw, 10);
+          if (Number.isFinite(khz) && khz > 0) {
+            sumKHz += khz;
+            n += 1;
+          }
+        } catch {
+          /* per-core cpufreq optional */
+        }
+      }
+      return n > 0 ? Math.round(sumKHz / n / 1000) : null;
+    } catch {
+      return null;
+    }
   }
 
   // ─── RAM helpers ─────────────────────────────────────────
@@ -1081,6 +1116,10 @@ export class SystemCollector {
       // GB10 also exposes nvme/mlx5 sensors; the name allowlist keeps those out.
       'for h in /sys/class/hwmon/*; do n=$(cat "$h/name" 2>/dev/null); case "$n" in coretemp|k10temp|zenpower|acpitz) for t in "$h"/temp*_input; do cat "$t" 2>/dev/null; break; done;; esac; done',
       "cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null || true",
+      "echo '---'",
+      // Current CPU clock: kHz per core via cpufreq, averaged (empty when
+      // the platform exposes no scaling_cur_freq).
+      'for f in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq; do cat "$f" 2>/dev/null; done | awk \'{s+=$1;n++}END{if(n>0)print int(s/n)}\'',
     ].join("; ");
   }
 
@@ -1094,6 +1133,7 @@ export class SystemCollector {
       const statOut = sections[0]?.trim() || "";
       const cpuinfoOut = sections[1]?.trim() || "";
       const tempOut = sections[2] || "";
+      const clockOut = sections[3]?.trim() || "";
 
       const cpuStat = this._parseCPUUsage(statOut);
       const totalDiff = cpuStat.total - (this.lastCpuStat?.total || cpuStat.total);
@@ -1110,12 +1150,15 @@ export class SystemCollector {
       const tdp = isArm ? 65 : 185;
       const idleWatts = tdp * 0.08;
       const draw = idleWatts + (tdp - idleWatts) * Math.min(usage / 100, 1);
-
       return {
         usage,
         temperature: this._parseSensorTemp(tempOut),
         draw: Math.round(draw * 10) / 10,
         tdp: Math.round(tdp),
+        // cpufreq reports kHz; empty output (no scaling_cur_freq) → null.
+        clockMHz: Number.isFinite(parseInt(clockOut, 10)) && parseInt(clockOut, 10) > 0
+          ? Math.round(parseInt(clockOut, 10) / 1000)
+          : null,
       };
     } catch (err) {
       console.error(`[SystemCollector] Remote CPU error for ${this.spark.id}:`, err.message);
@@ -1628,7 +1671,7 @@ export class SystemCollector {
   }
 
   _defaultCpu() {
-    return { usage: 0, temperature: 0, draw: 0, tdp: 0 };
+    return { usage: 0, temperature: 0, draw: 0, tdp: 0, clockMHz: null };
   }
 
   _defaultRam() {

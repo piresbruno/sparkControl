@@ -238,6 +238,8 @@ export interface CpuMetrics {
   temperature: number;
   draw: number;
   tdp: number;
+  /** Current CPU clock averaged across cores (MHz). null when unreadable. */
+  clockMHz?: number | null;
 }
 
 // ─── RAM metrics ─────────────────────────────────────────

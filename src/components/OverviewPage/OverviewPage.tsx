@@ -22,7 +22,7 @@ import { PowerOffIcon, PowerOnIcon, RotateIcon } from "../ui/icons";
 import { agoLabel, fmtStore, matchStoreMount, versionIsNewer } from "../NasPage/nasUtils";
 import { ACTIVITY_LABEL, ACTIVITY_TIP, fmtUptimeShort } from "../SparkPage/console/consoleUtils";
 import { useEngineActivity } from "../SparkPage/console/useEngineActivity";
-import { ScHist, ScLed, ScSeg } from "../SparkPage/console/ScKit";
+import { ScHist, ScLed, ScSeg, gaugeCell, histTone, worstTone } from "../SparkPage/console/ScKit";
 import { useMetricsHistoryTail } from "../../hooks/metricsStore";
 import "../../styles/console.css";
 import "../../styles/overview.css";
@@ -302,11 +302,7 @@ function SparkCard({
             {(() => {
               const gpuTone = worstTone(tempTone, usageTone);
               const smClock = gpu?.throttle?.smClockMHz ?? null;
-              const smClockMax = gpu?.throttle?.smClockMaxMHz ?? null;
-              const clockLabel =
-                smClock && smClockMax
-                  ? ` · ${(smClock / 1000).toFixed(1)}/${(smClockMax / 1000).toFixed(1)} GHz`
-                  : "";
+              const clockLabel = smClock ? ` · ${(smClock / 1000).toFixed(1)} GHz` : "";
               return (
                 <div className={`gauge${gaugeCell(gpuTone)}`}>
                   <div className="gauge__top">
@@ -337,6 +333,8 @@ function SparkCard({
                   );
                   const tdp = spark.metrics.cpu?.tdp ?? 0;
                   const draw = spark.metrics.cpu?.draw ?? 0;
+                  const cpuClock = spark.metrics.cpu?.clockMHz ?? null;
+                  const cpuClockLabel = cpuClock ? ` · ${(cpuClock / 1000).toFixed(1)} GHz` : "";
                   return (
                     <div className={`gauge${gaugeCell(cpuTone)}`}>
                       <div className="gauge__top">
@@ -355,6 +353,7 @@ function SparkCard({
                             : cpuRaw > 0
                               ? ` · ${cpuDisplay}${tempUnit}`
                               : ""}
+                          {cpuClockLabel}
                         </span>
                         <ScHist values={Array.from(cpuUsageHist)} w={84} h={14} tone={histTone(cpuTone)} />
                       </div>
@@ -911,7 +910,7 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
       className="spark-console"
       style={{ display: "flex", flexDirection: "column", gap: "var(--density-overview-rhythm)" }}
     >
-      <header className="module rack" aria-label="Overview">
+      <header className="module rack rack--overview" aria-label="Overview">
         <div className="rack__id">
           <span className="rack__name">Overview</span>
           <span className="chip" title="Nodes online">

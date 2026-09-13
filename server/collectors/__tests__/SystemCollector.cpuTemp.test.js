@@ -13,8 +13,9 @@ test("remote CPU command always includes the sensor dump", () => {
   assert.equal(sparkCmd, hostCmd);
   assert.match(sparkCmd, /coretemp\|k10temp\|zenpower\|acpitz/);
   assert.match(sparkCmd, /thermal_zone\*\/temp/);
-  assert.match(sparkCmd, /\|\| true$/);
-  assert.equal((sparkCmd.match(/echo '---'/g) || []).length, 2);
+  assert.match(sparkCmd, /\|\| true; echo '---'/);
+  assert.equal((sparkCmd.match(/echo '---'/g) || []).length, 3);
+  assert.match(sparkCmd, /cpufreq\/scaling_cur_freq/);
 });
 
 test("remote CPU collection returns temperature for DGX Spark nodes", async () => {
@@ -23,7 +24,7 @@ test("remote CPU collection returns temperature for DGX Spark nodes", async () =
     assert.equal(spark.id, "spark-test");
     assert.match(command, /coretemp\|k10temp\|zenpower\|acpitz/);
     assert.match(command, /thermal_zone\*\/temp/);
-    assert.equal((command.match(/echo '---'/g) || []).length, 2);
+    assert.equal((command.match(/echo '---'/g) || []).length, 3);
     return [
       "cpu 100 0 40 860 0 0 0 0",
       "---",
@@ -35,6 +36,25 @@ test("remote CPU collection returns temperature for DGX Spark nodes", async () =
 
   assert.equal(result.temperature, 70.9);
   assert.equal(result.tdp, 65);
+  assert.equal(result.clockMHz, null);
+});
+
+test("remote CPU collection parses the averaged cpufreq reading as MHz", async () => {
+  const collector = new SystemCollector({ id: "spark-test", kind: "spark" });
+  const result = await collector._getRemoteCpu(async () =>
+    [
+      "cpu 100 0 40 860 0 0 0 0",
+      "---",
+      "CPU architecture: 8",
+      "---",
+      "70900",
+      "---",
+      "2654321",
+    ].join("\n")
+  );
+
+  // 2654321 kHz averaged → 2654 MHz (integer rounding, kHz → MHz).
+  assert.equal(result.clockMHz, 2654);
 });
 
 test("converts millidegrees to Celsius", () => {
