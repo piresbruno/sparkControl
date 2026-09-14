@@ -266,3 +266,18 @@ test("failStaleHelloJobs fails a hello-gated job past its deadline", async () =>
   assert.equal(job.status, "failed");
   assert.match(job.lastError, /did not connect within 60s/);
 });
+
+test("poll path enforces the hello deadline without waiting for the sweeper", async () => {
+  let now = 1;
+  const exec = fakeExec([
+    "LAUNCHED 1", // start (at now=1)
+    "__AGENT_UNIT__user\n__ALIVE:no\n__SPARKDASH_EXIT:0", // poll after the deadline
+  ]);
+  const mgr = new RemoteJobManager({ exec, now: () => now, statePath: path.join(tmp, "j.json") });
+  const { jobId } = await mgr.startRemoteJob(spark, { name: "install agent", script: "x", kind: "install-agent" });
+  mgr.setExpectAgentConnect(jobId);
+  now = 61_000; // past the 60 s hello window
+  const job = await mgr.pollRemoteJob(spark, jobId);
+  assert.equal(job.status, "failed", "the poll itself must enforce the deadline");
+  assert.match(job.lastError, /did not connect within 60s/);
+});

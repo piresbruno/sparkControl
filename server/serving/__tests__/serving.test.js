@@ -152,6 +152,18 @@ test("recordPathScript persists and getPathScripts reads back; missing file is e
   assert.deepEqual(getPathScripts(mapPath), { "a-123456": "/home/me/run.sh", "b-abcdef": "/opt/x.sh" });
 });
 
+
+test("recordPathScript bounds the map to the newest 32 entries (status probe cost)", () => {
+  const mapPath = path.join(tmp, "bounded.json");
+  for (let i = 0; i < 40; i++) recordPathScript(`s-${String(i).padStart(2, "0")}`, `/opt/s${i}.sh`, mapPath);
+  const map = getPathScripts(mapPath);
+  assert.equal(Object.keys(map).length, 32);
+  assert.equal(map["s-39"], "/opt/s39.sh"); // newest kept
+  assert.equal(map["s-00"], undefined, "oldest dropped");
+  assert.equal(map["s-07"], undefined);
+  assert.ok(map["s-08"], "the newest 32 survive");
+});
+
 test("resolveAnyScriptId: library first, then path map, else throw", () => {
   const mapPath = path.join(tmp, "path-scripts.json");
   fs.writeFileSync(path.join(tmp, "lib.sh"), "echo hi\n");

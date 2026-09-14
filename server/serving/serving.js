@@ -91,6 +91,9 @@ export function getPathScripts(filePath = PATH_SCRIPTS_PATH) {
   }
 }
 
+/** Cap on persisted path-script entries (see recordPathScript). */
+const PATH_SCRIPTS_KEEP = 32;
+
 /**
  * Persist a path-script mapping. Write failures log and return false — the
  * start still proceeds (the UI keeps the scriptId from the start response).
@@ -100,6 +103,11 @@ export function recordPathScript(id, absPath, filePath = PATH_SCRIPTS_PATH) {
   try {
     const map = getPathScripts(filePath);
     map[id] = absPath;
+    // Bound the map: the no-scriptId status probe iterates every key, so an
+    // unbounded file would grow SSH round trips per poll forever. JSON objects
+    // preserve insertion order, so the oldest entries drop first.
+    const keys = Object.keys(map);
+    for (const k of keys.slice(0, Math.max(0, keys.length - PATH_SCRIPTS_KEEP))) delete map[k];
     atomicWrite(filePath, JSON.stringify(map, null, 2) + "\n", 0o644);
     return true;
   } catch (err) {

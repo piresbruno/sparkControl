@@ -246,6 +246,10 @@ export class RemoteJobManager {
     const job = this.jobs.get(jobId);
     if (!job) throw new Error(`Unknown job: ${jobId}`);
     if (job.status !== "running") return job; // terminal states don't re-poll
+    // Enforce the hello deadline on any poll (the UI polls at 1 s — don't make
+    // it wait for the 30 s sweeper to learn the agent never showed up).
+    if (job.expectAgentConnect) this.failStaleHelloJobs(this._now());
+    if (job.status !== "running") return job;
     let out = "";
     try {
       const exec = job.transport === "ssh" ? sshExec : this._exec;
