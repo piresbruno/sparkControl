@@ -113,11 +113,11 @@ under `server/proxy/`, `server/jobs/`, `server/serving/`, `server/agent/`, plus 
 ### Analysis — reverse-proxy trace capture
 
 Point any OpenAI-compatible client at `http://<dashboard>/llm/<sparkId>/<port>` and every request/response is
-recorded (when capture is on) with status, TTFT, duration, token counts, finish reason, and capped bodies
-(32 KB request / 64 KB response). Dashboard **bench / prefill / showcase** traffic is traced too.
+recorded (when capture is on) with status, TTFT, duration, token counts, finish reason, client identity (IP,
+reverse-DNS hostname, user-agent) and capped bodies. Dashboard **bench / prefill / showcase** traffic is traced too.
 
 - **Storage:** file-based SQLite (`config/traces.sqlite`, WAL) via Node's built-in `node:sqlite` — zero new deps. 1-week retention, purge on boot + hourly.
-- **UI:** new **Analysis** tab — spark/port pickers, source filters (proxy / bench / prefill-bench / showcase), live 1.5 s follow poll, detail modal with Request / Response / Timing tabs, **Copy-as-curl**, capture-off banner.
+- **UI:** new **Analysis** tab — spark/port pickers, source filters (proxy / bench / prefill-bench / showcase), live 1.5 s follow poll, detail modal with Request / Response / Timing tabs (incl. Client IP / Hostname / User agent), **Copy-as-curl**, capture-off banner. The Live & Clients panel labels each client `10.0.30.173 · box.local` (hostname shown when the LAN's reverse DNS resolves).
 - **Auth injection:** if the spark has a stored per-port LLM key, the proxy injects `Authorization: Bearer …` (client header always wins).
 - **CORS:** off by default; optional exact-origin allowlist in Settings (`traceProxyAllowedOrigins`) — never `*`.
 - **Toggles:** `traceCapture` (off = pure forwarding, zero recording) and `traceCaptureBodies` in Settings.
@@ -175,6 +175,7 @@ with an env contract only — **no serve commands are generated**:
 
 - Seeded examples (`example-vllm.sh`, `example-llama-cpp.sh`) resolve model paths via `modelctl path "$MODEL_NAME" --local`.
 - Start/Stop/Status/Log over SSH **or the agent**, with placement-aware start: a missing model returns 409 plus sync/push remediations.
+- **Run a script by path** — instead of a `config/serving/` library script, the Serve script panel (node page CH·02) accepts an absolute path **on the target node** (`/home/me/start-vllm.sh`). It is checked at launch (`script not found on node` when absent) and gets a stable derived id (basename + path hash, persisted in `config/serving/path-scripts.json`) so Stop/Status/Log keep working across restarts. A non-empty path takes precedence over the library picker.
 - Edit scripts directly on disk (config volume); they survive container restarts.
 
 ### Spark Command Agent
@@ -184,7 +185,7 @@ A small daemon on each node holding an **outbound WebSocket** to `ws://<dashboar
 - **Push metrics** (GPU/CPU/RAM/network/storage) at dashboard-configured cadences using the same collectors — snapshot shapes are identical, the UI cannot tell the transports apart. Snapshot gains `transport` + `agentVersion`.
 - **LLM probes on workers** at a 10 s detection cadence so Overview cards show the actually-running model.
 - **Job execution** (dashboard-supplied scripts, argv or shell mode, 100 KB output ring) and **serving supervision** (spawn, pidfile, 5 MB log rotation, process-group stop, reconnect re-attach).
-- **Bootstrap:** the spark detail page shows **Install agent** when enabled — chunked bundle upload over SSH, Node ≥18 tarball into `~/.sparkcontrol/agent/node`, `config.json` (token from the encrypted store), systemd system unit via `sudo -n` (user-unit + linger instructions in the job log as fallback).
+- **Bootstrap:** the node page shows an **Install agent** button when the agent is enabled but not connected — chunked bundle upload over SSH, Node ≥18 tarball into `~/.sparkcontrol/agent/node`, `config.json` (token from the encrypted store), systemd **system** unit via `sudo -n`, falling back to a systemd **user** unit (`systemctl --user`, best-effort `enable-linger`) when passwordless sudo is unavailable. The install job completes only when the agent's WebSocket hello actually lands, so the button can no longer report success on a node where nothing started. The status chip is a tri-state: `Agent v<version>` (connected) · `Agent offline` (enabled, SSH fallback) · `Agent off` (not enabled).
 - **Token rotation:** Settings → Agent token → Regenerate pushes `config-update`; connected agents rewrite their config and re-auth. Disconnected agents must be re-bootstrapped.
 - **Upgrade note:** nodes bootstrapped before the agent rename keep the old `~/.sparkdash/agent` directory and `sparkdash-agent.service` unit; re-run **Install agent** once after upgrading to move them (old files can then be deleted manually).
 
