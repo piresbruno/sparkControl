@@ -586,6 +586,10 @@ export function AnalysisPage() {
                         </button>
                       </div>
                     </div>
+                    <span className="analysis-clients__addr">
+                      {c.clientIp}
+                      {c.clientHost ? ` · ${c.clientHost}` : ""}
+                    </span>
                     {expandedClient === c.clientId &&
                       c.inflight.map((r) => (
                         <div key={r.id} className="analysis-clients__req">
@@ -701,7 +705,10 @@ export function AnalysisPage() {
               <span className="truncate">
                 {t.sparkId ?? "—"}:{t.port ?? "—"}
               </span>
-              <span className="truncate" title={t.clientId ?? undefined}>
+              <span
+                className="truncate"
+                title={[t.clientIp, t.clientHost].filter(Boolean).join(" · ") || (t.clientId ?? undefined)}
+              >
                 {clientCell(t.clientId, clientLabels)}
               </span>
               <span className="truncate" title={`${t.method} ${t.path}${t.query ? `?${t.query}` : ""}`}>
@@ -927,6 +934,12 @@ function TraceDetailModal({
                   <dd>{entry.model ?? "—"}</dd>
                   <dt className="text-muted">Client</dt>
                   <dd>{entry.clientId ? clientCell(entry.clientId, clientLabels) : "—"}</dd>
+                  <dt className="text-muted">Client IP</dt>
+                  <dd>{entry.clientIp ?? "—"}</dd>
+                  <dt className="text-muted">Hostname</dt>
+                  <dd>{entry.clientHost ?? "—"}</dd>
+                  <dt className="text-muted">User agent</dt>
+                  <dd title={entry.clientUa ?? undefined}>{entry.clientUa ?? "—"}</dd>
                   <dt className="text-muted">Cached tokens</dt>
                   <dd>{entry.cachedTokens ?? "—"}</dd>
                   <dt className="text-muted">Tools (requested)</dt>

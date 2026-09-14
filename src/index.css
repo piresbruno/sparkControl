@@ -2559,6 +2559,15 @@ html {
   border-top: 1px solid var(--color-border);
   font-size: 0.75rem;
 }
+.analysis-clients__addr {
+  padding: 0 0.75rem 0.35rem;
+  font-size: 0.7rem;
+  color: var(--color-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .analysis-clients__label {
   width: 100%;
   border: 1px solid transparent;

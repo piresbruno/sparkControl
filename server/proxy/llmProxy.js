@@ -39,6 +39,7 @@ import { isAllowedTargetHost } from "../validate.js";
 import { llmProbeHost } from "../collectors/llmHost.js";
 import { TRACE_MAX_REQ_BODY, TRACE_MAX_RES_BODY } from "../config.js";
 import { createInflightRegistry } from "./inflightRegistry.js";
+import { resolveHostname } from "./clientHost.js";
 
 /** Idle timeout between upstream bytes (connect included). */
 const IDLE_TIMEOUT_MS = 600_000;
@@ -159,6 +160,23 @@ export function createLlmProxy({ registry, secrets, settings, traceStore, inflig
       typeof req.headers["user-agent"] === "string"
         ? req.headers["user-agent"].slice(0, 256)
         : null;
+    // Client hostname (PTR) — kicked off once per request; LLM requests are
+    // long-lived so the lookup usually settles before the trace is recorded.
+    const clientHostPromise = resolveHostname(clientIp);
+    const clientHostCapped = () =>
+      new Promise((resolve) => {
+        const t = setTimeout(() => resolve(null), 1000);
+        clientHostPromise.then(
+          (v) => {
+            clearTimeout(t);
+            resolve(v);
+          },
+          () => {
+            clearTimeout(t);
+            resolve(null);
+          }
+        );
+      });
     const clientId = _clientId(clientIp, clientUa);
     const inflightId = inflight.register({
       sparkId,
@@ -388,7 +406,7 @@ export function createLlmProxy({ registry, secrets, settings, traceStore, inflig
 
       upRes.pipe(res);
 
-      function _record({ status, ttftMs: t, error }) {
+      async function _record({ status, ttftMs: t, error }) {
         const cancelledBy = inflight.get(inflightId)?.cancelledBy ?? null;
         if (cancelledBy) error = `cancelled (${cancelledBy})`;
         if (!capture) return;
@@ -463,10 +481,10 @@ export function createLlmProxy({ registry, secrets, settings, traceStore, inflig
           tokensEstimated = true;
         }
 
+        const clientHost = await clientHostCapped();
         traceStore.record({
           ts: start,
           sparkId,
-          port,
           source: "proxy",
           method: req.method,
           path: upstreamPathOnly,
@@ -484,6 +502,7 @@ export function createLlmProxy({ registry, secrets, settings, traceStore, inflig
           clientIp,
           clientUa,
           clientId,
+          clientHost,
           toolsReq: reqTools,
           toolsUsed: usedTools ? [...usedTools].map(([name, count]) => ({ name, count })) : null,
           cachedTokens,
@@ -525,7 +544,7 @@ export function createLlmProxy({ registry, secrets, settings, traceStore, inflig
       } catch {
         /* truncated or non-JSON body */
       }
-      traceStore.record({
+      const payload = {
         ts: start,
         sparkId,
         port,
@@ -555,7 +574,9 @@ export function createLlmProxy({ registry, secrets, settings, traceStore, inflig
         toolsUsed: null,
         cachedTokens: null,
         bodyTruncated: reqBytes >= maxReqBody,
-      });
+      };
+      // Error traces must not delay the 502 — attach the hostname async.
+      void clientHostCapped().then((clientHost) => traceStore.record({ ...payload, clientHost }));
       if (!res.headersSent) res.status(502).json({ error: msg });
     }
   }

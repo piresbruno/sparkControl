@@ -37,6 +37,7 @@ import {
   createFleetEnergyRuntime,
   registerFleetEnergyRoute,
 } from "./energy/FleetEnergyRuntime.js";
+import { resolveHostname } from "./proxy/clientHost.js";
 
 dotenv.config();
 
@@ -607,7 +608,7 @@ app.get("/api/llm/active", (req, res) => {
 });
 
 /** GET /api/llm/clients — live proxied clients grouped by clientId (A4). */
-app.get("/api/llm/clients", (req, res) => {
+app.get("/api/llm/clients", async (req, res) => {
   const sparkId = req.query.sparkId || undefined;
   const labels = getSettings().clientLabels || {};
   const now = Date.now();
@@ -638,6 +639,12 @@ app.get("/api/llm/clients", (req, res) => {
   const clients = [...byClient.values()]
     .map((c) => ({ ...c, inflightCount: c.inflight.length }))
     .sort((a, b) => b.inflightCount - a.inflightCount);
+  // Resolve PTR hostnames for the unique client IPs (cache makes repeat
+  // polls free); never rejects — failures map to null.
+  const uniqueIps = [...new Set(clients.map((c) => c.clientIp).filter(Boolean))];
+  const hosts = await Promise.all(uniqueIps.map((ip) => resolveHostname(ip)));
+  const hostByIp = new Map(uniqueIps.map((ip, i) => [ip, hosts[i]]));
+  for (const c of clients) c.clientHost = hostByIp.get(c.clientIp) ?? null;
   res.json({ clients, dashboardClients: wss.clients.size });
 });
 
