@@ -1026,7 +1026,10 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
         </div>
       </header>
       <FleetAlertStrip sparks={sparks} onSelect={onSelectSpark} />
-      <FleetEnergyCard nodeCount={visibleSparks.length} />
+      <FleetEnergyCard
+        nodeCount={visibleSparks.length}
+        nodeNames={Object.fromEntries(sparks.map((s) => [s.id, s.name]))}
+      />
       <ConfirmShutdownDialog
         open={shutdownOpen}
         onClose={() => setShutdownOpen(false)}

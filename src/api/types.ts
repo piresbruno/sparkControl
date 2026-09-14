@@ -602,6 +602,9 @@ export interface FleetEnergy {
   coverage24hMs: number;
   coverage31dMs: number;
   nodeCoverage24hMs: Record<string, number>;
+  /** rev3: per-node kWh estimates; null when the node has no coverage or the fleet membership changed. */
+  nodeEnergy24hKwh: Record<string, number | null>;
+  nodeEnergy31dKwh: Record<string, number | null>;
   nodeCoverage31dMs: Record<string, number>;
   hourlyWatts24h: Array<number | null>;
 }

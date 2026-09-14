@@ -16,12 +16,13 @@ vi.mock("../../api/client", () => ({
 
 import {
   fetchModelctlRelease,
+  fetchFleetEnergy,
   fetchNasCatalog,
   listJobs,
   listNasModels,
   modelctlStatus,
 } from "../../api/client";
-import type { LlmMetrics, ModelctlStatus, SparkSnapshot } from "../../api/types";
+import type { FleetEnergy, LlmMetrics, ModelctlStatus, SparkSnapshot } from "../../api/types";
 
 const llm = (
   over: Partial<LlmMetrics> & { modelId?: string; backend?: string; available?: boolean }
@@ -190,6 +191,48 @@ describe("OverviewPage worker attribution", () => {
     render(<OverviewPage sparks={[head]} temperatureUnit="celsius" />);
     await waitFor(() => expect(screen.getByText("Llama-70B")).toBeTruthy());
     expect(modelctlStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe("OverviewPage Fleet Energy card", () => {
+  const DAY = 86_400_000;
+  const fleetEnergy: FleetEnergy = {
+    estimated: true,
+    membershipChanged: false,
+    restartRequired: false,
+    trackedNodeIds: ["h1", "w1", "idle"],
+    currentNodeIds: ["h1", "w1"],
+    freshNodeCount: 2,
+    currentWatts30s: 420,
+    energy24hKwh: 3.2,
+    energy31dKwh: 90.5,
+    whPerOutputToken24h: 0.0123,
+    outputTokens24h: 1000,
+    coverage24hMs: DAY,
+    coverage31dMs: 30 * DAY,
+    nodeCoverage24hMs: { h1: DAY, w1: DAY, idle: 0 },
+    nodeCoverage31dMs: { h1: 30 * DAY, w1: 30 * DAY, idle: 0 },
+    nodeEnergy24hKwh: { h1: 2.5, w1: 0.7, idle: null },
+    nodeEnergy31dKwh: { h1: 70, w1: 20, idle: null },
+    hourlyWatts24h: Array(24).fill(420),
+  };
+
+  it("renders per-node 24h kWh rows sorted descending with spark names", async () => {
+    vi.mocked(fetchFleetEnergy).mockResolvedValue(fleetEnergy);
+    const head = snap("h1", { name: "HeadSpark", role: "head" });
+    const worker = snap("w1", { name: "WorkerOne", role: "worker" });
+    render(<OverviewPage sparks={[head, worker]} temperatureUnit="celsius" />);
+
+    await waitFor(() => expect(screen.getByText("Last 24h by node")).toBeTruthy());
+    // Bars map node ids to spark display names, highest kWh first.
+    const rows = screen.getByText("Last 24h by node").parentElement!.querySelectorAll(".flex.items-center");
+    expect(rows.length).toBe(2);
+    expect(rows[0].textContent).toContain("HeadSpark");
+    expect(rows[0].textContent).toContain("2.50 kWh");
+    expect(rows[1].textContent).toContain("WorkerOne");
+    expect(rows[1].textContent).toContain("0.70 kWh");
+    // Zero-coverage nodes render nothing at all.
+    expect(screen.queryByText("idle")).toBeNull();
   });
 });
 
