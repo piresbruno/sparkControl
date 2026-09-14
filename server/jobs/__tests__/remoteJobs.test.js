@@ -208,3 +208,61 @@ test("cancel transitions running → cancelled", async () => {
   assert.equal(job.status, "cancelled");
   assert.ok(job.endedAt != null);
 });
+
+test("install-agent hello gate: script exit 0 alone does NOT complete the job", async () => {
+  const exec = fakeExec([
+    "LAUNCHED 1", // start
+    "__AGENT_UNIT__none\n__ALIVE:no\n__SPARKDASH_EXIT:0", // poll: script done, exit 0
+  ]);
+  const mgr = new RemoteJobManager({ exec, now: () => 1, statePath: path.join(tmp, "j.json") });
+  const { jobId } = await mgr.startRemoteJob(spark, { name: "install agent", script: "x", kind: "install-agent" });
+  mgr.setExpectAgentConnect(jobId);
+  const job = await mgr.pollRemoteJob(spark, jobId);
+  assert.equal(job.status, "running", "must stay running until the agent connects");
+});
+
+test("install-agent hello gate: agentConnected completes the pending job", async () => {
+  const exec = fakeExec([
+    "LAUNCHED 1",
+    "__AGENT_UNIT__user\n__ALIVE:no\n__SPARKDASH_EXIT:0", // script finished
+  ]);
+  let terminal = null;
+  const mgr = new RemoteJobManager({
+    exec, now: () => 5, statePath: path.join(tmp, "j.json"),
+    onJobTerminal: (j) => (terminal = j.jobId),
+  });
+  const { jobId } = await mgr.startRemoteJob(spark, { name: "install agent", script: "x", kind: "install-agent" });
+  mgr.setExpectAgentConnect(jobId);
+  await mgr.pollRemoteJob(spark, jobId); // stays running
+  mgr.agentConnected("spark-1"); // the WS hello lands
+  const done = mgr.getJob(jobId);
+  assert.equal(done.status, "completed");
+  assert.equal(done.exitCode, 0);
+  assert.match(done.logTail, /hello verified/);
+  assert.equal(terminal, jobId);
+});
+
+test("install-agent hello gate: failed script exit still terminalizes failed", async () => {
+  const exec = fakeExec([
+    "LAUNCHED 1",
+    "__AGENT_UNIT__none\n__ALIVE:no\n__SPARKDASH_EXIT:4",
+  ]);
+  const mgr = new RemoteJobManager({ exec, now: () => 1, statePath: path.join(tmp, "j.json") });
+  const { jobId } = await mgr.startRemoteJob(spark, { name: "install agent", script: "x", kind: "install-agent" });
+  mgr.setExpectAgentConnect(jobId);
+  const job = await mgr.pollRemoteJob(spark, jobId);
+  assert.equal(job.status, "failed");
+  assert.equal(job.exitCode, 4);
+  assert.ok(!job.expectAgentConnect, "gate cleared on terminal transition");
+});
+
+test("failStaleHelloJobs fails a hello-gated job past its deadline", async () => {
+  const exec = fakeExec(["LAUNCHED 1"]);
+  const mgr = new RemoteJobManager({ exec, now: () => 1, statePath: path.join(tmp, "j.json") });
+  const { jobId } = await mgr.startRemoteJob(spark, { name: "install agent", script: "x", kind: "install-agent" });
+  mgr.setExpectAgentConnect(jobId);
+  mgr.failStaleHelloJobs(61_000); // startedAt 1, 60 s timeout
+  const job = mgr.getJob(jobId);
+  assert.equal(job.status, "failed");
+  assert.match(job.lastError, /did not connect within 60s/);
+});

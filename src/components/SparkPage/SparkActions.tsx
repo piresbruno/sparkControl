@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { SparkSnapshot } from "../../api/types";
-import { shutdownSpark, wakeSpark, startJob } from "../../api/client";
+import { shutdownSpark, wakeSpark, startJob, getJob } from "../../api/client";
 import { ConfirmShutdownDialog } from "../ConfirmShutdownDialog";
 import { openHermesUpdateDialog } from "../../hooks/useHermesUpdateDialog";
 import { EditIcon, PowerOffIcon, PowerOnIcon, RotateIcon } from "../ui/icons";
@@ -40,10 +40,29 @@ export function SparkActions({ spark, onEdit, className }: SparkActionsProps) {
 
   async function handleInstallAgent() {
     setAgentBusy(true);
-    setAgentMsg(null);
+    setAgentMsg({ text: "Installing…", tone: "ok" });
     try {
-      await startJob({ kind: "install-agent", sparkId: spark.id });
-      setAgentMsg({ text: "Agent install queued — watch the Jobs strip on this node's Models channel", tone: "ok" });
+      const { jobId } = await startJob({ kind: "install-agent", sparkId: spark.id });
+      // The server completes the job only after the agent's first hello —
+      // poll until a terminal state (90 s cap; the WS snapshot still flips
+      // the chip when a slow install eventually connects).
+      const deadline = Date.now() + 90_000;
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const job = await getJob(jobId);
+        if (job.status === "completed") {
+          setAgentMsg({ text: "Agent connected", tone: "ok" });
+          break;
+        }
+        if (job.status !== "running") {
+          setAgentMsg({ text: job.lastError || `Install ${job.status}`, tone: "err" });
+          break;
+        }
+        if (Date.now() > deadline) {
+          setAgentMsg({ text: "Install still running — check the agent status chip", tone: "ok" });
+          break;
+        }
+      }
     } catch (err: unknown) {
       setAgentMsg({ text: err instanceof Error ? err.message : "Install failed", tone: "err" });
     } finally {
@@ -168,20 +187,38 @@ export function SparkActions({ spark, onEdit, className }: SparkActionsProps) {
             Wake
           </button>
         )}
-        {spark.agentEnabled && spark.transport !== "agent" && (
-          <button
-            type="button"
-            onClick={() => void handleInstallAgent()}
-            disabled={agentBusy || !online}
-            title="Bootstrap the Spark Command Agent on this node over SSH (Node runtime → config → systemd → wait for first hello)"
-            className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[11px] transition-colors disabled:opacity-50 ${
-              agentMsg?.tone === "err"
-                ? "border-danger/40 text-danger"
-                : "border-border bg-surface-elevated text-muted hover:bg-accent/15 hover:text-accent"
-            }`}
+        {spark.transport === "agent" ? (
+          <span
+            className="chip chip--live"
+            title="sparkdash agent connected — metrics stream over WebSocket"
           >
-            {agentBusy ? "Installing…" : "Install agent"}
-          </button>
+            Agent v{spark.agentVersion ?? "?"}
+          </span>
+        ) : spark.agentEnabled ? (
+          <>
+            <span
+              className="chip chip--warn"
+              title="Enabled but not connected — metrics via SSH fallback"
+            >
+              Agent offline
+            </span>
+            <button
+              type="button"
+              onClick={() => void handleInstallAgent()}
+              disabled={agentBusy || !online}
+              title="Bootstrap the Spark Command Agent on this node over SSH (Node runtime → config → systemd → wait for first hello)"
+              className="flex items-center gap-1.5 rounded-md border border-border bg-surface-elevated px-3 py-1.5 text-[11px] text-muted transition-colors hover:bg-accent/15 hover:text-accent disabled:opacity-50"
+            >
+              {agentBusy ? "Installing…" : "Install agent"}
+            </button>
+          </>
+        ) : (
+          <span
+            className="chip"
+            title="Enable the Spark Command Agent in Edit Spark to bootstrap it"
+          >
+            Agent off
+          </span>
         )}
         {agentMsg && (
           <span className="max-w-[16rem] truncate text-[11px] text-muted" title={agentMsg.text}>

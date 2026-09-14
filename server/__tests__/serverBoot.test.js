@@ -251,14 +251,42 @@ test("install-agent always uses SSH transport (head included)", async () => {
     assert.equal(r.status, 202, `dispatch ${r.status} ${JSON.stringify(dispatch)}`);
     const { jobId } = dispatch;
 
+    // Hello gate: the stubbed script exits 0 — that ALONE must not complete
+    // the install-agent job (the old bug: "completed" while the agent never
+    // connected). It stays running until a real agent hello lands.
+    for (let i = 0; i < 4; i++) {
+      await new Promise((r2) => setTimeout(r2, 250));
+      const job = await (await fetch(`${BASE}/api/jobs/${jobId}`)).json();
+      assert.equal(job.status, "running", `poll ${i}: ${JSON.stringify(job.status)}`);
+    }
+
+    // A real agent hello over /agent-ws completes the job AND flips transport.
+    const { default: WebSocket } = await import("ws");
+    const { ensureAgentToken } = await import("../settings.js");
+    const ws = new WebSocket(`ws://127.0.0.1:5830/agent-ws`);
+    await new Promise((resolve, reject) => {
+      ws.on("open", () => {
+        ws.send(JSON.stringify({
+          type: "hello", sparkId: "cov-spark", token: ensureAgentToken(),
+          proto: 1, agentVersion: "9.9.9-boot-test",
+        }));
+        resolve();
+      });
+      ws.on("error", reject);
+      setTimeout(() => reject(new Error("agent-ws open timeout")), 3000);
+    });
     let job = null;
-    for (let i = 0; i < 30; i++) {
-      await new Promise((r2) => setTimeout(r2, 500));
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r2) => setTimeout(r2, 250));
       job = await (await fetch(`${BASE}/api/jobs/${jobId}`)).json();
       if (job.status !== "running") break;
     }
-    assert.equal(job.status, "completed", `status ${job.status} err ${job.error}`);
-    assert.equal(job.exitCode, 0);
+    assert.equal(job.status, "completed", `after hello: ${JSON.stringify(job)}`);
+    assert.match(job.logTail, /hello verified/);
+    const ag = await (await fetch(`${BASE}/api/sparks/cov-spark/agent`)).json();
+    assert.equal(ag.transport, "agent");
+    assert.equal(ag.agentVersion, "9.9.9-boot-test");
+    ws.close();
     // No in-process (sh -c) execution: every call must have gone to ssh.
     assert.ok(calls.length >= 4, `expected chunked ssh calls, got ${calls.length}`);
     // The bootstrap script itself landed via the launch command (sshExec),

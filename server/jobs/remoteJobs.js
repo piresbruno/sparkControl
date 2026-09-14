@@ -260,7 +260,15 @@ export class RemoteJobManager {
     const parsed = parsePollOutput(out);
     job.logTail = parsed.logTail;
     if (parsed.status !== "running" && job.status === "running") {
+      if (job.expectAgentConnect && parsed.status === "completed") {
+        // Bootstrap script succeeded — the job is only "done" once the
+        // agent's hello lands (agentConnected) or failStaleHelloJobs times
+        // it out. Exit 0 alone does NOT mean the agent runs.
+        this._persist();
+        return job;
+      }
       // Terminal transition.
+      delete job.expectAgentConnect;
       job.status = parsed.status;
       job.exitCode = parsed.exitCode;
       job.endedAt = this._now();
@@ -314,7 +322,7 @@ export class RemoteJobManager {
       if (job.expectAgentConnect && job.status === "running" && now - job.startedAt > timeoutMs) {
         delete job.expectAgentConnect;
         job.status = "failed";
-        job.error = "agent did not connect within 60s — check the journal: systemctl --user status spark-command-agent (user unit) or journalctl -u spark-command-agent (system unit)";
+        job.lastError = "agent did not connect within 60s — check the journal: systemctl --user status spark-command-agent (user unit) or journalctl -u spark-command-agent (system unit)";
         job.endedAt = this._now();
         this._persist();
         this._notifyTerminal(job);
