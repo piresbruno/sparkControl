@@ -1,6 +1,6 @@
 /**
  * Serving lifecycle (start/stop/status) for the console Serving channel.
- * Status polls every 5 s; job polling lives in ScModels.
+ * Status polls every 5 s; the Serve script panel lives in ScServing.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { servingStatus, servingStop } from "../../../api/client";

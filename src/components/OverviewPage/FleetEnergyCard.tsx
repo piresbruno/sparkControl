@@ -17,7 +17,13 @@ function number(value: number | null, digits = 2): string {
  * (404) or failing, the card stays hidden instead of leaving an empty shell on
  * the Overview, and the next poll retries.
  */
-export function FleetEnergyCard({ nodeCount }: { nodeCount: number }) {
+export function FleetEnergyCard({
+  nodeCount,
+  nodeNames = {},
+}: {
+  nodeCount: number;
+  nodeNames?: Record<string, string>;
+}) {
   const [data, setData] = useState<FleetEnergy | null>(null);
 
   useEffect(() => {
@@ -50,6 +56,16 @@ export function FleetEnergyCard({ nodeCount }: { nodeCount: number }) {
       : data.energy24hKwh == null
         ? "Warming up — no complete energy interval recorded yet."
         : null;
+  const nodeRows = Object.entries(data.nodeEnergy24hKwh ?? {})
+    .filter((entry): entry is [string, number] => entry[1] != null)
+    .sort((a, b) => b[1] - a[1]);
+  const nodeMaxKwh = Math.max(1e-9, ...nodeRows.map(([, kwh]) => kwh));
+  const lastNonNullBar = (() => {
+    for (let i = data.hourlyWatts24h.length - 1; i >= 0; i--) {
+      if (data.hourlyWatts24h[i] != null) return i;
+    }
+    return -1;
+  })();
 
   return (
     <section className="panel p-4" aria-labelledby="fleet-energy-title">
@@ -84,28 +100,58 @@ export function FleetEnergyCard({ nodeCount }: { nodeCount: number }) {
           <div className="text-[10px] text-muted">31 days</div>
           <strong className="font-tabular text-sm">{number(data.energy31dKwh)} kWh</strong>
         </div>
-        <div>
+        <div title="Wh per output token over the last 24 hours">
           <div className="text-[10px] text-muted">Efficiency</div>
           <strong className="font-tabular text-sm">
             {number(data.whPerOutputToken24h, 4)} Wh/token
           </strong>
         </div>
       </div>
-      <div
-        className="mt-3 flex h-12 items-end gap-px"
-        aria-label="Hourly estimated watts for the last 24 hours, with gaps shown empty"
-      >
-        {data.hourlyWatts24h.map((watts, index, values) => {
-          const max = Math.max(1, ...values.filter((value): value is number => value != null));
-          return (
-            <span
-              key={index}
-              className="min-w-0 flex-1 bg-accent/60"
-              style={{ height: watts == null ? 0 : `${Math.max(4, (watts / max) * 100)}%` }}
-              title={watts == null ? "No complete coverage" : `${watts.toFixed(0)} W`}
-            />
-          );
-        })}
+      {nodeRows.length > 0 && (
+        <div className="mt-3">
+          <div className="text-[10px] uppercase tracking-wide text-muted">Last 24h by node</div>
+          <div className="mt-1 space-y-1">
+            {nodeRows.map(([id, kwh]) => (
+              <div key={id} className="flex items-center gap-2 text-xs">
+                <span className="w-28 shrink-0 truncate text-muted" title={nodeNames[id] ?? id}>
+                  {nodeNames[id] ?? id}
+                </span>
+                <span className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-border">
+                  <span
+                    className="block h-full rounded-full bg-accent"
+                    style={{ width: `${Math.max(3, ((kwh ?? 0) / nodeMaxKwh) * 100)}%` }}
+                  />
+                </span>
+                <span className="w-20 text-right font-tabular" title={`${nodeNames[id] ?? id}: 24h estimated energy`}>
+                  {(kwh ?? 0).toFixed(2)} kWh
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="mt-3">
+        <div
+          className="flex h-16 items-end gap-px"
+          aria-label="Hourly estimated watts for the last 24 hours, with gaps shown empty"
+        >
+          {data.hourlyWatts24h.map((watts, index, values) => {
+            const max = Math.max(1, ...values.filter((value): value is number => value != null));
+            return (
+              <span
+                key={index}
+                className={`min-w-0 flex-1 ${index === lastNonNullBar ? "bg-accent" : "bg-accent/60"}`}
+                style={{ height: watts == null ? 0 : `${Math.max(4, (watts / max) * 100)}%` }}
+                title={watts == null ? "No complete coverage" : `${watts.toFixed(0)} W`}
+              />
+            );
+          })}
+        </div>
+        <div className="mt-1 flex justify-between font-tabular text-[10px] text-muted" aria-hidden="true">
+          <span>-24h</span>
+          <span>-12h</span>
+          <span>now</span>
+        </div>
       </div>
     </section>
   );

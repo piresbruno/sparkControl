@@ -1,21 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
-import type { ModelctlStatus, SparkConfig, SparkSnapshot, MctlJob } from "../../api/types";
+import type { ModelctlStatus, SparkConfig, SparkSnapshot } from "../../api/types";
 import { isLlmMonitoringEnabled, resolveSparkRole } from "../../api/sparkRole";
 import {
   addLlmPort,
   removeLlmPort,
   fetchSparks,
-  fetchModelctlRelease,
   modelctlStatus as fetchModelctlStatus,
-  listJobs,
-  cancelJob,
 } from "../../api/client";
-import { versionIsNewer } from "../NasPage/nasUtils";
 import { SparkActions } from "./SparkActions";
 import { ScChHead, ScModule } from "./console/ScKit";
 import { ScResources } from "./console/ScResources";
 import { ScServing } from "./console/ScServing";
-import { ScModels } from "./console/ScModels";
 import { ScTests } from "./console/ScTests";
 import { fmtUptimeShort } from "./console/consoleUtils";
 import "../../styles/console.css";
@@ -28,11 +23,8 @@ interface SparkPageProps {
   onNavigate?: (id: string | null) => void;
 }
 
-const JOBS_POLL_ACTIVE_MS = 1000;
-const JOBS_POLL_IDLE_MS = 15000;
-
 /** Channel anchors, in document order. */
-const CHANNEL_ANCHORS = ["sec-resources", "sec-serving", "sec-models", "sec-tests", "sec-node"] as const;
+const CHANNEL_ANCHORS = ["sec-resources", "sec-serving", "sec-tests", "sec-node"] as const;
 
 /**
  * Scroll-spy: which channel header is above the viewport line, rAF-throttled.
@@ -100,11 +92,6 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
   const [allCfg, setAllCfg] = useState<SparkConfig[] | null>(null);
   const cfg = allCfg?.find((s) => s.id === spark.id) ?? null;
   const [modelctl, setModelctl] = useState<ModelctlStatus | null>(null);
-  // Latest modelctl GitHub release tag (repo builds releases; server 15-min cache).
-  const [mctlRelease, setMctlRelease] = useState<string | null>(null);
-  const [jobs, setJobs] = useState<MctlJob[]>([]);
-  // Increments when the Serving CTA asks Models to scroll+flash the launch panel.
-  const [launchSignal, setLaunchSignal] = useState(0);
 
   const llmOn = isLlmMonitoringEnabled(spark);
   const role = resolveSparkRole(spark);
@@ -129,7 +116,7 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
 
   // modelctl version (once per node + explicit refresh after install).
   const refreshModelctl = useCallback(() => {
-    return fetchModelctlStatus(spark.id, true)
+    return fetchModelctlStatus(spark.id)
       .then((st) => {
         setModelctl(st);
         if (st.installed) setCfgInstalled();
@@ -153,51 +140,8 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
   useEffect(() => {
     if (!modelctlEnabled || !spark.online) return;
     void refreshModelctl();
-    let dead = false;
-    fetchModelctlRelease()
-      .then((r) => !dead && setMctlRelease(r.latest))
-      .catch(() => !dead && setMctlRelease(null));
-    return () => {
-      dead = true;
-    };
   }, [modelctlEnabled, spark.online, refreshModelctl]);
 
-  // Jobs poll: 1s while anything runs on this node, 15s otherwise.
-  useEffect(() => {
-    if (!modelctlEnabled || !spark.online) {
-      setJobs([]);
-      return;
-    }
-    let dead = false;
-    let timer = 0;
-    const tick = () => {
-      listJobs()
-        .then(({ jobs: all }) => {
-          if (dead) return;
-          const mine = all.filter((j) => j.sparkId === spark.id);
-          setJobs(mine);
-          window.clearTimeout(timer);
-          const hasRunning = mine.some((j) => j.status === "running");
-          timer = window.setTimeout(tick, hasRunning ? JOBS_POLL_ACTIVE_MS : JOBS_POLL_IDLE_MS);
-        })
-        .catch(() => {
-          if (!dead) timer = window.setTimeout(tick, JOBS_POLL_IDLE_MS);
-        });
-    };
-    tick();
-    return () => {
-      dead = true;
-      window.clearTimeout(timer);
-    };
-  }, [modelctlEnabled, spark.online, spark.id]);
-
-  const handleCancelJob = useCallback(async (jobId: string) => {
-    try {
-      await cancelJob(jobId);
-    } catch {
-      /* strip refresh picks up the new state */
-    }
-  }, []);
 
   const handleAddPort = useCallback(
     async (port: number) => {
@@ -226,16 +170,10 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
   );
 
 
-  // "modelctl up" gate: a newer release tag exists than what the node runs.
-  // False until both sides are known — no CTA on a failed/absent probe.
-  const mctlUpdateAvailable =
-    modelctlEnabled && versionIsNewer(mctlRelease, modelctl?.version ?? null);
-  const jobsRunning = jobs.some((j) => j.status === "running");
   const anyEngine = llmOn && (metrics.llm ?? []).some((l) => l?.available);
   const tailscaleOn = Boolean(spark.tailscaleMonitoring);
   const primaryPort = llmPorts[0] ?? null;
   const primaryLlm = metrics.llm?.[0] ?? null;
-  const servingModelIds = llmPorts.map((_, i) => metrics.llm?.[i]?.modelId ?? null);
   const headSparkName =
     spark.workerHeadId != null
       ? allCfg == null
@@ -306,16 +244,8 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
             active={activeChannel === "sec-serving"}
           />
           <RailChannel
-            target="sec-models"
-            num="03"
-            short="Mdl"
-            title="Models"
-            led={jobsRunning ? "live" : modelctlEnabled ? "success" : "off"}
-            active={activeChannel === "sec-models"}
-          />
-          <RailChannel
             target="sec-tests"
-            num="04"
+            num="03"
             short="Tst"
             title="Tests"
             led="off"
@@ -323,7 +253,7 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
           />
           <RailChannel
             target="sec-node"
-            num="05"
+            num="04"
             short="Nd"
             title="Node"
             led={spark.online ? "accent" : "off"}
@@ -361,7 +291,7 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
             note={
               role === "worker"
                 ? "workers serve through their head"
-                : "manage models in CH·03 below"
+                : "serve script below · run tests in CH·03"
             }
           />
           <ScServing
@@ -372,45 +302,15 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
             primaryPort={primaryPort}
             onAddPort={handleAddPort}
             onRemovePort={handleRemovePort}
-            onServeNew={() => setLaunchSignal((n) => n + 1)}
             workerHeadId={spark.workerHeadId ?? null}
             headSparkName={headSparkName}
             onNavigate={onNavigate}
           />
 
-          {/* ── CH·03 Models ────────────────────────────────────────── */}
-          <div id="sec-models" />
-          <ScChHead
-            code="CH·03"
-            title="Models"
-            note={modelctlEnabled ? "select a model to manage it on this node" : undefined}
-          />
-          <ScModels
-            spark={spark}
-            modelctlEnabled={modelctlEnabled}
-            modelctl={modelctl}
-            modelctlUpdateAvailable={mctlUpdateAvailable}
-            modelctlLatest={mctlRelease}
-            onModelctlInstalled={refreshModelctl}
-            jobs={jobs}
-            onCancelJob={handleCancelJob}
-            servingModelIds={servingModelIds}
-            llmPorts={llmPorts}
-            primaryPort={primaryPort}
-            launchSignal={launchSignal}
-            storageFreeGb={(() => {
-              // Collectors report storage available in MB (SystemCollector statfs/df paths).
-              const free = metrics.storage?.filter((s) => !s.disabled).map((s) => s.available ?? 0);
-              // Guard the FILTERED list — all devices disabled => empty spread => -Infinity.
-              return free && free.length > 0 ? Math.round(Math.max(...free) / 1024) : null;
-            })()}
-            onNavigate={onNavigate}
-          />
-
-          {/* ── CH·04 Tests ─────────────────────────────────────────── */}
+          {/* ── CH·03 Tests ─────────────────────────────────────────── */}
           <div id="sec-tests" />
           <ScChHead
-            code="CH·04"
+            code="CH·03"
             title="Tests"
             note="run against the model in CH·02 · tagged so Analysis separates self-runs"
           />
@@ -422,10 +322,10 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
             llmAvailable={Boolean(primaryLlm?.available)}
           />
 
-          {/* ── CH·05 Node — demoted identity plate ────────────────── */}
+          {/* ── CH·04 Node — demoted identity plate ────────────────── */}
           <div id="sec-node" />
           <ScChHead
-            code="CH·05"
+            code="CH·04"
             title="Node"
             note="identity plate · power keys top-right"
           />

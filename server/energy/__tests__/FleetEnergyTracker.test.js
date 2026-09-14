@@ -183,6 +183,8 @@ const APPROVED_RESPONSE_FIELDS = [
   "coverage31dMs",
   "nodeCoverage24hMs",
   "nodeCoverage31dMs",
+  "nodeEnergy24hKwh",
+  "nodeEnergy31dKwh",
   "hourlyWatts24h",
 ];
 
@@ -220,6 +222,12 @@ function assertFleetEnergyResponseContract(response) {
       Object.values(response[field]).every((value) => Number.isFinite(value)),
       true
     );
+  }
+  for (const field of ["nodeEnergy24hKwh", "nodeEnergy31dKwh"]) {
+    assert.deepEqual(Object.keys(response[field]), CANONICAL_NODE_IDS);
+    for (const value of Object.values(response[field])) {
+      assertNullableFiniteNumber(value);
+    }
   }
   assert.equal(response.hourlyWatts24h.length, 24);
   response.hourlyWatts24h.forEach(assertNullableFiniteNumber);
@@ -1649,4 +1657,39 @@ test("bucket pruning remains correct after a backward clock inserts an older min
   tracker.flush();
   const saved = JSON.parse(fs.readFileSync(filePath, "utf8"));
   assert.deepEqual(saved.buckets.map((bucket) => bucket.minuteStartMs), [30 * MINUTE_MS]);
+});
+
+test("snapshot exposes per-node kWh with null for zero-coverage nodes", () => {
+  const now = Date.UTC(2026, 7, 23, 12, 34, 0);
+  const tracker = new FleetEnergyTracker({ ...noTimerOptions(), now: () => now });
+  // 240 W (the estimator clamp) sampled every 10 s over 2 minutes →
+  // 240 W × 120 s = 8 Wh = 0.008 kWh per covered node.
+  const start = now - 2 * HOUR_MS;
+  for (let t = 0; t <= 120_000; t += 10_000) {
+    tracker.record([nodeSnapshot("node-a", { watts: 240 })], start + t);
+  }
+
+  const snapshot = tracker.snapshot(now);
+  assert.deepEqual(Object.keys(snapshot.nodeEnergy24hKwh), [...CANONICAL_NODE_IDS]);
+  assert.equal(snapshot.nodeEnergy24hKwh["node-a"], 0.008);
+  assert.equal(snapshot.nodeEnergy31dKwh["node-a"], 0.008);
+  assert.equal(snapshot.nodeEnergy24hKwh["node-b"], null);
+  assert.equal(snapshot.nodeEnergy24hKwh["node-c"], null);
+  assert.equal(snapshot.nodeEnergy24hKwh["node-d"], null);
+});
+
+test("membership changes null every per-node kWh estimate", () => {
+  const now = Date.UTC(2026, 7, 23, 12, 34, 0);
+  const tracker = new FleetEnergyTracker({ ...noTimerOptions(), now: () => now });
+  for (let t = 0; t <= 30_000; t += 10_000) {
+    tracker.record(fleetSnapshots(240), now - 60_000 + t);
+  }
+  assert.equal(tracker.snapshot(now).nodeEnergy24hKwh["node-a"], 0.002);
+
+  assert.equal(tracker.invalidateMembership([...CANONICAL_NODE_IDS, "node-e"]), true);
+  const changed = tracker.snapshot(now);
+  for (const id of CANONICAL_NODE_IDS) {
+    assert.equal(changed.nodeEnergy24hKwh[id], null);
+    assert.equal(changed.nodeEnergy31dKwh[id], null);
+  }
 });

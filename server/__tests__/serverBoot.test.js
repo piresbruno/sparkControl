@@ -14,6 +14,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "boot-cov-"));
 const fakeHome = path.join(tmp, "home");
 fs.mkdirSync(fakeHome, { recursive: true });
 process.env.HOME = fakeHome;
+process.env.SPARKDASH_SERVING_CONFIG_DIR = path.join(tmp, "serving");
 for (const [k, v] of Object.entries({
   SETTINGS_JSON_PATH: "settings.json",
   SPARKS_SECRETS_PATH: "secrets.json",
@@ -22,6 +23,8 @@ for (const [k, v] of Object.entries({
   LLM_DAILY_JSON_PATH: "llm-daily.json",
   TRACES_DB_PATH: "traces.sqlite",
   SPARKDASH_JOBS_STATE_PATH: "jobs.json",
+  // path-scripts.json lives next to the serving scripts.
+  SPARKDASH_PATH_SCRIPTS_PATH: path.join(tmp, "serving", "path-scripts.json"),
 })) process.env[k] = path.join(tmp, v);
 process.env.PORT = "5830";
 
@@ -251,14 +254,42 @@ test("install-agent always uses SSH transport (head included)", async () => {
     assert.equal(r.status, 202, `dispatch ${r.status} ${JSON.stringify(dispatch)}`);
     const { jobId } = dispatch;
 
+    // Hello gate: the stubbed script exits 0 — that ALONE must not complete
+    // the install-agent job (the old bug: "completed" while the agent never
+    // connected). It stays running until a real agent hello lands.
+    for (let i = 0; i < 4; i++) {
+      await new Promise((r2) => setTimeout(r2, 250));
+      const job = await (await fetch(`${BASE}/api/jobs/${jobId}`)).json();
+      assert.equal(job.status, "running", `poll ${i}: ${JSON.stringify(job.status)}`);
+    }
+
+    // A real agent hello over /agent-ws completes the job AND flips transport.
+    const { default: WebSocket } = await import("ws");
+    const { ensureAgentToken } = await import("../settings.js");
+    const ws = new WebSocket(`ws://127.0.0.1:5830/agent-ws`);
+    await new Promise((resolve, reject) => {
+      ws.on("open", () => {
+        ws.send(JSON.stringify({
+          type: "hello", sparkId: "cov-spark", token: ensureAgentToken(),
+          proto: 1, agentVersion: "9.9.9-boot-test",
+        }));
+        resolve();
+      });
+      ws.on("error", reject);
+      setTimeout(() => reject(new Error("agent-ws open timeout")), 3000);
+    });
     let job = null;
-    for (let i = 0; i < 30; i++) {
-      await new Promise((r2) => setTimeout(r2, 500));
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r2) => setTimeout(r2, 250));
       job = await (await fetch(`${BASE}/api/jobs/${jobId}`)).json();
       if (job.status !== "running") break;
     }
-    assert.equal(job.status, "completed", `status ${job.status} err ${job.error}`);
-    assert.equal(job.exitCode, 0);
+    assert.equal(job.status, "completed", `after hello: ${JSON.stringify(job)}`);
+    assert.match(job.logTail, /hello verified/);
+    const ag = await (await fetch(`${BASE}/api/sparks/cov-spark/agent`)).json();
+    assert.equal(ag.transport, "agent");
+    assert.equal(ag.agentVersion, "9.9.9-boot-test");
+    ws.close();
     // No in-process (sh -c) execution: every call must have gone to ssh.
     assert.ok(calls.length >= 4, `expected chunked ssh calls, got ${calls.length}`);
     // The bootstrap script itself landed via the launch command (sshExec),
@@ -277,4 +308,72 @@ test("agent status + comfy cancel + shutdown-all routes", async () => {
   assert.ok([200, 400, 404, 502].includes(cc.status), `comfy-cancel ${cc.status} ${JSON.stringify(cc.body)}`);
   const sa = await j(await fetch(`${BASE}/api/sparks/shutdown-all`, { method: "POST" }));
   assert.ok([200, 502].includes(sa.status));
+});
+
+test("serving start by scriptPath: validates before persisting, launches over ssh", async () => {
+  const { _setExecFile } = await import("../collectors/ssh.js");
+  const mapPath = process.env.SPARKDASH_PATH_SCRIPTS_PATH;
+  const calls = [];
+  _setExecFile((file, args, opts, cb) => {
+    const cmd = args.join(" ");
+    calls.push(cmd);
+    if (cmd.includes("__NO_SCRIPT__")) return cb(null, "__START_OK__", ""); // path-run start
+    if (cmd.includes("__NOT_RUNNING__")) return cb(null, "__STOPPED__", ""); // stop
+    if (cmd.includes("kill -0")) return cb(null, "running:1700000000", ""); // status probe
+    return cb(null, "ok", "");
+  });
+  try {
+    // Invalid input is a 400 and must NOT touch path-scripts.json — an
+    // abandoned path id would otherwise be probed on every status poll.
+    for (const body of [
+      { scriptPath: "relative/start.sh", port: 8899 },
+      { scriptPath: "/opt/start.sh", port: 70000 },
+    ]) {
+      const r = await fetch(`${BASE}/api/serving/start`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sparkId: "cov-remote", ...body }),
+      });
+      assert.equal(r.status, 400, `${JSON.stringify(body)} → ${r.status}`);
+      assert.ok(!fs.existsSync(mapPath), `rejected start must not persist a path id: ${fs.existsSync(mapPath) ? fs.readFileSync(mapPath, "utf8") : "(none)"}`);
+    }
+
+    // Valid path-run start: 200, derived id returned, persisted, launched over
+    // ssh with the node-local file check (no base64 script upload).
+    const r = await fetch(`${BASE}/api/serving/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sparkId: "cov-remote", scriptPath: "/opt/start.sh", port: 8899 }),
+    });
+    const out = await r.json();
+    assert.equal(r.status, 200, JSON.stringify(out));
+    assert.match(out.scriptId, /^start-[0-9a-f]{6}$/);
+    assert.equal(JSON.parse(fs.readFileSync(mapPath, "utf8"))[out.scriptId], "/opt/start.sh");
+    // The serving start runs its command directly over ssh (no job runner),
+    // so the node-local guard and the bash <path> invocation are on the wire.
+    const startCall = calls.find((c) => c.includes("__NO_SCRIPT__"));
+    assert.ok(startCall, "path-run launch command reached ssh");
+    // The command goes to ssh as one remote argv — match it verbatim.
+    // (shellQuote: "" → '', digits pass through.)
+    // (shellQuote passes /opt/start.sh through: every char is in its safe set.)
+    assert.match(startCall, /\[ -f \/opt\/start\.sh \] \|\| \{ echo "__NO_SCRIPT__"; exit 0; \}/);
+    assert.match(startCall, /setsid nohup env MODEL_NAME='' PORT=8899 EXTRA_ARGS='' bash \/opt\/start\.sh > ~\/.sparkdash\/runs\/start-[0-9a-f]{6}\.log 2>&1 &/);
+    // Library starts upload the body; path runs must not touch the serving dir.
+    assert.ok(!startCall.includes("~/.sparkdash/serving"), "no library-style script upload");
+    // stop / log accept the path id (resolved via the persisted map).
+    const stop = await fetch(`${BASE}/api/serving/stop`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sparkId: "cov-remote", scriptId: out.scriptId }),
+    });
+    assert.equal(stop.status, 200, JSON.stringify(await stop.json()));
+    const unknown = await fetch(`${BASE}/api/serving/stop`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sparkId: "cov-remote", scriptId: "nope-abcdef" }),
+    });
+    assert.equal(unknown.status, 400, "an id in neither namespace is rejected");
+  } finally {
+    _setExecFile(null);
+  }
 });

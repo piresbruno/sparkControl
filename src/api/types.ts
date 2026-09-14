@@ -602,6 +602,9 @@ export interface FleetEnergy {
   coverage24hMs: number;
   coverage31dMs: number;
   nodeCoverage24hMs: Record<string, number>;
+  /** rev3: per-node kWh estimates; null when the node has no coverage or the fleet membership changed. */
+  nodeEnergy24hKwh: Record<string, number | null>;
+  nodeEnergy31dKwh: Record<string, number | null>;
   nodeCoverage31dMs: Record<string, number>;
   hourlyWatts24h: Array<number | null>;
 }
@@ -973,6 +976,8 @@ export interface TraceEntry {
   clientIp: string | null;
   clientUa: string | null;
   clientId: string | null;
+  /** rev 3: reverse-DNS hostname of clientIp; null when PTR fails. */
+  clientHost: string | null;
   /** Tool names parsed from the request body; null when none/absent. */
   toolsReq: string[] | null;
   /** Aggregated tool usage from the response stream. */
@@ -1071,6 +1076,7 @@ export interface LlmClientEntry {
   clientId: string;
   clientIp: string | null;
   clientUa: string | null;
+  clientHost: string | null;
   label: string | null;
   inflightCount: number;
   inflight: LlmClientInflight[];

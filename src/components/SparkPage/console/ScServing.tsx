@@ -7,7 +7,8 @@
  * .readouts) and src/styles/console.css.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { LlmMetrics, ServingStatus, SparkSnapshot } from "../../../api/types";
+import type { LlmMetrics, ServingScript, ServingStatus, SparkSnapshot } from "../../../api/types";
+import { listServingScripts, servingLog, servingStart } from "../../../api/client";
 import { useMetricsHistoryTail } from "../../../hooks/metricsStore";
 import {
   ScChip,
@@ -17,6 +18,7 @@ import {
   ScLed,
   ScModule,
   ScSeg,
+  ScSubpanel,
 } from "./ScKit";
 import {
   ACTIVITY_LABEL,
@@ -27,8 +29,10 @@ import {
   fmtSeconds,
   fmtTps,
   shortModelName,
+  tokenizeLogLine,
   VLLM_METRIC_INFO,
 } from "./consoleUtils";
+import { LlmDailyChart } from "../LlmDailyChart";
 import { useEngineActivity } from "./useEngineActivity";
 import { servingSince, useServingLifecycle } from "./useServingLifecycle";
 
@@ -50,8 +54,6 @@ interface ScServingProps {
   primaryPort: number | null;
   onAddPort: (port: number) => Promise<void> | void;
   onRemovePort: (port: number) => void;
-  /** Scroll + flash the CH·03 launch panel. */
-  onServeNew: () => void;
   workerHeadId: string | null;
   /** null = head config not resolved yet; string = head spark id (xref target). */
   headSparkName: string | null;
@@ -144,10 +146,11 @@ interface HeroProps {
   llmPorts: number[];
   llm: LlmMetrics | null;
   gpuUsage: number | null;
+  /** Scroll + flash the in-component Serve script panel. */
   lifecycle: ServingLifecycle;
-  onServeNew: () => void;
   onAddPort: (port: number) => Promise<void> | void;
   onRemovePort: (port: number) => void;
+  onOpenLaunch: () => void;
 }
 
 /** Hero bay for one configured LLM port. Owns per-port hooks. */
@@ -160,7 +163,7 @@ function ServingHero({
   llm,
   gpuUsage,
   lifecycle,
-  onServeNew,
+  onOpenLaunch,
   onAddPort,
   onRemovePort,
 }: HeroProps) {
@@ -534,7 +537,7 @@ function ServingHero({
                 {lifecycle.busy ? "Stopping…" : armed ? "Confirm stop — press again" : "■ Stop"}
               </button>
             ) : null}
-            <button type="button" className="key key--primary key--block" onClick={onServeNew}>
+            <button type="button" className="key key--primary key--block" onClick={onOpenLaunch}>
               ▶ Serve new model…
             </button>
             {stopResult ? (
@@ -583,13 +586,127 @@ export function ScServing({
   primaryPort,
   onAddPort,
   onRemovePort,
-  onServeNew,
   headSparkName,
   workerHeadId,
   onNavigate,
 }: ScServingProps) {
   const lifecycle = useServingLifecycle(spark.id, llmOn && role !== "worker");
   const gpuUsage = spark.metrics.gpu?.usage ?? null;
+
+  // ── Serve script (launch config) — renders for every node ─────────────
+  const [launchSignal, setLaunchSignal] = useState(0);
+  const signalLaunch = () => setLaunchSignal((n) => n + 1);
+  const launchRef = useRef<HTMLDivElement | null>(null);
+  const flashTimer = useRef<number | undefined>(undefined);
+  const lastFlash = useRef(0);
+  useEffect(() => {
+    if (!launchSignal || launchSignal === lastFlash.current || !launchRef.current) return;
+    lastFlash.current = launchSignal;
+    launchRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    launchRef.current.classList.add("is-flash");
+    window.clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(
+      () => launchRef.current?.classList.remove("is-flash"),
+      2400
+    );
+    return () => window.clearTimeout(flashTimer.current);
+  }, [launchSignal]);
+
+  const [scripts, setScripts] = useState<ServingScript[] | null>(null);
+  const [scriptsErr, setScriptsErr] = useState<string | null>(null);
+  const [scriptId, setScriptId] = useState("");
+  const [scriptPath, setScriptPath] = useState("");
+  const [modelName, setModelName] = useState("");
+  const [port, setPort] = useState(String(primaryPort ?? spark.llmPort ?? 8888));
+  const [extraArgs, setExtraArgs] = useState("");
+  const [startBusy, setStartBusy] = useState(false);
+  const [startMsg, setStartMsg] = useState<string | null>(null);
+  const [startErr, setStartErr] = useState<string | null>(null);
+  const [activeScriptId, setActiveScriptId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let dead = false;
+    listServingScripts()
+      .then((r) => !dead && setScripts(r.scripts ?? []))
+      .catch((err) => !dead && setScriptsErr(String(err instanceof Error ? err.message : err).slice(0, 300)));
+    return () => {
+      dead = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (primaryPort != null) setPort(String(primaryPort));
+  }, [primaryPort]);
+
+  const handleStart = async () => {
+    const trimmedPath = scriptPath.trim();
+    if (!trimmedPath && !scriptId) {
+      setStartErr("Pick a serve script or set a path");
+      return;
+    }
+    const p = Number(port);
+    if (!Number.isInteger(p) || p < 1 || p > 65535) {
+      setStartErr("Port must be an integer 1–65535.");
+      return;
+    }
+    setStartBusy(true);
+    setStartErr(null);
+    setStartMsg(null);
+    try {
+      const res = await servingStart({
+        sparkId: spark.id,
+        ...(trimmedPath
+          ? { scriptPath: trimmedPath, scriptId: "" }
+          : { scriptId }),
+        modelName: modelName.trim() || undefined,
+        port: p,
+        extraArgs: extraArgs.trim() ? extraArgs.trim() : undefined,
+      });
+      setActiveScriptId(res.scriptId);
+      setStartMsg("start requested — the Serving card will reflect it shortly.");
+    } catch (err) {
+      setStartErr(String(err instanceof Error ? err.message : err).slice(0, 300));
+    } finally {
+      setStartBusy(false);
+    }
+  };
+
+  // ── Serving log tail (5s while a script is active) ─────────────────────
+  const LOG_CAP = 200;
+  const tailId = activeScriptId ?? lifecycle.status?.scriptId ?? null;
+  const [logLines, setLogLines] = useState<string[]>([]);
+  const [logErr, setLogErr] = useState<string | null>(null);
+  const logRef = useRef<HTMLPreElement | null>(null);
+  useEffect(() => {
+    setLogLines([]);
+    setLogErr(null);
+    if (!tailId) return;
+    let dead = false;
+    const tick = () => {
+      servingLog(spark.id, tailId)
+        .then((r) => {
+          if (dead) return;
+          const lines = (r.log ?? "").split("\n");
+          while (lines.length && !lines[lines.length - 1]) lines.pop();
+          setLogLines(lines.slice(-LOG_CAP));
+          setLogErr(null);
+        })
+        .catch((err) => !dead && setLogErr(String(err instanceof Error ? err.message : err).slice(0, 300)));
+    };
+    tick();
+    const id = window.setInterval(tick, 5000);
+    return () => {
+      dead = true;
+      window.clearInterval(id);
+    };
+  }, [tailId, spark.id]);
+
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 60) el.scrollTop = el.scrollHeight;
+  }, [logLines]);
+
   let body: ReactNode;
 
   if (role === "worker") {
@@ -655,7 +772,7 @@ export function ScServing({
             </button>
           </p>
           <div className="bay__keys">
-            <button type="button" className="key key--primary key--block" onClick={onServeNew}>
+            <button type="button" className="key key--primary key--block" onClick={signalLaunch}>
               ▶ Serve new model…
             </button>
           </div>
@@ -676,7 +793,7 @@ export function ScServing({
             llm={spark.metrics.llm?.[i] ?? null}
             gpuUsage={gpuUsage}
             lifecycle={lifecycle}
-            onServeNew={onServeNew}
+            onOpenLaunch={signalLaunch}
             onAddPort={onAddPort}
             onRemovePort={onRemovePort}
           />
@@ -685,5 +802,140 @@ export function ScServing({
     );
   }
 
-  return <>{body}</>;
+  const trimmedPath = scriptPath.trim();
+  return (
+    <>
+      {body}
+      <ScModule label="Serve script">
+        {/* ── Launch config (CH·02 "Serve new model…" targets this) ───── */}
+        <ScSubpanel
+          id="launch-config"
+          title="Serve script"
+          innerRef={launchRef}
+          right={scriptsErr ? <ScChip tone="err">{scriptsErr}</ScChip> : undefined}
+        >
+          {scripts == null && !scriptsErr ? (
+            <p className="empty-note" style={{ margin: 0 }}>
+              loading serve scripts…
+            </p>
+          ) : (
+            <div className="launch-grid">
+              <label className="field">
+                <span className="field__label">Serve script</span>
+                <select
+                  className="select-inline"
+                  value={trimmedPath ? "" : scriptId}
+                  disabled={trimmedPath !== ""}
+                  onChange={(e) => setScriptId(e.target.value)}
+                >
+                  <option value="">— choose —</option>
+                  {(scripts ?? []).map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.id}
+                      {s.description ? ` — ${s.description}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span className="field__label">Port</span>
+                <input
+                  type="number"
+                  className="font-tabular"
+                  min={1}
+                  max={65535}
+                  value={port}
+                  onChange={(e) => setPort(e.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span className="field__label">Model</span>
+                <input
+                  type="text"
+                  placeholder="script default"
+                  value={modelName}
+                  onChange={(e) => setModelName(e.target.value)}
+                />
+              </label>
+              <div className="row" style={{ gap: 6, flexWrap: "nowrap" }}>
+                <button
+                  className="key key--run"
+                  type="button"
+                  disabled={startBusy || (trimmedPath === "" && !scriptId)}
+                  onClick={() => void handleStart()}
+                >
+                  {startBusy ? "starting…" : "▶ Start"}
+                </button>
+              </div>
+              <label className="field" style={{ gridColumn: "1 / -1" }}>
+                <span className="field__label">Script path on node</span>
+                <input
+                  type="text"
+                  placeholder="/home/me/start-vllm.sh — takes precedence over the library script above"
+                  value={scriptPath}
+                  onChange={(e) => setScriptPath(e.target.value)}
+                />
+              </label>
+              <label className="field" style={{ gridColumn: "1 / -1" }}>
+                <span className="field__label">Extra args</span>
+                <input
+                  type="text"
+                  placeholder="--ctx 32768 --mem 0.9"
+                  value={extraArgs}
+                  onChange={(e) => setExtraArgs(e.target.value)}
+                />
+              </label>
+            </div>
+          )}
+          {startMsg ? <span className="saved-note">✓ {startMsg}</span> : null}
+          {startErr ? <ScChip tone="err">{startErr}</ScChip> : null}
+          <p className="bus-hint" style={{ margin: 0 }}>
+            {trimmedPath
+              ? `Runs ${trimmedPath} on ${spark.name} — the file must exist on the node.`
+              : `The script runs on ${spark.name}; port joins the LLM probe list once the engine answers.`}
+          </p>
+        </ScSubpanel>
+
+        {/* ── Serving log tail ──────────────────────────────────────────── */}
+        <ScSubpanel title="Serving log" right={<span className="chip">5s tail</span>}>
+          <div className="logs-head">
+            <span className={`chip${logLines.length ? " chip--live" : ""}`}>
+              <span className="led" aria-hidden="true" />
+              {tailId ? "tail · serving" : "idle"}
+            </span>
+            <span className="logs-head__source">
+              {spark.name}
+              {tailId ? ` · ${tailId}` : " · pick a serve script above"}
+            </span>
+          </div>
+          {logErr ? <ScChip tone="err">{logErr}</ScChip> : null}
+          {logLines.length > 0 ? (
+            <pre className="trace-body__pre" ref={logRef}>
+              {logLines.map((line, i) => (
+                <span key={i}>
+                  {tokenizeLogLine(line).map((tok, j) => (
+                    <span key={j} className={tok.cls ?? undefined}>
+                      {tok.text}
+                    </span>
+                  ))}
+                  {i < logLines.length - 1 ? "\n" : null}
+                </span>
+              ))}
+            </pre>
+          ) : !logErr ? (
+            <p className="empty-note" style={{ margin: 0 }}>
+              {tailId ? "No log output yet." : "Log tail starts when a serve script is selected."}
+            </p>
+          ) : null}
+        </ScSubpanel>
+
+        {/* ── Daily trend (D1) ─────────────────────────────────────────── */}
+        {llmOn && primaryPort != null ? (
+          <ScSubpanel title="Daily trend">
+            <LlmDailyChart sparkId={spark.id} llmPort={primaryPort} />
+          </ScSubpanel>
+        ) : null}
+      </ScModule>
+    </>
+  );
 }

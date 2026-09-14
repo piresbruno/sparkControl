@@ -127,6 +127,7 @@ export function ScResources({
   const gpuTone = worstTone(tempTone, usageTone);
   const smClock = metrics.gpu?.throttle?.smClockMHz ?? null;
   const gpuClockLabel = smClock ? ` · ${(smClock / 1000).toFixed(1)} GHz` : "";
+  const gpuProcs = metrics.gpu?.processes ?? [];
 
   // ── CPU gauge — temp headline, usage bar, draw/tdp + clock foot ────────
   const cpuUsage = metrics.cpu?.usage ?? 0;
@@ -303,6 +304,41 @@ export function ScResources({
         ) : null}
       </ScModule>
 
+      {/* ── GPU processes — top VRAM consumers ─────────────────────────── */}
+      {gpuProcs.length > 0 ? (
+        <ScModule label="GPU processes">
+          <div className="stack" style={{ gap: "var(--space-1)" }}>
+            {gpuProcs.map((p) => (
+              <div key={`${p.pid}:${p.name}`} className="spread" style={{ alignItems: "center" }}>
+                <span className="row" style={{ gap: 6, minWidth: 0 }}>
+                  <span
+                    style={{
+                      fontSize: "var(--fs-12)",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                    title={p.name}
+                  >
+                    {p.name}
+                  </span>
+                  <span className="chip" title="Process id" style={{ fontSize: "var(--fs-10)" }}>
+                    {p.pid}
+                  </span>
+                </span>
+                <span className="row" style={{ gap: 8, alignItems: "center" }}>
+                  <span style={{ width: 64 }} title={`Share of ${vramTotal > 0 ? fmtGB(vramTotal * MB) : "total"} VRAM`}>
+                    <ScSeg pct={vramTotal > 0 ? (p.vramMB / vramTotal) * 100 : 0} tone="accent" />
+                  </span>
+                  <span className="bus-line font-tabular" style={{ minWidth: "4.5rem", textAlign: "right" }}>
+                    {fmtInt(p.vramMB)} MB
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </ScModule>
+      ) : null}
       {/* ── Bus strip: storage · network · tailnet ─────────────────────── */}
       <ScModule label="Bus">
         <div className="bus-strip">

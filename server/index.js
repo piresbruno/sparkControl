@@ -37,6 +37,7 @@ import {
   createFleetEnergyRuntime,
   registerFleetEnergyRoute,
 } from "./energy/FleetEnergyRuntime.js";
+import { resolveHostname } from "./proxy/clientHost.js";
 
 dotenv.config();
 
@@ -607,7 +608,7 @@ app.get("/api/llm/active", (req, res) => {
 });
 
 /** GET /api/llm/clients — live proxied clients grouped by clientId (A4). */
-app.get("/api/llm/clients", (req, res) => {
+app.get("/api/llm/clients", async (req, res) => {
   const sparkId = req.query.sparkId || undefined;
   const labels = getSettings().clientLabels || {};
   const now = Date.now();
@@ -638,6 +639,12 @@ app.get("/api/llm/clients", (req, res) => {
   const clients = [...byClient.values()]
     .map((c) => ({ ...c, inflightCount: c.inflight.length }))
     .sort((a, b) => b.inflightCount - a.inflightCount);
+  // Resolve PTR hostnames for the unique client IPs (cache makes repeat
+  // polls free); never rejects — failures map to null.
+  const uniqueIps = [...new Set(clients.map((c) => c.clientIp).filter(Boolean))];
+  const hosts = await Promise.all(uniqueIps.map((ip) => resolveHostname(ip)));
+  const hostByIp = new Map(uniqueIps.map((ip, i) => [ip, hosts[i]]));
+  for (const c of clients) c.clientHost = hostByIp.get(c.clientIp) ?? null;
   res.json({ clients, dashboardClients: wss.clients.size });
 });
 
@@ -1152,6 +1159,11 @@ import {
   parseServeStartOutput,
   parseServeStatusOutput,
   parseServingHeader,
+  derivePathScriptId,
+  recordPathScript,
+  getPathScripts,
+  resolveAnyScriptId,
+  buildServeStartPathCommand,
 } from "./serving/serving.js";
 
 /** In-process start guard: one active start per node (remote check is the second gate). */
@@ -1174,14 +1186,29 @@ app.get("/api/serving/scripts", (_req, res) => {
 app.post("/api/serving/start", async (req, res) => {
   try {
     const body = req.body || {};
-    let scriptPath;
-    try {
-      scriptPath = resolveScriptPath(body.scriptId);
-    } catch (err) {
-      return res.status(400).json({ error: err.message });
-    }
-    if (!fs.existsSync(scriptPath)) {
-      return res.status(404).json({ error: `Serving script not found: ${body.scriptId}` });
+    // Path-run mode: the script lives on the target node — no server-side
+    // upload or existence check. The derived id is persisted at launch time
+    // (below) and returned so status/stop/log address the run across restarts.
+    const isPathRun = typeof body.scriptPath === "string" && body.scriptPath.length > 0;
+    let scriptId = body.scriptId;
+    let scriptBody = null;
+    if (isPathRun) {
+      const p = body.scriptPath;
+      if (p.length > 4096 || p.includes("\0") || !p.startsWith("/")) {
+        return res.status(400).json({ error: "scriptPath must be an absolute path (max 4096 chars)" });
+      }
+      scriptId = derivePathScriptId(p);
+    } else {
+      let libPath;
+      try {
+        libPath = resolveScriptPath(body.scriptId);
+      } catch (err) {
+        return res.status(400).json({ error: err.message });
+      }
+      if (!fs.existsSync(libPath)) {
+        return res.status(404).json({ error: `Serving script not found: ${body.scriptId}` });
+      }
+      scriptBody = fs.readFileSync(libPath, "utf8");
     }
     const port = Number(body.port);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -1219,14 +1246,22 @@ app.post("/api/serving/start", async (req, res) => {
     }
     startingSparks.add(spark.id);
     try {
-      const scriptBody = fs.readFileSync(scriptPath, "utf8");
-      const cmd = buildServeStartCommand({
-        scriptId: body.scriptId,
-        scriptBody,
-        modelName: body.modelName || "",
-        port,
-        extraArgs: body.extraArgs || "",
-      });
+      if (isPathRun) recordPathScript(scriptId, body.scriptPath);
+      const cmd = isPathRun
+        ? buildServeStartPathCommand({
+            scriptId,
+            scriptPath: body.scriptPath,
+            modelName: body.modelName || "",
+            port,
+            extraArgs: body.extraArgs || "",
+          })
+        : buildServeStartCommand({
+            scriptId: body.scriptId,
+            scriptBody,
+            modelName: body.modelName || "",
+            port,
+            extraArgs: body.extraArgs || "",
+          });
       let out = "";
       try {
         out = await execForSpark(spark, cmd, { timeoutMs: 20_000 });
@@ -1243,12 +1278,12 @@ app.post("/api/serving/start", async (req, res) => {
       // One immediate status poll.
       let status = { running: true };
       try {
-        const stOut = await execForSpark(spark, buildServeStatusCommand(body.scriptId), { timeoutMs: 10_000 });
+        const stOut = await execForSpark(spark, buildServeStatusCommand(scriptId), { timeoutMs: 10_000 });
         status = parseServeStatusOutput(stOut);
       } catch {
         /* status optional */
       }
-      res.json({ success: true, sparkId: spark.id, scriptId: body.scriptId, port, status });
+      res.json({ success: true, sparkId: spark.id, scriptId, port, status });
     } finally {
       startingSparks.delete(spark.id);
     }
@@ -1267,9 +1302,8 @@ app.post("/api/serving/stop", async (req, res) => {
       scriptId = scripts[0]?.id;
       if (!scriptId) return res.status(404).json({ error: "No serving scripts configured" });
     }
-    let scriptPath;
     try {
-      scriptPath = resolveScriptPath(scriptId);
+      resolveAnyScriptId(scriptId);
     } catch (err) {
       return res.status(400).json({ error: err.message });
     }
@@ -1293,9 +1327,13 @@ app.get("/api/serving/status", async (req, res) => {
     const spark = sparkId ? registry.getSpark(sparkId) : defaultServingSpark();
     if (!spark) return res.status(404).json({ error: "Spark not found" });
     const scripts = listServingScripts();
-    if (scripts.length === 0) return res.json({ sparkId: spark.id, running: false });
+    const pathIds = Object.keys(getPathScripts());
+    if (scripts.length === 0 && pathIds.length === 0) {
+      return res.json({ sparkId: spark.id, running: false });
+    }
+    const fallbackId = req.query.scriptId || scripts[0]?.id || pathIds[0];
     try {
-      resolveScriptPath(req.query.scriptId || scripts[0].id);
+      resolveAnyScriptId(fallbackId);
     } catch (err) {
       return res.status(400).json({ error: err.message });
     }
@@ -1303,18 +1341,18 @@ app.get("/api/serving/status", async (req, res) => {
     // running one (pidfile present) instead of blindly probing the first.
     let scriptId = req.query.scriptId;
     if (!scriptId) {
-      for (const s of scripts) {
+      for (const id of [...scripts.map((s) => s.id), ...pathIds]) {
         try {
-          const out = await execOnSpark(spark, buildServeStatusCommand(s.id), { timeoutMs: 10_000 });
+          const out = await execOnSpark(spark, buildServeStatusCommand(id), { timeoutMs: 10_000 });
           if (parseServeStatusOutput(out).running === true) {
-            scriptId = s.id;
+            scriptId = id;
             break;
           }
         } catch {
           /* offline handled below */
         }
       }
-      scriptId = scriptId || scripts[0].id;
+      scriptId = scriptId || fallbackId;
     }
     try {
       const out = await execForSpark(spark, buildServeStatusCommand(scriptId), { timeoutMs: 10_000 });
@@ -1337,7 +1375,7 @@ app.get("/api/serving/log", async (req, res) => {
     const scriptId = req.query.scriptId || scripts[0]?.id;
     if (!scriptId) return res.status(404).json({ error: "No serving scripts configured" });
     try {
-      resolveScriptPath(scriptId);
+      resolveAnyScriptId(scriptId);
     } catch (err) {
       return res.status(400).json({ error: err.message });
     }

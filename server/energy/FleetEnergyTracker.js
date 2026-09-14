@@ -525,6 +525,7 @@ export class FleetEnergyTracker {
     return {
       energyWh,
       hasObservedEnergy,
+      nodeWh,
       nodeCoverageMs,
       fleetCoverageMs,
       fleetEnergyWh: fleetWattMs / 3_600_000,
@@ -592,12 +593,27 @@ export class FleetEnergyTracker {
       outputTokens24h: last24h.outputTokens,
       coverage24hMs: last24h.fleetCoverageMs,
       coverage31dMs: last31d.fleetCoverageMs,
+      nodeEnergy24hKwh: this._nodeEnergyKwh(last24h),
+      nodeEnergy31dKwh: this._nodeEnergyKwh(last31d),
       nodeCoverage24hMs: last24h.nodeCoverageMs,
       nodeCoverage31dMs: last31d.nodeCoverageMs,
       hourlyWatts24h: this._membershipChanged
         ? Array(24).fill(null)
         : this._hourly(safeTimestamp),
     };
+  }
+
+  /** Per-node kWh over a window; null for nodes with no coverage (or when
+   * fleet membership changed and every estimate is invalidated). */
+  _nodeEnergyKwh(win) {
+    const out = {};
+    for (const id of this.nodeIds) {
+      out[id] =
+        !this._membershipChanged && win.nodeCoverageMs[id] > 0
+          ? Math.round((win.nodeWh[id] / 1000) * 1000) / 1000
+          : null;
+    }
+    return out;
   }
 
   _load() {

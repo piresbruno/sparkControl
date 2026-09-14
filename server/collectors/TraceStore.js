@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS traces (
   clientIp TEXT,
   clientUa TEXT,
   clientId TEXT,
+  clientHost TEXT,
   toolsReq TEXT,
   toolsUsed TEXT,
   cachedTokens INTEGER,
@@ -62,7 +63,7 @@ CREATE INDEX IF NOT EXISTS idx_traces_source ON traces(source);
 
 /** Columns returned by list() — lean (no bodies). */
 const LEAN_COLS =
-  "seq, id, ts, sparkId, port, source, method, path, query, model, stream, status, ttftMs, durMs, promptTokens, completionTokens, tokensEstimated, finishReason, error, clientIp, clientUa, clientId, toolsReq, toolsUsed, cachedTokens, bodyTruncated";
+  "seq, id, ts, sparkId, port, source, method, path, query, model, stream, status, ttftMs, durMs, promptTokens, completionTokens, tokensEstimated, finishReason, error, clientIp, clientUa, clientId, clientHost, toolsReq, toolsUsed, cachedTokens, bodyTruncated";
 /** All columns including bodies — get()/record internals. */
 const FULL_COLS = `${LEAN_COLS}, reqBody, resText`;
 
@@ -79,6 +80,11 @@ const REV2_COLUMNS = [
   { name: "cachedTokens", ddl: "INTEGER" },
   { name: "bodyTruncated", ddl: "INTEGER" },
 ];
+
+/**
+ * rev-3 columns: client hostname (PTR) captured by the LLM proxy.
+ */
+const REV3_COLUMNS = [{ name: "clientHost", ddl: "TEXT" }];
 
 /** Row bounds shared by list()/stats()/search (inline literals before A4). */
 const DEFAULT_LIST_LIMIT = 200;
@@ -174,7 +180,7 @@ export class TraceStore {
     const have = new Set(
       this._db.prepare("PRAGMA table_info(traces)").all().map((c) => c.name)
     );
-    for (const { name, ddl } of REV2_COLUMNS) {
+    for (const { name, ddl } of [...REV2_COLUMNS, ...REV3_COLUMNS]) {
       if (have.has(name)) continue;
       try {
         this._db.exec(`ALTER TABLE traces ADD COLUMN ${name} ${ddl}`);
@@ -221,6 +227,7 @@ export class TraceStore {
    *   tokensEstimated: boolean, finishReason: string|null, error: string|null,
    *   reqBody: string|null, resText: string|null,
    *   clientIp: string|null, clientUa: string|null, clientId: string|null,
+   *   clientHost: string|null,
    *   toolsReq: string[]|null, toolsUsed: Array<{name: string, count: number}>|null,
    *   cachedTokens: number|null, bodyTruncated: boolean,
    * }>} entry
@@ -235,9 +242,9 @@ export class TraceStore {
           `INSERT INTO traces
             (id, ts, sparkId, port, source, method, path, query, model, stream, status,
              ttftMs, durMs, promptTokens, completionTokens, tokensEstimated, finishReason,
-             error, reqBody, resText, clientIp, clientUa, clientId, toolsReq, toolsUsed,
-             cachedTokens, bodyTruncated)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             error, reqBody, resText, clientIp, clientUa, clientId, clientHost, toolsReq,
+             toolsUsed, cachedTokens, bodyTruncated)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           id,
@@ -263,6 +270,7 @@ export class TraceStore {
           e.clientIp != null ? capText(e.clientIp, 256) : null,
           e.clientUa != null ? capText(e.clientUa, 256) : null,
           e.clientId ?? null,
+          e.clientHost != null ? capText(e.clientHost, 256) : null,
           Array.isArray(e.toolsReq) && e.toolsReq.length > 0 ? JSON.stringify(e.toolsReq) : null,
           Array.isArray(e.toolsUsed) && e.toolsUsed.length > 0 ? JSON.stringify(e.toolsUsed) : null,
           Number.isFinite(e.cachedTokens) ? Math.round(e.cachedTokens) : null,

@@ -60,6 +60,7 @@ const trace = (over: Partial<Record<string, unknown>> = {}) => ({
   clientIp: "127.0.0.1",
   clientUa: "vitest",
   clientId: "abc123def456",
+  clientHost: "box.local",
   toolsReq: ["search_web"],
   toolsUsed: [{ name: "search_web", count: 2 }],
   cachedTokens: 128,
@@ -86,8 +87,9 @@ const activeItem = (over: Partial<Record<string, unknown>> = {}): LlmActiveItem 
 
 const clientEntry = (over: Partial<Record<string, unknown>> = {}) => ({
   clientId: "cli098765432",
-  clientIp: "127.0.0.1",
+  clientIp: "10.0.30.173",
   clientUa: "vitest",
+  clientHost: "box.local",
   label: null,
   inflightCount: 1,
   inflight: [
@@ -211,6 +213,13 @@ describe("AnalysisPage", () => {
     expect(screen.getByText("Tools (requested)")).toBeTruthy();
     expect(screen.getByText("Tools (used)")).toBeTruthy();
     expect(screen.getByText("Body truncated")).toBeTruthy();
+    expect(screen.getByText("Client IP")).toBeTruthy();
+    expect(screen.getByText("127.0.0.1")).toBeTruthy();
+    expect(screen.getByText("Hostname")).toBeTruthy();
+    expect(screen.getByText("box.local")).toBeTruthy();
+    expect(screen.getByText("User agent")).toBeTruthy();
+    expect(screen.getByText("vitest")).toBeTruthy();
+    expect(screen.getAllByTitle("127.0.0.1 · box.local").length).toBeGreaterThan(0);
   });
 
   it("source chips drive the listTraces filter", async () => {
@@ -265,6 +274,7 @@ describe("AnalysisPage", () => {
     render(<AnalysisPage />);
     await waitFor(() => expect(screen.getByText("2 dashboard tab(s) connected")).toBeTruthy());
     expect(screen.getByLabelText("Label for cli098765432")).toBeTruthy();
+    expect(screen.getByText("10.0.30.173 · box.local")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Flush" }));
     await user.type(screen.getByPlaceholderText("flush"), "flush");
     await user.click(screen.getByLabelText("I understand this cannot be undone from the dashboard."));
