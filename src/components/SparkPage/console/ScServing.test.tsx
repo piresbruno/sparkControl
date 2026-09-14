@@ -4,13 +4,25 @@
  * and the generation dial carries the output age.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, cleanup, act } from "@testing-library/react";
+import { render, cleanup, act, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import * as client from "../../../api/client";
 
 vi.mock("../../../api/client", async (importOriginal) => ({
   ...(await importOriginal<typeof client>()),
   servingStatus: vi.fn(async () => null),
   servingStop: vi.fn(async () => ({ ok: true })),
+  listServingScripts: vi.fn(async () => ({
+    scripts: [{ id: "example-vllm", description: "vLLM example", defaultPort: 8080 }],
+  })),
+  servingStart: vi.fn(async () => ({
+    success: true,
+    sparkId: "spark-1",
+    scriptId: "derived-abc123",
+    port: 8081,
+  })),
+  servingLog: vi.fn(async () => ({ sparkId: "spark-1", scriptId: "x", log: "" })),
+  fetchLlmDaily: vi.fn(async () => ({ sparkId: "spark-1", port: 8081, days: [] })),
 }));
 
 import { ScServing } from "./ScServing";
@@ -57,7 +69,6 @@ function renderServing(llm: LlmMetrics, gpuUsage = 96) {
       primaryPort={8081}
       onAddPort={vi.fn()}
       onRemovePort={vi.fn()}
-      onServeNew={vi.fn()}
       workerHeadId={null}
       headSparkName={null}
     />
@@ -111,5 +122,35 @@ describe("ScServing — busy but silent engine", () => {
     expect(container.textContent).toContain("waiting · 0 req · 0.0 tok/s");
     expect(container.textContent).not.toContain("no output");
     expect(container.textContent).not.toMatch(/waiting · \d+[sm]/);
+  });
+});
+
+describe("ScServing — serve script panel", () => {
+  it("start with a script path calls servingStart with scriptPath and disables the select", async () => {
+    const user = userEvent.setup();
+    renderServing(llmMetrics());
+    await settle();
+    const select = screen.getByRole("combobox") as HTMLSelectElement;
+    expect(select.disabled).toBe(false);
+
+    await user.type(screen.getByPlaceholderText(/start-vllm\.sh/), "/tmp/echo-serve.sh");
+    expect(select.disabled).toBe(true);
+    await user.click(screen.getByRole("button", { name: /Start/ }));
+    await settle();
+    expect(vi.mocked(client.servingStart)).toHaveBeenCalledWith(
+      expect.objectContaining({ sparkId: "spark-1", scriptPath: "/tmp/echo-serve.sh", port: 8081 })
+    );
+  });
+
+  it("start with an empty path keeps the library scriptId flow", async () => {
+    const user = userEvent.setup();
+    renderServing(llmMetrics());
+    await settle();
+    await user.selectOptions(screen.getByRole("combobox"), "example-vllm");
+    await user.click(screen.getByRole("button", { name: /Start/ }));
+    await settle();
+    const call = vi.mocked(client.servingStart).mock.calls[0][0];
+    expect(call).toEqual(expect.objectContaining({ sparkId: "spark-1", scriptId: "example-vllm" }));
+    expect(call.scriptPath).toBeUndefined();
   });
 });
