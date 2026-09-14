@@ -22,6 +22,8 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { shellQuote } from "../util/shellQuote.js";
+import { atomicWrite } from "../util/atomicWrite.js";
+import crypto from "crypto";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,6 +33,10 @@ export const SERVING_SOURCE_DIR =
   process.env.SPARKDASH_SERVING_SOURCE_DIR || path.join(ROOT, "serving");
 export const SERVING_CONFIG_DIR =
   process.env.SPARKDASH_SERVING_CONFIG_DIR || path.join(ROOT, "config", "serving");
+
+/** Persistence for node-local script paths started by path (not library id). */
+export const PATH_SCRIPTS_PATH =
+  process.env.SPARKDASH_PATH_SCRIPTS_PATH || path.join(ROOT, "config", "serving", "path-scripts.json");
 
 /** Strict scriptId: 1–64 chars of [a-z0-9][a-z0-9._-], no leading dot/dash; `..` rejected explicitly. */
 const SCRIPT_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
@@ -53,6 +59,68 @@ export function resolveScriptPath(scriptId, configDir = SERVING_CONFIG_DIR) {
     throw new Error("Invalid script id");
   }
   return resolved;
+}
+
+/**
+ * Derive a stable scriptId for a node-local script path: sanitized basename
+ * (lowercased, [a-z0-9._-] only, no leading dots/dashes) plus a 6-hex sha1
+ * of the absolute path. Always suffixed, so the id never collides with a
+ * library script id, and deterministic across restarts.
+ * @param {string} absPath absolute path on the target node
+ * @returns {string}
+ */
+export function derivePathScriptId(absPath) {
+  const base = path
+    .basename(String(absPath || ""))
+    .replace(/\.[^.]*$/, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, "-")
+    .replace(/^[.\-]+/, "");
+  const safe = base || "script";
+  const hash = crypto.createHash("sha1").update(String(absPath)).digest("hex").slice(0, 6);
+  return `${safe}-${hash}`;
+}
+
+/** Read the persisted path-scripts map (path → absolute node path). */
+export function getPathScripts(filePath = PATH_SCRIPTS_PATH) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Persist a path-script mapping. Write failures log and return false — the
+ * start still proceeds (the UI keeps the scriptId from the start response).
+ * @returns {boolean} persisted
+ */
+export function recordPathScript(id, absPath, filePath = PATH_SCRIPTS_PATH) {
+  try {
+    const map = getPathScripts(filePath);
+    map[id] = absPath;
+    atomicWrite(filePath, JSON.stringify(map, null, 2) + "\n", 0o644);
+    return true;
+  } catch (err) {
+    console.error("[serving] failed to persist path script:", err.message);
+    return false;
+  }
+}
+
+export function resolveAnyScriptId(id, configDir = SERVING_CONFIG_DIR, filePath = PATH_SCRIPTS_PATH) {
+  // Library first — but only when the script actually exists, so derived
+  // path-script ids (which also match SCRIPT_ID_RE) fall through to the map.
+  try {
+    const libPath = resolveScriptPath(id, configDir);
+    if (fs.existsSync(libPath)) return { kind: "library", path: libPath };
+  } catch {
+    /* not a library id */
+  }
+  const map = getPathScripts(filePath);
+  const p = map[id];
+  if (typeof p === "string" && p.startsWith("/")) return { kind: "path", path: p };
+  throw new Error(`Unknown script id: ${id}`);
 }
 
 /**
@@ -137,6 +205,25 @@ export function buildServeStartCommand({ scriptId, scriptBody, modelName = "", p
   ].join("\n");
 }
 
+/**
+ * Build the detached-start command for a node-local script path: identical
+ * to buildServeStartCommand except the base64-upload line is replaced by an
+ * on-node existence check and the engine runs via `bash <path>`.
+ */
+export function buildServeStartPathCommand({ scriptId, scriptPath, modelName = "", port, extraArgs = "" }) {
+  const id = shellQuote(scriptId);
+  const quotedPath = shellQuote(scriptPath);
+  return [
+    "mkdir -p ~/.sparkdash/runs",
+    `[ -f ${quotedPath} ] || { echo "__NO_SCRIPT__"; exit 0; }`,
+    `if [ -f ~/.sparkdash/runs/${id}.pid ] && kill -0 "$(cat ~/.sparkdash/runs/${id}.pid)" 2>/dev/null; then echo "__ALREADY_RUNNING__"; exit 9; fi`,
+    `setsid nohup env MODEL_NAME=${shellQuote(modelName)} PORT=${shellQuote(String(port))} EXTRA_ARGS=${shellQuote(extraArgs)} bash ${quotedPath} > ~/.sparkdash/runs/${id}.log 2>&1 &`,
+    `echo $! > ~/.sparkdash/runs/${id}.pid`,
+    `date +%s > ~/.sparkdash/runs/${id}.env`,
+    `sleep 1; kill -0 "$(cat ~/.sparkdash/runs/${id}.pid)" 2>/dev/null && echo "__START_OK__" || echo "__START_DEAD__"`,
+  ].join("\n");
+}
+
 /** Build the stop command: pidfile → kill process group → escalate. */
 export function buildServeStopCommand(scriptId) {
   const id = shellQuote(scriptId);
@@ -174,6 +261,8 @@ export function buildServeLogCommand(scriptId, bytes = 4000) {
 export function parseServeStartOutput(out) {
   const text = String(out || "");
   if (text.includes("__ALREADY_RUNNING__")) return { started: false, alreadyRunning: true };
+  if (text.includes("__NO_SCRIPT__"))
+    return { started: false, alreadyRunning: false, error: "script not found on node — check the path" };
   if (text.includes("__START_DEAD__")) return { started: false, alreadyRunning: false, error: "process exited immediately (see log)" };
   if (text.includes("__START_OK__")) return { started: true, alreadyRunning: false };
   return { started: false, alreadyRunning: false, error: text.trim() || "unknown start failure" };

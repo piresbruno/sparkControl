@@ -14,6 +14,11 @@ import {
   buildServeLogCommand,
   parseServeStartOutput,
   parseServeStatusOutput,
+  derivePathScriptId,
+  recordPathScript,
+  getPathScripts,
+  resolveAnyScriptId,
+  buildServeStartPathCommand,
 } from "../serving.js";
 
 let tmp;
@@ -116,4 +121,71 @@ test("parseServeStartOutput: ok / already-running / dead / unknown", () => {
 test("buildServeLogCommand clamps byte counts", () => {
   assert.equal(buildServeLogCommand("s", 100), `tail -c 500 ~/.sparkdash/runs/s.log 2>/dev/null || true`);
   assert.match(buildServeLogCommand("s", 999999), /tail -c 100000/);
+});
+
+test("derivePathScriptId: sanitized basename + stable sha1 suffix, disjoint from library ids", () => {
+  const id = derivePathScriptId("/home/me/My Server (v2).sh");
+  assert.match(id, /^my-server--v2--[0-9a-f]{6}$/);
+  // Deterministic across calls; different paths → different ids.
+  assert.equal(id, derivePathScriptId("/home/me/My Server (v2).sh"));
+  assert.notEqual(id, derivePathScriptId("/home/me/My Server (v3).sh"));
+  // Same basename, different dirs → same sanitized prefix, different hash.
+  const other = derivePathScriptId("/opt/other/My Server (v2).sh");
+  assert.notEqual(other, id);
+  assert.ok(other.startsWith("my-server--v2--"));
+  // Empty basename falls back to "script".
+  assert.match(derivePathScriptId("/opt/.sh"), /^script-[0-9a-f]{6}$/);
+  // Never collides with library namespace: SCRIPT_ID_RE allows dots/dashes,
+  // but the path id always carries the hash suffix and library ids listed on
+  // disk cannot contain the exact same 6-hex suffix for a different file.
+  assert.match(id, /^[a-z0-9][a-z0-9._-]{0,63}$/);
+});
+
+test("recordPathScript persists and getPathScripts reads back; missing file is empty", () => {
+  const mapPath = path.join(tmp, "path-scripts.json");
+  assert.deepEqual(getPathScripts(mapPath), {});
+  assert.equal(recordPathScript("a-123456", "/home/me/run.sh", mapPath), true);
+  assert.deepEqual(getPathScripts(mapPath), { "a-123456": "/home/me/run.sh" });
+  // Second record merges, not replaces.
+  recordPathScript("b-abcdef", "/opt/x.sh", mapPath);
+  assert.deepEqual(getPathScripts(mapPath), { "a-123456": "/home/me/run.sh", "b-abcdef": "/opt/x.sh" });
+});
+
+test("resolveAnyScriptId: library first, then path map, else throw", () => {
+  const mapPath = path.join(tmp, "path-scripts.json");
+  fs.writeFileSync(path.join(tmp, "lib.sh"), "echo hi\n");
+  recordPathScript("p-123456", "/home/me/run.sh", mapPath);
+
+  assert.deepEqual(resolveAnyScriptId("lib", tmp, mapPath), { kind: "library", path: path.join(tmp, "lib.sh") });
+  assert.deepEqual(resolveAnyScriptId("p-123456", tmp, mapPath), { kind: "path", path: "/home/me/run.sh" });
+  assert.throws(() => resolveAnyScriptId("missing", tmp, mapPath));
+  // A path-map id pointing outside root-ish shapes stays a plain string —
+  // only library ids get traversal-guarded.
+  assert.throws(() => resolveAnyScriptId("nope", tmp, mapPath));
+});
+
+test("buildServeStartPathCommand: on-node file check, quoted path run, same env/pidfile contract", () => {
+  const cmd = buildServeStartPathCommand({
+    scriptId: "my-serve-123456",
+    scriptPath: "/home/me/My Server (v2).sh",
+    modelName: "Qwen3-32B-Q4",
+    port: 8080,
+    extraArgs: "--max-model-len 4096",
+  });
+  // Existence check emits the NO_SCRIPT marker and exits cleanly.
+  assert.match(cmd, /^\[ -f ('\/home\/me\/My Server \(v2\)\.sh') \] \|\| \{ echo "__NO_SCRIPT__"; exit 0; \}$/m);
+  // No base64 upload of library script body.
+  assert.doesNotMatch(cmd, /base64 -d/);
+  // Engine runs the node-local path via bash with the env contract.
+  assert.match(
+    cmd,
+    /setsid nohup env MODEL_NAME=Qwen3-32B-Q4 PORT=8080 EXTRA_ARGS='--max-model-len 4096' bash '\/home\/me\/My Server \(v2\)\.sh' > ~\/\.sparkdash\/runs\/my-serve-123456\.log 2>&1 &/
+  );
+});
+test("parseServeStartOutput: NO_SCRIPT maps to the check-the-path error", () => {
+  assert.deepEqual(parseServeStartOutput("__NO_SCRIPT__"), {
+    started: false,
+    alreadyRunning: false,
+    error: "script not found on node — check the path",
+  });
 });

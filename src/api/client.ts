@@ -586,6 +586,8 @@ export function listServingScripts(): Promise<{ scripts: ServingScript[] }> {
 export function servingStart(body: {
   sparkId?: string;
   scriptId: string;
+  /** Node-local script path — when set, the script runs by path and scriptId is derived server-side. */
+  scriptPath?: string;
   modelName?: string;
   port: number;
   extraArgs?: string;
