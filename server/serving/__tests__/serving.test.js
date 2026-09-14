@@ -125,20 +125,21 @@ test("buildServeLogCommand clamps byte counts", () => {
 
 test("derivePathScriptId: sanitized basename + stable sha1 suffix, disjoint from library ids", () => {
   const id = derivePathScriptId("/home/me/My Server (v2).sh");
-  assert.match(id, /^my-server--v2--[0-9a-f]{6}$/);
+  assert.match(id, /^my-server--v2-[0-9a-f]{6}$/);
   // Deterministic across calls; different paths → different ids.
   assert.equal(id, derivePathScriptId("/home/me/My Server (v2).sh"));
   assert.notEqual(id, derivePathScriptId("/home/me/My Server (v3).sh"));
   // Same basename, different dirs → same sanitized prefix, different hash.
   const other = derivePathScriptId("/opt/other/My Server (v2).sh");
   assert.notEqual(other, id);
-  assert.ok(other.startsWith("my-server--v2--"));
+  assert.ok(other.startsWith("my-server--v2-"));
   // Empty basename falls back to "script".
   assert.match(derivePathScriptId("/opt/.sh"), /^script-[0-9a-f]{6}$/);
-  // Never collides with library namespace: SCRIPT_ID_RE allows dots/dashes,
-  // but the path id always carries the hash suffix and library ids listed on
-  // disk cannot contain the exact same 6-hex suffix for a different file.
-  assert.match(id, /^[a-z0-9][a-z0-9._-]{0,63}$/);
+  // Long basenames stay within SCRIPT_ID_RE's 64-char ceiling (57 base + dash + 6 hash).
+  const longId = derivePathScriptId("/opt/" + "a".repeat(120) + ".sh");
+  assert.ok(longId.length <= 64, `id length ${longId.length} must be ≤ 64`);
+  assert.match(longId, /^[a-z0-9][a-z0-9._-]{0,63}$/);
+  assert.ok(!/[.-]$/.test(longId.slice(0, -7)), "no dangling separator before the hash");
 });
 
 test("recordPathScript persists and getPathScripts reads back; missing file is empty", () => {

@@ -63,11 +63,10 @@ export function resolveScriptPath(scriptId, configDir = SERVING_CONFIG_DIR) {
 
 /**
  * Derive a stable scriptId for a node-local script path: sanitized basename
- * (lowercased, [a-z0-9._-] only, no leading dots/dashes) plus a 6-hex sha1
- * of the absolute path. Always suffixed, so the id never collides with a
- * library script id, and deterministic across restarts.
- * @param {string} absPath absolute path on the target node
- * @returns {string}
+ * (lowercased, [a-z0-9._-] only, no leading dots/dashes, capped so the whole id
+ * stays within SCRIPT_ID_RE's 64-char limit) plus a 6-hex sha1 of the absolute
+ * path. Always suffixed, so the id never collides with a library script id, and
+ * deterministic across restarts.
  */
 export function derivePathScriptId(absPath) {
   const base = path
@@ -75,8 +74,9 @@ export function derivePathScriptId(absPath) {
     .replace(/\.[^.]*$/, "")
     .toLowerCase()
     .replace(/[^a-z0-9._-]/g, "-")
-    .replace(/^[.\-]+/, "");
-  const safe = base || "script";
+    .replace(/^[.\-]+/, "")
+    .slice(0, 57); // 57 + 1 dash + 6 hash = 64 = SCRIPT_ID_RE ceiling
+  const safe = base.replace(/[.\-]+$/, "") || "script";
   const hash = crypto.createHash("sha1").update(String(absPath)).digest("hex").slice(0, 6);
   return `${safe}-${hash}`;
 }

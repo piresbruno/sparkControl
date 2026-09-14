@@ -1187,8 +1187,8 @@ app.post("/api/serving/start", async (req, res) => {
   try {
     const body = req.body || {};
     // Path-run mode: the script lives on the target node — no server-side
-    // upload or existence check. The derived id is persisted (path-scripts.json)
-    // and returned so status/stop/log address the run across restarts.
+    // upload or existence check. The derived id is persisted at launch time
+    // (below) and returned so status/stop/log address the run across restarts.
     const isPathRun = typeof body.scriptPath === "string" && body.scriptPath.length > 0;
     let scriptId = body.scriptId;
     let scriptBody = null;
@@ -1198,7 +1198,6 @@ app.post("/api/serving/start", async (req, res) => {
         return res.status(400).json({ error: "scriptPath must be an absolute path (max 4096 chars)" });
       }
       scriptId = derivePathScriptId(p);
-      recordPathScript(scriptId, p);
     } else {
       let libPath;
       try {
@@ -1247,7 +1246,8 @@ app.post("/api/serving/start", async (req, res) => {
     }
     startingSparks.add(spark.id);
     try {
-    const cmd = isPathRun
+      if (isPathRun) recordPathScript(scriptId, body.scriptPath);
+      const cmd = isPathRun
         ? buildServeStartPathCommand({
             scriptId,
             scriptPath: body.scriptPath,

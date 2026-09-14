@@ -14,6 +14,9 @@
 /** Cache TTL for both hits and misses (ms). */
 const TTL_MS = 10 * 60 * 1000;
 
+/** Cache entry cap — expired entries are only overwritten, never deleted, so
+ * without a bound an internet-facing proxy grows one entry per unique IP. */
+const MAX_CACHE = 1000;
 /** "unknown" sentinel used by express/sock libraries for missing client IP. */
 const UNKNOWN_SENTINELS = new Set(["", "unknown", "-"]);
 
@@ -44,20 +47,38 @@ export function resolveHostname(ip, opts = {}) {
   if (pending) return pending;
 
   const p = (async () => {
+    let host = null;
     try {
       const names = await withTimeout(resolver(key), timeoutMs);
-      const host = Array.isArray(names) && typeof names[0] === "string" && names[0] ? names[0] : null;
-      cache.set(key, { host, at: Date.now() });
-      return host;
+      host = Array.isArray(names) && typeof names[0] === "string" && names[0] ? names[0] : null;
     } catch {
-      cache.set(key, { host: null, at: Date.now() });
-      return null;
+      host = null;
     } finally {
       inflight.delete(key);
     }
+    remember(key, host);
+    return host;
   })();
   inflight.set(key, p);
   return p;
+}
+
+/** Cache a result, evicting to stay under MAX_CACHE. */
+function remember(ip, host) {
+  const now = Date.now();
+  prune(now);
+  cache.set(ip, { host, at: now });
+}
+
+/** Bounded insertion-order eviction: expired first, then oldest. */
+function prune(now) {
+  if (cache.size < MAX_CACHE) return;
+  for (const [ip, e] of cache) if (now - e.at >= TTL_MS) cache.delete(ip);
+  while (cache.size >= MAX_CACHE) {
+    const oldest = cache.keys().next();
+    if (oldest.done) break;
+    cache.delete(oldest.value);
+  }
 }
 
 /** Clear caches — tests only. */
