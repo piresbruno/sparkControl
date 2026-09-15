@@ -1150,6 +1150,121 @@ export interface Placement {
   remediations: Array<{ kind: "sync" | "push"; sparkId: string; targetSparkId?: string }>;
 }
 
+// ─── Serve (cluster recipes + deployments) ─────────────────
+/** One launcher in a recipe folder (start.sh, start-tp4.sh, tp1/start.sh). */
+export interface RecipeVariant {
+  rel: string;
+  name: string;
+}
+
+/** Parsed read-only meta from the node probe (secret VALUES never appear). */
+export interface RecipeMeta {
+  port: number | null;
+  model: string | null;
+  modelFallback: string | null;
+  dflashModel: string | null;
+  servedName: string | null;
+  headIp: string | null;
+  workerIp: string | null;
+  workerUser: string | null;
+  nnodes: number | null;
+  tp: number | null;
+  readyTimeoutS: number | null;
+  maxModelLen: number | null;
+  image: string | null;
+  /** default-entry container set, e.g. { CONTAINER_HEAD: "glm-head", ... }. */
+  containers: Record<string, string>;
+  containersByEntry: Record<string, Record<string, string>>;
+  /** credential KEYS present in .env (booleans only). */
+  secretPresence: Record<string, boolean>;
+  entry: string | null;
+  variants: RecipeVariant[];
+  class: "repo" | "script";
+  verbs: string[];
+}
+
+export interface RecipeVersions {
+  gitHead: string | null;
+  dirtyBuild: boolean;
+  probedAt: number;
+}
+
+/** A registered recipe folder on a node (identity = sparkId + path). */
+export interface ServeRecipe {
+  id: string;
+  sparkId: string;
+  path: string;
+  label: string | null;
+  entry: string | null;
+  meta: RecipeMeta | null;
+  versions: RecipeVersions | null;
+  files: string[];
+  orphaned: boolean;
+  probeError: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ServeDeployment {
+  id: string;
+  recipeId: string;
+  desired: "running" | "stopped";
+  variant: string | null;
+  port: number | null;
+  portAdded?: boolean;
+  jobId: string | null;
+  startedWith: { version: RecipeVersions | null; at: number } | null;
+  createdAt: number;
+  updatedAt: number;
+  lastStopAt?: number;
+  deadAt?: number;
+}
+
+/** /api/serve/state row: recipe deployment joined with live probe truth. */
+export interface ServeState {
+  recipeId: string;
+  sparkId: string;
+  path: string;
+  label: string;
+  variant: string | null;
+  port: number | null;
+  servedName: string | null;
+  model: string | null;
+  topology: { nnodes: number | null; tp: number | null; workerIp: string | null; workerSparkId: string | null };
+  version: RecipeVersions | null;
+  orphaned: boolean;
+  probeError: string | null;
+  ranks: Record<string, "running" | "exited" | "absent" | "error"> | null;
+  engine: { health: number | null; modelsRaw: string | null; dockerError: string | null } | null;
+  state:
+    | "starting"
+    | "stopping"
+    | "healthy"
+    | "healthy-keyed"
+    | "up"
+    | "stopped"
+    | "failed"
+    | "unknown"
+    | "orphan"
+    | "unstarted";
+  jobId?: string;
+  warmup?: boolean;
+  servedIdMatch?: boolean | null;
+  note?: string;
+  reason?: string;
+  authRequired?: boolean;
+  exitCode?: number | null;
+  drift: { drift: boolean; rebuild?: boolean };
+  deployment?: ServeDeployment | null;
+  job?: { jobId: string; status: string; exitCode: number | null; endedAt: number | null } | null;
+  error?: string;
+}
+
+export interface ServeStateResponse {
+  states: ServeState[];
+  at: number;
+}
+
 // ─── NAS node (kind "nas") ─────────────────────────────────
 /** GitHub release probe for the modelctl CLI (never throws to the caller). */
 export interface ModelctlRelease {

@@ -30,6 +30,9 @@ import type {
   Placement,
   ServingScript,
   ServingStatus,
+  ServeRecipe,
+  ServeStateResponse,
+  ServeDeployment,
   InventoryResponse,
   NasQueueEntry,
   ModelctlRelease,
@@ -54,7 +57,15 @@ async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(body.error || `HTTP ${res.status}`);
+    const err = new Error(body.error || `HTTP ${res.status}`) as Error & {
+      status?: number;
+      payload?: unknown;
+    };
+    // Structured REST errors (e.g. serve placement 409 {blocked, placement})
+    // need the payload, not just the message.
+    err.status = res.status;
+    err.payload = body;
+    throw err;
   }
   return res.json();
 }
@@ -619,6 +630,63 @@ export function servingPlacement(model: string, sparkId?: string): Promise<Place
   const q = new URLSearchParams({ model });
   if (sparkId) q.set("sparkId", sparkId);
   return apiFetch(`/api/serving/placement?${q.toString()}`);
+}
+
+// ─── Serve (cluster recipes + deployments) ─────────────────
+export function listServeRecipes(refresh = false): Promise<{ recipes: ServeRecipe[] }> {
+  return apiFetch(`/api/serve/recipes${refresh ? "?refresh=1" : ""}`);
+}
+
+export function registerServeRecipe(body: {
+  sparkId: string;
+  path: string;
+  label?: string;
+  entry?: string;
+}): Promise<{ recipe: ServeRecipe }> {
+  return apiFetch("/api/serve/recipes", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function scanServeRecipes(sparkId: string, dir: string): Promise<{ folders: string[] }> {
+  return apiFetch("/api/serve/recipes/scan", { method: "POST", body: JSON.stringify({ sparkId, dir }) });
+}
+
+export function refreshServeRecipe(id: string): Promise<{ ok: boolean; recipe: ServeRecipe }> {
+  return apiFetch(`/api/serve/recipes/${encodeURIComponent(id)}/refresh`, { method: "POST" });
+}
+
+export function deleteServeRecipe(id: string): Promise<{ success: boolean }> {
+  return apiFetch(`/api/serve/recipes/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/** start|stop|restart a recipe deployment. start 409s {blocked, placement} when the model is absent. */
+export function serveDeploymentAction(
+  recipeId: string,
+  verb: "start" | "stop" | "restart",
+  body: { variant?: string | null; force?: boolean } = {}
+): Promise<{ jobId?: string; ok?: boolean; deployment?: ServeDeployment }> {
+  return apiFetch(`/api/serve/deployments/${encodeURIComponent(recipeId)}/${verb}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Cluster join for the Serve table (5 s poll). */
+export function serveState(refresh = false): Promise<ServeStateResponse> {
+  return apiFetch(`/api/serve/state${refresh ? "?refresh=1" : ""}`);
+}
+
+export function serveLogs(
+  recipeId: string,
+  opts: { kind: "driver" | "engine"; rank?: "head" | string; bytes?: number; tail?: number; since?: string | null } = {
+    kind: "driver",
+  }
+): Promise<{ log: string; jobId?: string; container?: string; error?: string }> {
+  const q = new URLSearchParams({ kind: opts.kind });
+  if (opts.rank) q.set("rank", opts.rank);
+  if (opts.bytes) q.set("bytes", String(opts.bytes));
+  if (opts.tail) q.set("tail", String(opts.tail));
+  if (opts.since) q.set("since", opts.since);
+  return apiFetch(`/api/serve/logs/${encodeURIComponent(recipeId)}?${q.toString()}`);
 }
 
 // ─── Agent (Part C) ───────────────────────────────────────

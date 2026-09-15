@@ -159,7 +159,8 @@ export function buildEngineLogCommand(container, { tail = 200, since = null } = 
   const t = Math.max(10, Math.min(Math.round(Number(tail) || 200), 5000));
   const c = shellQuote(container);
   const s = since ? `--since ${shellQuote(String(since))} ` : "";
-  return `docker logs ${s}--tail ${t} ${c} 2>&1 | tail -c 100000 || true`;
+  // -t: ISO prefixes make the UI follow-loop cursor-safe with --since.
+  return `docker logs -t ${s}--tail ${t} ${c} 2>&1 | tail -c 100000 || true`;
 }
 
 // ─── Pure state join ───────────────────────────────────────
@@ -202,6 +203,8 @@ export function joinServeState(f) {
     return { state: "healthy-keyed", authRequired: true };
   }
   if (allProbeError) return { state: "unknown", reason: "probe exec failed" };
+  // Stopped by request but containers still draining → stopping, never "up".
+  if (anyRankRunning && f.desired === "stopped") return { state: "stopping" };
   if (anyRankRunning) return { state: "up", note: "containers running; API not answering yet" };
   const jobFailed = f.job && (f.job.status === "failed" || f.job.status === "cancelled" || f.job.status === "interrupted");
   if (f.desired === "running" && jobFailed) {
@@ -544,6 +547,19 @@ export class ServeEngine {
     const meta = recipe.meta || {};
     const llmRows = this._.llmSnapshot ? this._.llmSnapshot(recipe.sparkId) || [] : [];
     const llm = Number.isInteger(meta.port) ? llmRows.find((r) => r.port === meta.port) || null : null;
+
+    // A live driver's state is polled through the manager (single-flight;
+    // the sweeper alone is up to 30 s stale — too slow for the 5 s table).
+    if (job?.status === "running" && !recipe.orphaned) {
+      const jSpark = this._spark(job.sparkId || recipe.sparkId);
+      if (jSpark && this._.remoteJobs.pollRemoteJob) {
+        try {
+          await this._.remoteJobs.pollRemoteJob(jSpark, job.jobId);
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
 
     let probe = null;
     let ranks = null;

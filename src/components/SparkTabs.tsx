@@ -19,8 +19,8 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { SparkSnapshot } from "../api/types";
-import { PlusIcon, GridIcon, ActivityIcon, DiskIcon } from "./ui/icons";
-import { OVERVIEW_ID, ANALYSIS_ID, MODELS_ID } from "../constants";
+import { PlusIcon, GridIcon, ActivityIcon, DiskIcon, BoltIcon } from "./ui/icons";
+import { OVERVIEW_ID, ANALYSIS_ID, MODELS_ID, SERVE_ID } from "../constants";
 
 interface SparkTabsProps {
   sparks: SparkSnapshot[];
@@ -328,6 +328,7 @@ export function SparkTabs({
         <OverviewTab isActive={activeId === OVERVIEW_ID} onSelect={onSelect} />
         <AnalysisTab isActive={activeId === ANALYSIS_ID} onSelect={onSelect} />
         <ModelsTab isActive={activeId === MODELS_ID} onSelect={onSelect} />
+        <ServeTab isActive={activeId === SERVE_ID} onSelect={onSelect} />
         {sparks.map((spark) => (
           <div key={spark.id} className="shrink-0">
             <TabChrome
@@ -355,6 +356,7 @@ export function SparkTabs({
         <OverviewTab isActive={activeId === OVERVIEW_ID} onSelect={onSelect} />
         <AnalysisTab isActive={activeId === ANALYSIS_ID} onSelect={onSelect} />
         <ModelsTab isActive={activeId === MODELS_ID} onSelect={onSelect} />
+        <ServeTab isActive={activeId === SERVE_ID} onSelect={onSelect} />
         <SortableContext items={items} strategy={rectSortingStrategy}>
           {ordered.map((spark) => (
             <SortableTab
@@ -460,6 +462,27 @@ function ModelsTab({
   );
 }
 
+function ServeTab({
+  isActive,
+  onSelect,
+}: {
+  isActive: boolean;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <div className="shrink-0">
+      <button
+        type="button"
+        onClick={() => onSelect(SERVE_ID)}
+        className={`pill-item ${isActive ? "is-active" : ""}`}
+      >
+        <BoltIcon className="h-3.5 w-3.5" />
+        Serve
+      </button>
+    </div>
+  );
+}
+
 /* ─── Mobile dropdown menu ────────────────────────────── */
 
 function MobileSparkMenu({
@@ -548,6 +571,15 @@ function MobileSparkMenu({
       >
         <DiskIcon className="h-3.5 w-3.5" />
         Models
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className={`mobile-menu-item ${activeId === SERVE_ID ? "is-active" : ""}`}
+        onClick={() => handleItemClick(SERVE_ID)}
+      >
+        <BoltIcon className="h-3.5 w-3.5" />
+        Serve
       </button>
       {sparks.map((spark) => (
         <button

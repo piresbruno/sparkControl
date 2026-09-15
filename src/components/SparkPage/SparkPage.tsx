@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { SERVE_ID } from "../../constants";
 import type { ModelctlStatus, SparkConfig, SparkSnapshot } from "../../api/types";
 import { isLlmMonitoringEnabled, resolveSparkRole } from "../../api/sparkRole";
 import {
@@ -292,6 +293,18 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
               role === "worker"
                 ? "workers serve through their head"
                 : "serve script below · run tests in CH·03"
+            }
+            aside={
+              /* Cluster Serve section: recipe-class deployments live there. */
+              <button
+                type="button"
+                className="key"
+                style={{ padding: "1px 8px", fontSize: "var(--fs-10)" }}
+                onClick={() => onNavigate?.(SERVE_ID)}
+                title="Open the cluster Serve page (recipe deployments)"
+              >
+                Serve ▸
+              </button>
             }
           />
           <ScServing

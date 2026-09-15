@@ -402,8 +402,8 @@ test("nas spark refuses recipes; invalid entry refuses launch", async () => {
 test("logs: driver tails the node job file; engine uses docker logs with cursor", async () => {
   assert.match(buildDriverLogCommand("job-7"), /tail -c 6000 ~\/\.sparkdash\/jobs\/job-7\.log/);
   assert.match(buildDriverLogCommand("job-7", 999999), /tail -c 100000/);
-  assert.match(buildEngineLogCommand("glm-head", { tail: 100, since: "2026-09-15T00:00:00Z" }), /docker logs --since 2026-09-15T00:00:00Z --tail 100 glm-head/);
-  assert.match(buildEngineLogCommand("a b", {}), /docker logs --tail 200 'a b'/);
+  assert.match(buildEngineLogCommand("glm-head", { tail: 100, since: "2026-09-15T00:00:00Z" }), /docker logs -t --since 2026-09-15T00:00:00Z --tail 100 glm-head/);
+  assert.match(buildEngineLogCommand("a b", {}), /docker logs -t --tail 200 'a b'/);
   const f = mkFakes();
   const eng = mkEngine(f);
   await eng.start(f.recipe.id);

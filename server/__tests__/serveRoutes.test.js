@@ -87,6 +87,7 @@ test("serve routes surface", async () => {
   const { _setExecFile } = await import("../collectors/ssh.js");
   const calls = [];
   const state = {
+    jobsAlive: true,
     probeOut: fakeProbeOut(8899, "glm", "SRV-GLM"),
     nodeModels: [{ name: "glm", runtime: "vllm", repository: "org/GLM", bytes: 1 }],
     containers: "srv-head|running",
@@ -105,7 +106,11 @@ test("serve routes surface", async () => {
     }
     if (cmd.includes("base64 -d > ~/.sparkdash/jobs")) return cb(null, "LAUNCHED 4242", "");
     if (cmd.includes("./start.sh stop")) return cb(null, "stopped.", "");
-    if (cmd.includes("__SPARKDASH_EXIT")) return cb(null, "__ALIVE:no\n__SPARKDASH_EXIT:0", "");
+    if (cmd.includes("__SPARKDASH_EXIT")) {
+      // Poll path: the driver stays alive until the test releases it — the
+      // engine now polls jobs in-band during /api/serve/state (freshness).
+      return cb(null, state.jobsAlive ? "__ALIVE:yes\n" : "__ALIVE:no\n__SPARKDASH_EXIT:0", "");
+    }
     if (cmd.includes("docker logs")) return cb(null, "engine log line", "");
     if (cmd.includes("tail -c")) return cb(null, "driver log line", "");
     return cb(null, "ok", "");

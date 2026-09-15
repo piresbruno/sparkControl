@@ -1551,7 +1551,9 @@ app.get("/api/serve/recipes", async (req, res) => {
     const force = req.query.refresh === "1";
     const list = serveRecipes.list();
     for (const r of list) {
-      if (r.orphaned || r.meta) continue; // never probe orphans; registered rows refresh on demand
+      // Orphans are never probed; rows with meta refresh on demand only
+      // (?refresh=1) — list stays cheap for the 5 s UI poll.
+      if (r.orphaned || (r.meta && !force)) continue;
       const spark = registry.getSpark(r.sparkId);
       if (!spark) continue;
       await probeRecipe(spark, r, { force }).then((x) => x.ran).catch(() => undefined);

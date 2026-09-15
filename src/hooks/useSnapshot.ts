@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { SparkSnapshot, WsSnapshot } from "../api/types";
 import { ingestSnapshots } from "./metricsStore";
-import { OVERVIEW_ID, ANALYSIS_ID, MODELS_ID } from "../constants";
+import { OVERVIEW_ID, ANALYSIS_ID, MODELS_ID, SERVE_ID } from "../constants";
 
 /** Sentinel tab ids (not real sparks) — never reset by snapshot guards. */
-const SENTINEL_IDS = new Set([OVERVIEW_ID, ANALYSIS_ID, MODELS_ID]);
+const SENTINEL_IDS = new Set([OVERVIEW_ID, ANALYSIS_ID, MODELS_ID, SERVE_ID]);
 
 const WS_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws`;
 const RECONNECT_DELAY = 2000;
