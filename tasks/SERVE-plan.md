@@ -1,6 +1,17 @@
 # SERVE Plan — cluster-level Model Serving with Recipes
 
-Status: proposal rev 5 (2026-09-15). Rev 3 scoped to **start/stop/restart/logs only — no recipe editing in
+Status: **implemented** rev 6 (2026-09-15). Phases P0a–P4 all landed on branch `docs/serve-recipes-plan`
+(PR #8, 14 commits): recipe engine + lifecycle (P0a/P1), Serve section UI (P2), model bridge + placement +
+topology guard + **capacity/contention warnings** (P3, incl. P3.2: `modelctl.reserveFreeGiB` setting,
+warnings ride the 202 payload and the blocked 409 — live-proven: 197.4 GB available vs 307.4 GB needed on
+spark-1), cluster gateway `/llm/cluster/<servedName>/v1` (P4, round-robin + 404 discovery list, live-proven
+against a fake engine; also fixed a PRE-EXISTING port-trace bug). P5 = upstream proposals, tracked only
+(modelctl ROOT/recipes issue pending user go-ahead; MiaAI `recipe.json` sidecar draft not filed).
+Verification: server 542/542, UI vitest 125/125, tsc + vite build clean.
+Operational gotcha found live: `node --watch` in the dev container can half-reload (new validate.js, old
+llmProxy.js) across a crash-loop — a clean `docker restart` is the fix when routes behave stale.
+
+Prior: proposal rev 5 (2026-09-15). Rev 3 scoped to **start/stop/restart/logs only — no recipe editing in
 the UI; recipe folders (and `.env`) stay user-owned on nodes**. Rev 4 fixed the 9 load-bearing breaks found
 by a two-axis adversarial review (operational + architectural; reports: agent://OpsAdversary,
 agent://ArchAdversary). Rev 5 locks the six open decisions (user, 2026-09-15), marked **[D·x]** — including
