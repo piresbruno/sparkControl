@@ -96,7 +96,10 @@ test("cancel of a recipe-run uses TERM-only (no kill -9 ladder) and 15 s budget"
   const job = await mgr.cancelRemoteJob(sparkA, jobId);
   assert.equal(job.status, "cancelled");
   const cancelCmd = exec.calls.at(-1).cmd;
-  assert.match(cancelCmd, /kill "\$PID"/, "TERM is sent");
+  // TERM goes to the driver's PROCESS GROUP (wrapper + recipe launcher share
+  // it) — a lone wrapper kill would leave start.sh alive to late-launch.
+  assert.match(cancelCmd, /ps -o pgid=/, "group lookup");
+  assert.match(cancelCmd, /kill -TERM -"\$PG"/, "group TERM");
   assert.doesNotMatch(cancelCmd, /kill -9/, "no escalation for serve drivers");
   assert.equal(exec.calls.at(-1).opts.timeoutMs, 15_000);
 });
@@ -112,7 +115,8 @@ test("cancel of non-serve kinds keeps the kill -9 ladder + 10 s budget", async (
 });
 
 test("buildCancelCommand termOnly is pure and both shapes exist", () => {
-  assert.match(buildCancelCommand("j1", { termOnly: true }), /kill "\$PID"/);
+  const t = buildCancelCommand("j1", { termOnly: true });
+  assert.match(t, /kill -TERM -"\$PG"/);
   assert.doesNotMatch(buildCancelCommand("j1", { termOnly: true }), /kill -9/);
   assert.match(buildCancelCommand("j1"), /kill -9 "\$PID" 2>\/dev\/null \|\| true/);
 });

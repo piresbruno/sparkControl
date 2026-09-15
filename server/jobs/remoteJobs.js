@@ -143,24 +143,31 @@ export function parsePollOutput(out) {
 /**
  * Build the cancel command (pure; testable).
  * @param {string} jobId
- * @param {{ termOnly?: boolean }} [opts] termOnly = SIGTERM without the
- *   kill -9 escalation (serve drivers — plan P0a cancel semantics).
+ * @param {{ termOnly?: boolean }} [opts] termOnly = SIGTERM the driver's
+ *   PROCESS GROUP (no kill -9 escalation): the job wrapper and its child
+ *   recipe launcher share the non-interactive shell's group (no job
+ *   control), so a group TERM kills the launcher too — a lone wrapper TERM
+ *   would leave start.sh alive to launch containers AFTER the stop [R4].
  */
 export function buildCancelCommand(jobId, { termOnly = false } = {}) {
   const q = shellQuote(jobId);
-  const lines = [
+  if (termOnly) {
+    return [
+      `if [ -f ~/.sparkdash/jobs/${q}.pid ]; then`,
+      `  PID=$(cat ~/.sparkdash/jobs/${q}.pid);`,
+      `  PG=$(ps -o pgid= -p "$PID" 2>/dev/null | tr -d ' ');`,
+      `  if [ -n "$PG" ]; then kill -TERM -"$PG" 2>/dev/null || true; else kill "$PID" 2>/dev/null || true; fi`,
+      "fi; echo cancelled",
+    ].join("\n");
+  }
+  return [
     `if [ -f ~/.sparkdash/jobs/${q}.pid ]; then`,
     `  PID=$(cat ~/.sparkdash/jobs/${q}.pid);`,
     "  kill \"$PID\" 2>/dev/null || true;",
-  ];
-  if (!termOnly) {
-    lines.push(
-      "  sleep 1;",
-      "  kill -9 \"$PID\" 2>/dev/null || true;"
-    );
-  }
-  lines.push("fi; echo cancelled");
-  return lines.join("\n");
+    "  sleep 1;",
+    "  kill -9 \"$PID\" 2>/dev/null || true;",
+    "fi; echo cancelled",
+  ].join("\n");
 }
 
 export class RemoteJobManager {
