@@ -913,8 +913,11 @@ app.post("/api/jobs", async (req, res) => {
         const m = body.model;
         if (!validModelName(m)) return res.status(400).json({ error: "invalid or missing model name" });
         if (kind === "sync") {
-          if (!cfg.nasRoot) return res.status(400).json({ error: "modelctl.nasRoot not configured" });
-          script = buildSyncScript({ name: m, nasRoot: cfg.nasRoot, remoteBin: cfg.remoteBin });
+          // D7: resolve root against the TARGET spark (per-node nasRoot wins),
+          // not the global setting — multi-NAS safe and matches download/queue.
+          const syncRoot = modelctl.nasRootFor(spark);
+          if (!syncRoot) return res.status(400).json({ error: "modelctl.nasRoot not configured" });
+          script = buildSyncScript({ name: m, nasRoot: syncRoot, remoteBin: cfg.remoteBin });
           name = `sync ${m}`;
         } else if (kind === "push") {
           const sourceSparkId = body.sourceSparkId || sparkId;
@@ -1156,6 +1159,8 @@ import {
   buildServeStopCommand,
   buildServeStatusCommand,
   buildServeLogCommand,
+  buildServeStatusAllCommand,
+  parseServeStatusAllOutput,
   parseServeStartOutput,
   parseServeStatusOutput,
   parseServingHeader,
@@ -1166,17 +1171,21 @@ import {
   buildServeStartPathCommand,
 } from "./serving/serving.js";
 
-/** In-process start guard: one active start per node (remote check is the second gate). */
+/**
+ * In-process start guard (P0b/D3): one active start per **(node, script)** —
+ * different scripts on one node may start concurrently (the node-side
+ * pidfile liveness guard still forbids double-starting the SAME script).
+ */
 const startingSparks = new Set();
 
-/** Default serving node: nasHostSparkId → head → isLocal → sole spark. */
+/**
+ * Default serving node (script-class only): first NON-NAS spark, preferring
+ * role head → isLocal → sole. kind "nas" nodes own the model store and never
+ * serve (plan D2 — the old chain resolved to the NAS box).
+ */
 function defaultServingSpark() {
-  const cfg = getSettings().modelctl || {};
-  if (cfg.nasHostSparkId) {
-    const s = registry.getSpark(cfg.nasHostSparkId);
-    if (s) return s;
-  }
-  return modelctl.defaultNasSpark();
+  const sparks = (registry.sparks || []).filter((sp) => sp.kind !== "nas");
+  return sparks.find((sp) => sp.role === "head") || sparks.find((sp) => sp.isLocal) || sparks[0] || null;
 }
 
 app.get("/api/serving/scripts", (_req, res) => {
@@ -1241,10 +1250,11 @@ app.post("/api/serving/start", async (req, res) => {
       }
     }
 
-    if (startingSparks.has(spark.id)) {
-      return res.status(409).json({ error: `A start is already in progress on ${spark.id}` });
+    const startKey = `${spark.id}:${scriptId}`;
+    if (startingSparks.has(startKey)) {
+      return res.status(409).json({ error: `A start of ${scriptId} is already in progress on ${spark.id}` });
     }
-    startingSparks.add(spark.id);
+    startingSparks.add(startKey);
     try {
       if (isPathRun) recordPathScript(scriptId, body.scriptPath);
       const cmd = isPathRun
@@ -1285,7 +1295,7 @@ app.post("/api/serving/start", async (req, res) => {
       }
       res.json({ success: true, sparkId: spark.id, scriptId, port, status });
     } finally {
-      startingSparks.delete(spark.id);
+      startingSparks.delete(startKey);
     }
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1337,30 +1347,30 @@ app.get("/api/serving/status", async (req, res) => {
     } catch (err) {
       return res.status(400).json({ error: err.message });
     }
-    // One active script per node: without an explicit scriptId, find the
-    // running one (pidfile present) instead of blindly probing the first.
-    let scriptId = req.query.scriptId;
-    if (!scriptId) {
-      for (const id of [...scripts.map((s) => s.id), ...pathIds]) {
-        try {
-          const out = await execOnSpark(spark, buildServeStatusCommand(id), { timeoutMs: 10_000 });
-          if (parseServeStatusOutput(out).running === true) {
-            scriptId = id;
-            break;
-          }
-        } catch {
-          /* offline handled below */
-        }
-      }
-      scriptId = scriptId || fallbackId;
-    }
+    // P0b multi-run: ONE exec answers every known id (was N+1 serial probes,
+    // and the discovery loop bypassed the agent transport). All runs on the
+    // node are reported; ?all=1 returns the list, the legacy single-run shape
+    // (first running, else fallback id) stays default for existing callers.
+    let runs = [];
+    let probeError = null;
     try {
-      const out = await execForSpark(spark, buildServeStatusCommand(scriptId), { timeoutMs: 10_000 });
-      const parsed = parseServeStatusOutput(out);
-      res.json({ sparkId: spark.id, scriptId, ...parsed });
+      const out = await execForSpark(
+        spark,
+        buildServeStatusAllCommand([...scripts.map((x) => x.id), ...pathIds]),
+        { timeoutMs: 10_000 }
+      );
+      runs = parseServeStatusAllOutput(out);
     } catch (err) {
-      res.json({ sparkId: spark.id, scriptId, running: "unknown", error: err.message });
+      probeError = err.message;
     }
+    if (req.query.all === "1") {
+      return res.json({ sparkId: spark.id, runs, error: probeError || undefined });
+    }
+    const wanted = req.query.scriptId || runs.find((r) => r.running)?.scriptId || fallbackId;
+    if (probeError) return res.json({ sparkId: spark.id, scriptId: wanted, running: "unknown", error: probeError });
+    const row = runs.find((r) => r.scriptId === wanted);
+    if (!row) return res.json({ sparkId: spark.id, scriptId: wanted, running: false, startedAt: null });
+    res.json({ sparkId: spark.id, scriptId: row.scriptId, running: row.running, startedAt: row.startedAt });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1444,6 +1454,272 @@ async function planPlacementFor(model, targetSpark) {
     peers: peerInvs,
   });
 }
+// ─── Serve (plan P0a/P1): recipes + deployments ──────────
+import {
+  RecipeStore,
+  validRecipeId,
+  validRecipePath,
+  buildRecipeProbeCommand,
+  parseRecipeProbe,
+} from "./serving/recipes.js";
+import { DeploymentStore, ServeEngine } from "./serving/deployments.js";
+
+const serveRecipes = new RecipeStore();
+const serveDeployments = new DeploymentStore();
+
+/**
+ * [D-port] Ensure a spark probes `port`: add it to llmPorts (idempotent,
+ * hot-reloads the monitor) and push config-update to the agent so its probe
+ * set matches. Returns true when the port was newly added.
+ */
+function ensureSparkLlmPort(sparkId, port) {
+  const spark = registry.getSpark(sparkId);
+  if (!spark || !Number.isInteger(port)) return false;
+  const current = Array.isArray(spark.llmPorts) ? spark.llmPorts : [];
+  if (current.includes(port)) return false;
+  const updated = registry.updateSpark(sparkId, { llmPorts: [...current, port] });
+  const monitor = monitors.get(sparkId);
+  if (monitor) monitor.updateConfig(registry.getSpark(sparkId));
+  else startMonitor(registry.getSpark(sparkId));
+  if (agentRegistry.isConnected(sparkId)) {
+    agentRegistry.send(sparkId, {
+      type: "config-update",
+      config: { llmPorts: updated.llmPorts || [], role: updated.role, llmMonitoring: updated.llmMonitoring !== false, kind: updated.kind, nasRoot: updated.nasRoot || "" },
+    });
+  }
+  return true;
+}
+
+const serveEngine = new ServeEngine({
+  recipeStore: serveRecipes,
+  deployStore: serveDeployments,
+  remoteJobs,
+  exec: execForSpark,
+  registry,
+  getSettings,
+  modelctl,
+  llmSnapshot: (sparkId) => {
+    const mon = monitors.get(sparkId);
+    const snap = mon?.snapshot?.();
+    const rows = snap?.metrics?.llm;
+    const ports = snap?.llmPorts;
+    if (!Array.isArray(rows) || !Array.isArray(ports)) return [];
+    // rows are per configured probe port (index-aligned — same zip the UI
+    // does); attach the port so the join can match a recipe's PORT.
+    return rows.map((r, i) => ({ ...r, port: ports[i] ?? null }));
+  },
+  ensureLlmPort: async (sparkId, port) => ensureSparkLlmPort(sparkId, port),
+});
+
+// [D-boot] node lifecycle: recipes/deployments on a removed spark orphan;
+// a re-added spark un-orphans (probe identity mismatch surfaces as errors).
+registry.onChange((action, spark) => {
+  if (action === "remove" && spark?.id) {
+    serveEngine.orphanSpark(spark.id);
+  } else if (action === "add" && spark?.id) {
+    serveEngine.adoptSpark(spark.id);
+  }
+});
+
+const PROBE_TTL_MS = 15_000;
+const recipeProbeCache = new Map(); // recipeId → { at, probe }
+
+async function probeRecipe(spark, recipe, { force = false } = {}) {
+  const now = Date.now();
+  if (!force && recipe.versions?.probedAt && now - recipe.versions.probedAt < PROBE_TTL_MS) {
+    return { cached: true };
+  }
+  const inFlight = recipeProbeCache.get(recipe.id);
+  if (inFlight) return { pending: inFlight };
+  const p = execForSpark(spark, buildRecipeProbeCommand(recipe.path), { timeoutMs: 12_000 })
+    .then((out) => {
+      const probe = parseRecipeProbe(out);
+      serveRecipes.updateFromProbe(recipe.id, probe);
+      return probe;
+    })
+    .catch((err) => {
+      serveRecipes.updateFromProbe(recipe.id, { ok: false, error: err.message });
+      return { ok: false, error: err.message };
+    })
+    .finally(() => recipeProbeCache.delete(recipe.id));
+  recipeProbeCache.set(recipe.id, p);
+  return { ran: p };
+}
+
+app.get("/api/serve/recipes", async (req, res) => {
+  try {
+    const force = req.query.refresh === "1";
+    const list = serveRecipes.list();
+    for (const r of list) {
+      if (r.orphaned || r.meta) continue; // never probe orphans; registered rows refresh on demand
+      const spark = registry.getSpark(r.sparkId);
+      if (!spark) continue;
+      await probeRecipe(spark, r, { force }).then((x) => x.ran).catch(() => undefined);
+    }
+    res.json({ recipes: serveRecipes.list().map((r) => redactRecipe(r)) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Defense-in-depth redaction before anything hits the wire. */
+function redactRecipe(r) {
+  const c = { ...r, meta: r.meta ? { ...r.meta } : r.meta };
+  if (c.meta) {
+    for (const k of Object.keys(c.meta)) if (/(KEY|TOKEN|SECRET|PASSWORD)$/i.test(k)) delete c.meta[k];
+    // secretPresence is { KEY: true } booleans by construction — keep shape honest.
+    c.meta.secretPresence = Object.fromEntries(
+      Object.keys(c.meta.secretPresence || {}).map((k) => [k, true])
+    );
+  }
+  return c;
+}
+
+app.post("/api/serve/recipes", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const spark = registry.getSpark(body.sparkId);
+    if (!spark) return res.status(404).json({ error: "Spark not found" });
+    if (spark.kind === "nas") return res.status(409).json({ error: "NAS nodes cannot host recipes" });
+    if (!validRecipePath(body.path)) {
+      return res.status(400).json({ error: "path must be an absolute node path (max 4096)" });
+    }
+    if (body.entry != null && (typeof body.entry !== "string" || !/^[A-Za-z0-9._/-]{1,128}$/.test(body.entry) || body.entry.includes("..") || body.entry.startsWith("/"))) {
+      return res.status(400).json({ error: "invalid entry" });
+    }
+    const { recipe, created } = serveRecipes.register({
+      sparkId: spark.id,
+      path: body.path,
+      label: body.label,
+      entry: body.entry || undefined,
+    });
+    let probe = null;
+    try {
+      const out = await execForSpark(spark, buildRecipeProbeCommand(recipe.path), { timeoutMs: 12_000 });
+      probe = parseRecipeProbe(out);
+      serveRecipes.updateFromProbe(recipe.id, probe, body.entry ? { entry: body.entry } : {});
+    } catch (err) {
+      probe = { ok: false, error: err.message };
+      serveRecipes.updateFromProbe(recipe.id, probe);
+    }
+    if (!created && !probe?.ok) return res.json({ recipe: redactRecipe(serveRecipes.get(recipe.id)) });
+    res.status(created ? 201 : 200).json({ recipe: redactRecipe(serveRecipes.get(recipe.id)) });
+  } catch (err) {
+    res.status(err.message?.includes("recipe id") ? 400 : 500).json({ error: err.message });
+  }
+});
+
+app.post("/api/serve/recipes/scan", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const spark = registry.getSpark(body.sparkId);
+    if (!spark) return res.status(404).json({ error: "Spark not found" });
+    if (!validRecipePath(body.dir)) return res.status(400).json({ error: "dir must be an absolute path" });
+    const d = shellQuote(body.dir);
+    const out = await execForSpark(
+      spark,
+      `for f in ${d}/*/start.sh ${d}/start.sh; do [ -f "$f" ] && dirname "$f"; done 2>/dev/null | sort -u | head -40`,
+      { timeoutMs: 15_000 }
+    );
+    res.json({ folders: out.split("\n").map((l) => l.trim()).filter(Boolean) });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+app.post("/api/serve/recipes/:id/refresh", async (req, res) => {
+  try {
+    const r = serveRecipes.get(req.params.id);
+    if (!r) return res.status(404).json({ error: "recipe not found" });
+    const spark = registry.getSpark(r.sparkId);
+    if (!spark) return res.status(404).json({ error: "Spark not found" });
+    const x = probeRecipe(spark, r, { force: true });
+    const probe = x.ran ? await x.ran : { ok: Boolean(r.meta) };
+    res.json({ ok: probe.ok !== false, recipe: redactRecipe(serveRecipes.get(req.params.id) || r) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/serve/recipes/:id", (req, res) => {
+  try {
+    const r = serveRecipes.get(req.params.id);
+    if (!r) return res.status(404).json({ error: "recipe not found" });
+    const d = serveDeployments.byRecipe(r.id);
+    if (d) {
+      const active = remoteJobs.listActiveJobsForResource(`${r.sparkId}:${r.path}`);
+      if (active.length) return res.status(409).json({ error: "recipe-run job active — stop it first" });
+      serveDeployments.remove(d.id);
+    }
+    serveRecipes.remove(r.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Deployment lifecycle. start with an absent model 409s with placement (D-bridge). */
+app.post("/api/serve/deployments/:recipeId/:verb", async (req, res) => {
+  const { verb } = req.params;
+  try {
+    if (!["start", "stop", "restart"].includes(verb)) {
+      return res.status(400).json({ error: "verb must be start|stop|restart" });
+    }
+    if (!validRecipeId(req.params.recipeId) || !serveRecipes.get(req.params.recipeId)) {
+      return res.status(404).json({ error: "recipe not found" });
+    }
+    let out;
+    if (verb === "start") out = await serveEngine.start(req.params.recipeId, { variant: req.body?.variant || null, force: req.body?.force === true });
+    else if (verb === "stop") out = await serveEngine.stop(req.params.recipeId);
+    else out = await serveEngine.restart(req.params.recipeId);
+    if (out.blocked) return res.status(409).json({ error: out.error, blocked: true, placement: out.placement });
+    if (!out.ok) return res.status(400).json({ error: out.error, partial: out.partial });
+    res.status(verb === "start" ? 202 : 200).json(out);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/serve/deployments", async (req, res) => {
+  try {
+    res.json({ deployments: serveDeployments.list() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Cluster join: every recipe's deployment state (5 s UI poll, 5 s cache). */
+app.get("/api/serve/state", async (req, res) => {
+  try {
+    const states = await serveEngine.listStates({ refresh: req.query.refresh === "1" });
+    res.json({ states, at: Date.now() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/serve/logs/:recipeId", async (req, res) => {
+  try {
+    const kind = req.query.kind === "engine" ? "engine" : "driver";
+    if (kind === "engine") {
+      const r = await serveEngine.engineLog(req.params.recipeId, {
+        rank: req.query.rank || "head",
+        tail: req.query.tail,
+        since: req.query.since || null,
+      });
+      return res.json(r);
+    }
+    res.json(await serveEngine.driverLog(req.params.recipeId, req.query.bytes));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// [D-boot] reconcile on boot: re-probe only, never auto-start.
+console.log(`[serve] ${serveEngine.reconcileOnBoot().deployments} deployment(s) desire running (probe-only boot)`);
+
+
+
 
 
 // Cancel a ComfyUI job (running interrupt and/or pending dequeue).

@@ -57,6 +57,7 @@ COPY --from=builder /app/src/shared ./src/shared
 COPY --from=builder /app/src/components/ShowcasePage/showcasePrompts.ts ./src/components/ShowcasePage/showcasePrompts.ts
 COPY --from=builder /app/config ./config
 COPY --from=builder /app/agent/dist ./agent/dist
+COPY --from=builder /app/serving ./serving
 
 # Volume for persistent sparks.json
 VOLUME /app/config

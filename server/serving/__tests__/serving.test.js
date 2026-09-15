@@ -19,6 +19,8 @@ import {
   getPathScripts,
   resolveAnyScriptId,
   buildServeStartPathCommand,
+  buildServeStatusAllCommand,
+  parseServeStatusAllOutput,
 } from "../serving.js";
 
 let tmp;
@@ -86,8 +88,11 @@ test("buildServeStartCommand: env contract quoted, setsid+nohup, pidfile, log ov
   });
   assert.match(cmd, /env MODEL_NAME=m1 PORT=8080 EXTRA_ARGS='--gpu-memory-utilization 0\.9'/);
   assert.match(cmd, /setsid nohup env/);
-  assert.match(cmd, /echo \$! > ~\/\.sparkdash\/runs\/example-vllm\.pid/);
+  assert.match(cmd, /echo \$! > ~\/\.sparkcontrol\/runs\/example-vllm\.pid/);
   assert.match(cmd, /__ALREADY_RUNNING__/);
+  // P0b: the running-guard must ALSO read the legacy dir (adoptLegacy) so a
+  // pre-unification live run isn't double-started.
+  assert.match(cmd, /for __D in ~\/\.sparkcontrol\/runs ~\/\.sparkdash\/runs/);
   // Injection-safe env values.
   const evil = buildServeStartCommand({ scriptId: "s", scriptBody: "x", modelName: "a;rm -rf /", port: 1 });
   assert.ok(evil.includes("'a;rm -rf /'"));
@@ -102,7 +107,8 @@ test("buildServeStopCommand: group kill ladder + missing pidfile → not running
 
 test("buildServeStatusCommand + parse: running with startedAt / stopped / offline-unknown", () => {
   const cmd = buildServeStatusCommand("example-vllm");
-  assert.match(cmd, /kill -0 "\$\(cat ~\/\.sparkdash\/runs\/example-vllm\.pid\)"/);
+  assert.match(cmd, /for __D in ~\/\.sparkcontrol\/runs ~\/\.sparkdash\/runs/);
+  assert.match(cmd, /kill -0 "\$\(cat "\$__D\/example-vllm\.pid"\)"/);
   assert.match(cmd, /stat -c %Y/);
   assert.deepEqual(parseServeStatusOutput("running:1720000000"), { running: true, startedAt: 1720000000000 });
   assert.deepEqual(parseServeStatusOutput("stopped"), { running: false, startedAt: null });
@@ -119,7 +125,10 @@ test("parseServeStartOutput: ok / already-running / dead / unknown", () => {
 });
 
 test("buildServeLogCommand clamps byte counts", () => {
-  assert.equal(buildServeLogCommand("s", 100), `tail -c 500 ~/.sparkdash/runs/s.log 2>/dev/null || true`);
+  const cmd = buildServeLogCommand("s", 100);
+  assert.match(cmd, /^tail -c 500 ~\/\.sparkcontrol\/runs\/s\.log/);
+  // legacy path remains a tail fallback until old runs retire
+  assert.match(cmd, /~\/\.sparkdash\/runs\/s\.log/);
   assert.match(buildServeLogCommand("s", 999999), /tail -c 100000/);
 });
 
@@ -192,7 +201,7 @@ test("buildServeStartPathCommand: on-node file check, quoted path run, same env/
   // Engine runs the node-local path via bash with the env contract.
   assert.match(
     cmd,
-    /setsid nohup env MODEL_NAME=Qwen3-32B-Q4 PORT=8080 EXTRA_ARGS='--max-model-len 4096' bash '\/home\/me\/My Server \(v2\)\.sh' > ~\/\.sparkdash\/runs\/my-serve-123456\.log 2>&1 &/
+    /setsid nohup env MODEL_NAME=Qwen3-32B-Q4 PORT=8080 EXTRA_ARGS='--max-model-len 4096' bash '\/home\/me\/My Server \(v2\)\.sh' > ~\/\.sparkcontrol\/runs\/my-serve-123456\.log 2>&1 &/
   );
 });
 test("parseServeStartOutput: NO_SCRIPT maps to the check-the-path error", () => {
@@ -201,4 +210,30 @@ test("parseServeStartOutput: NO_SCRIPT maps to the check-the-path error", () => 
     alreadyRunning: false,
     error: "script not found on node — check the path",
   });
+});
+
+
+test("buildServeStatusAllCommand: one exec, every id, dual-dir, ids validated", () => {
+  const cmd = buildServeStatusAllCommand(["example-vllm", "start-123456"]);
+  assert.match(cmd, /for __S in example-vllm start-123456/);
+  assert.match(cmd, /for __D in ~\/\.sparkcontrol\/runs ~\/\.sparkdash\/runs/);
+  assert.throws(() => buildServeStatusAllCommand(["../../etc/passwd"]), /Invalid script id/);
+  assert.throws(() => buildServeStatusAllCommand(["a b;rm"]), /Invalid script id/);
+});
+
+test("parseServeStatusAllOutput: rows with ports, garbage skipped", () => {
+  const rows = parseServeStatusAllOutput(
+    "example-vllm running:1720000000\nstart-123456 stopped\nbogus line here\n\n"
+  );
+  assert.deepEqual(rows, [
+    { scriptId: "example-vllm", running: true, startedAt: 1720000000000 },
+    { scriptId: "start-123456", running: false, startedAt: null },
+  ]);
+});
+
+test("buildServeStopCommand: probes BOTH dirs, removes pidfiles in each", () => {
+  const cmd = buildServeStopCommand("example-vllm");
+  assert.match(cmd, /for __D in ~\/\.sparkcontrol\/runs ~\/\.sparkdash\/runs/);
+  assert.match(cmd, /__STOPPED__/);
+  assert.ok(cmd.includes("rm -f ~/.sparkcontrol/runs/example-vllm.pid ~/.sparkdash/runs/example-vllm.pid"));
 });

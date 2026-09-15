@@ -357,7 +357,7 @@ test("serving start by scriptPath: validates before persisting, launches over ss
     // (shellQuote: "" → '', digits pass through.)
     // (shellQuote passes /opt/start.sh through: every char is in its safe set.)
     assert.match(startCall, /\[ -f \/opt\/start\.sh \] \|\| \{ echo "__NO_SCRIPT__"; exit 0; \}/);
-    assert.match(startCall, /setsid nohup env MODEL_NAME='' PORT=8899 EXTRA_ARGS='' bash \/opt\/start\.sh > ~\/.sparkdash\/runs\/start-[0-9a-f]{6}\.log 2>&1 &/);
+    assert.match(startCall, /setsid nohup env MODEL_NAME='' PORT=8899 EXTRA_ARGS='' bash \/opt\/start\.sh > ~\/.sparkcontrol\/runs\/start-[0-9a-f]{6}\.log 2>&1 &/);
     // Library starts upload the body; path runs must not touch the serving dir.
     assert.ok(!startCall.includes("~/.sparkdash/serving"), "no library-style script upload");
     // stop / log accept the path id (resolved via the persisted map).

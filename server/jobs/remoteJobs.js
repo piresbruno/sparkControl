@@ -16,8 +16,12 @@
  * resolved on first poll — pid alive → still running; dead + exit line →
  * completed/failed; dead without it → interrupted. Never blanket-marked.
  *
- * Per-node single-flight (P1): at most one ACTIVE job per node (any kind).
- *
+ * Per-node single-flight (P1): at most one ACTIVE job per node (any kind) —
+ * EXCEPT serve jobs (`kind: "recipe-run"`, plan P0a): an hours-long recipe driver
+ * neither blocks modelctl jobs nor is blocked by them; serve jobs are instead
+ * serialized per recipe folder via `resource` (one active job per resource).
+ * Persistence keeps ALL active jobs (terminal jobs are what `MAX_PERSISTED_JOBS`
+ * trims — a running serve driver must never be evicted from the state file).
  * Transport: every script goes base64 (`printf '%s' <b64> | base64 -d > path`).
  * All caller-supplied values pass through shellQuote. DI-friendly: pass
  * `exec` (async (spark, cmd, opts) => stdout) and `now` for tests.
@@ -52,9 +56,16 @@ const ROOT = path.resolve(__dirname, "..", "..");
 
 const JOBS_STATE_PATH =
   process.env.SPARKDASH_JOBS_STATE_PATH || path.join(ROOT, "config", "modelctl-jobs.json");
-
 const MAX_PERSISTED_JOBS = 30;
 const SWEEP_INTERVAL_MS = 30_000;
+
+/**
+ * Serve job kinds (plan P0a): exempt from the per-node single-flight gate in
+ * both directions, serialized instead per `resource` (a recipe folder), kept
+ * in persisted state regardless of the terminal-job cap, and cancelled with
+ * TERM only (no kill -9 ladder) so a serve driver dies without escalating.
+ */
+export const SERVE_JOB_KINDS = new Set(["recipe-run"]);
 
 /** Artifact pruning prepended to every job (7-day retention on the node). */
 export const JOB_PRUNE_CMD =
@@ -131,17 +142,25 @@ export function parsePollOutput(out) {
 
 /**
  * Build the cancel command (pure; testable).
+ * @param {string} jobId
+ * @param {{ termOnly?: boolean }} [opts] termOnly = SIGTERM without the
+ *   kill -9 escalation (serve drivers — plan P0a cancel semantics).
  */
-export function buildCancelCommand(jobId) {
+export function buildCancelCommand(jobId, { termOnly = false } = {}) {
   const q = shellQuote(jobId);
-  return [
+  const lines = [
     `if [ -f ~/.sparkdash/jobs/${q}.pid ]; then`,
     `  PID=$(cat ~/.sparkdash/jobs/${q}.pid);`,
     "  kill \"$PID\" 2>/dev/null || true;",
-    "  sleep 1;",
-    "  kill -9 \"$PID\" 2>/dev/null || true;",
-    "fi; echo cancelled",
-  ].join("\n");
+  ];
+  if (!termOnly) {
+    lines.push(
+      "  sleep 1;",
+      "  kill -9 \"$PID\" 2>/dev/null || true;"
+    );
+  }
+  lines.push("fi; echo cancelled");
+  return lines.join("\n");
 }
 
 export class RemoteJobManager {
@@ -184,9 +203,14 @@ export class RemoteJobManager {
 
   _persist() {
     try {
-      const jobs = [...this.jobs.values()]
-        .sort((a, b) => b.createdAt - a.createdAt)
-        .slice(0, MAX_PERSISTED_JOBS);
+      // Active jobs always persist (an hours-long serve driver must never be
+      // evicted by the terminal-cap); only terminal records are capped.
+      const all = [...this.jobs.values()].sort((a, b) => b.createdAt - a.createdAt);
+      const active = all.filter((j) => j.status === "running" || j.status === "pending");
+      const terminal = all.filter((j) => j.status !== "running" && j.status !== "pending");
+      const jobs = [...active, ...terminal.slice(0, MAX_PERSISTED_JOBS)].sort(
+        (a, b) => b.createdAt - a.createdAt
+      );
       atomicWrite(this._statePath, JSON.stringify({ version: 1, jobs }, null, 2) + "\n", 0o644);
     } catch (err) {
       console.error("[remoteJobs] failed to persist state:", err.message);
@@ -198,10 +222,12 @@ export class RemoteJobManager {
   /**
    * Start a detached job on the node.
    * @param {object} spark target node
-   * @param {{ name: string, script: string, kind?: string }} spec
+   * @param {{ name: string, script: string, kind?: string, transport?: string|null,
+   *           resource?: string|null }} spec — `resource` is the serve-folder
+   *           lock key for recipe-run jobs (one active job per folder).
    * @returns {Promise<{ jobId: string }>}
    */
-  async startRemoteJob(spark, { name, script, kind = "generic", transport = null }) {
+  async startRemoteJob(spark, { name, script, kind = "generic", transport = null, resource = null }) {
     const jobId = `job-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
     const wrapped = wrapJobScript(script);
     const cmd = buildLaunchCommand(jobId, wrapped);
@@ -215,6 +241,8 @@ export class RemoteJobManager {
       status: "running",
       /** "ssh" forces SSH transport even for isLocal sparks (agent bootstrap). */
       transport,
+      /** Serve-folder lock key (recipe-run only). */
+      ...(resource ? { resource } : {}),
       script: script.slice(0, 4000),
       createdAt: this._now(),
       startedAt: this._now(),
@@ -335,16 +363,21 @@ export class RemoteJobManager {
   }
 
   /**
-   * Cancel a job (kill + kill -9 ladder).
+   * Cancel a job. Non-serve kinds: kill + kill -9 ladder. Serve kinds
+   * (`SERVE_JOB_KINDS`): TERM only — the deployment engine follows with the
+   * recipe's own stop verb; escalation here would race docker teardown.
    * @param {object} spark
    * @param {string} jobId
    */
   async cancelRemoteJob(spark, jobId) {
     const job = this.jobs.get(jobId);
     if (!job) throw new Error(`Unknown job: ${jobId}`);
+    const serve = SERVE_JOB_KINDS.has(job.kind);
     try {
       const exec = job.transport === "ssh" ? sshExec : this._exec;
-      await exec(spark, buildCancelCommand(jobId), { timeoutMs: 10_000 });
+      await exec(spark, buildCancelCommand(jobId, { termOnly: serve }), {
+        timeoutMs: serve ? 15_000 : 10_000,
+      });
     } catch (err) {
       job.lastError = err.message;
     }
@@ -381,17 +414,50 @@ export class RemoteJobManager {
   }
 
   /**
-   * Per-node single-flight helper (P1): true when any ACTIVE job already
-   * targets the node.
+   * Per-node single-flight helper (P1): true when any ACTIVE NON-SERVE job
+   * targets the node. Serve jobs (recipe-run) are excluded in both directions:
+   * an hours-long driver must not lock modelctl jobs out of its node, and a
+   * modelctl transfer must not 409 a deployment start (plan P0a). Serve jobs
+   * serialize per folder via hasActiveJobForResource.
    * @param {string} sparkId
    */
   hasActiveJobForNode(sparkId) {
     for (const job of this.jobs.values()) {
+      if (SERVE_JOB_KINDS.has(job.kind)) continue;
       if (job.sparkId === sparkId && (job.status === "running" || job.status === "pending")) {
         return true;
       }
     }
     return false;
+  }
+
+  /**
+   * Serve-folder lock (P0a): true when an ACTIVE recipe-run job already owns
+   * `resource` (the recipe folder key, `${sparkId}:${path}`).
+   * @param {string} resource
+   */
+  hasActiveJobForResource(resource) {
+    if (!resource) return false;
+    for (const job of this.jobs.values()) {
+      if (!SERVE_JOB_KINDS.has(job.kind)) continue;
+      if (job.resource === resource && (job.status === "running" || job.status === "pending")) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Active (running/pending) serve jobs for one folder resource, newest first.
+   * @param {string} resource
+   */
+  listActiveJobsForResource(resource) {
+    return this.listJobs().filter(
+      (j) =>
+        SERVE_JOB_KINDS.has(j.kind) &&
+        j.resource === resource &&
+        (j.status === "running" || j.status === "pending")
+    );
   }
 
   /**
