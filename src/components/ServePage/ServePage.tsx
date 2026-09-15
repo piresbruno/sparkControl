@@ -379,7 +379,7 @@ function RowActions({
     timer.current = window.setTimeout(() => setArmed(false), 3000);
   };
   const running = isLive(st);
-  const canStart = !st || ["unstarted", "stopped", "failed"].includes(st.state);
+  const canStart = !st || ["unstarted", "stopped", "failed", "foreign"].includes(st.state);
   if (r.orphaned) return <div className="st-actions"><span className="st-sub">node removed</span></div>;
   return (
     <div className="st-actions" onClick={(e) => e.stopPropagation()}>
@@ -430,7 +430,7 @@ function StateChip({ st, sparkOnline }: { st?: ServeState; sparkOnline?: boolean
       ? "success"
       : st.state === "starting" || st.state === "up" || st.state === "stopping"
         ? "accent"
-        : st.state === "failed" || st.state === "orphan"
+        : st.state === "failed" || st.state === "orphan" || st.state === "foreign"
           ? "danger"
           : "off";
   const label =
@@ -440,12 +440,17 @@ function StateChip({ st, sparkOnline }: { st?: ServeState; sparkOnline?: boolean
         : "healthy"
       : st.state === "healthy-keyed"
         ? "healthy · key"
-        : st.state;
+        : st.state === "foreign"
+          ? "port busy — other engine"
+          : st.state;
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
       <ScLed state={led} />
       <span style={{ fontFamily: "var(--mono)", fontSize: "var(--fs-11)", fontWeight: 700, color: "var(--color-text-strong)" }}>{label}</span>
       {st.state === "unknown" && sparkOnline === false && <span className="st-sub">node offline</span>}
+      {st.state === "foreign" && st.servedId && (
+        <span className="st-sub" title="another engine answers this port">≠ {st.servedId}</span>
+      )}
     </span>
   );
 }

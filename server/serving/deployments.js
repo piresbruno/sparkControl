@@ -49,17 +49,31 @@ const ROOT = path.resolve(__dirname, "..", "..");
 export const RECIPE_VERBS = new Set(["start", "stop", "restart", "status", "logs", "download"]);
 
 /** Marker: driver launched detached in its own session (setsid). */
+/**
+ * USER/LOGNAME are unset in non-interactive ssh/nohup shells; recipes that
+ * default WORKER_USER to $USER under `set -u` abort without them (live-smoke
+ * finding: start.sh:94). `id -un` works everywhere POSIX.
+ */
+function shellEnvBootstrap() {
+  return [
+    '[ -n "${USER:-}" ] || USER=$(id -un); export USER',
+    '[ -n "${LOGNAME:-}" ] || LOGNAME=$USER; export LOGNAME',
+  ].join("\n");
+}
+
 export function buildRecipeRunScript(absPath, entry, verb) {
   if (!RECIPE_VERBS.has(verb)) throw new Error(`invalid recipe verb: ${verb}`);
-  return [`cd ${shellQuote(absPath)} || { echo "__RECIPE_NOPATH__"; exit 3; }`, `./${entry} ${verb}`].join(
-    "\n"
-  );
+  return [
+    shellEnvBootstrap(),
+    `cd ${shellQuote(absPath)} || { echo "__RECIPE_NOPATH__"; exit 3; }`,
+    `./${entry} ${verb}`,
+  ].join("\n");
 }
 
 /** One-shot verb exec (stop / status text fallback). */
 export function buildRecipeVerbCommand(absPath, entry, verb) {
   if (!RECIPE_VERBS.has(verb)) throw new Error(`invalid recipe verb: ${verb}`);
-  return `cd ${shellQuote(absPath)} && ./${entry} ${verb}`;
+  return `${shellEnvBootstrap()}\ncd ${shellQuote(absPath)} && ./${entry} ${verb}`;
 }
 
 /**
@@ -174,6 +188,7 @@ export function buildEngineLogCommand(container, { tail = 200, since = null } = 
  *   probe?: { health?: number|null, containers?: object, dockerError?: string } | null,
  *   ranks?: Record<string, string> | null,
  *   servedName?: string | null,
+ *   engineIds?: string[] | null,
  * }} f
  *
  * Precedence notes: a live driver job means "starting" ONLY while the API is
@@ -185,17 +200,30 @@ export function joinServeState(f) {
   const jobLive = f.job && (f.job.status === "running" || f.job.status === "pending");
   const anyRankRunning = f.ranks ? Object.values(f.ranks).some((v) => v === "running") : false;
   const allProbeError = f.probe?.dockerError && !Object.keys(f.probe?.containers || {}).length;
+  // /v1/models ids from either source (WS probe or raw probe output).
+  const seenIds = [
+    ...(f.llm?.modelId ? [f.llm.modelId] : []),
+    ...(f.engineIds || []),
+  ];
+  const idMatch =
+    !f.servedName || seenIds.length === 0
+      ? null
+      : seenIds.some((id) => normModel(id) === normModel(f.servedName));
   const apiUp = f.llm?.available || f.probe?.health === 200;
   if (f.orphaned) return { state: "orphan", jobLive: Boolean(jobLive) };
   // User intent first while a driver is still alive.
   if (jobLive && f.desired === "stopped") return { state: "stopping", jobId: f.job.jobId };
+  if (apiUp && idMatch === false) {
+    // The port answers, but with someone else's engine (port collision with
+    // an unrelated server) — never report this deployment healthy.
+    return { state: "foreign", servedId: seenIds[0] || null, servedIdMatch: false };
+  }
   if (apiUp) {
     return {
       state: "healthy",
       jobId: jobLive ? f.job.jobId : undefined,
       warmup: Boolean(jobLive && f.desired === "running"),
-      servedIdMatch:
-        !f.servedName || !f.llm?.modelId ? null : normModel(f.llm.modelId) === normModel(f.servedName),
+      servedIdMatch: idMatch,
     };
   }
   if (jobLive && f.desired === "running") return { state: "starting", jobId: f.job.jobId };
@@ -211,6 +239,13 @@ export function joinServeState(f) {
     return { state: "failed", exitCode: f.job.exitCode ?? null };
   }
   return { state: "stopped" };
+}
+
+/** "id":"x" occurrences from a possibly-truncated /v1/models payload. */
+export function parseModelIds(raw) {
+  if (!raw) return null;
+  const ids = [...String(raw).matchAll(/"id"\s*:\s*"([^"]+)"/g)].map((m) => m[1]);
+  return ids.length ? ids : null;
 }
 
 function normModel(s) {
@@ -649,6 +684,7 @@ export class ServeEngine {
       probe,
       ranks,
       servedName: meta.servedName,
+      engineIds: parseModelIds(probe?.modelsRaw),
       drift,
     });
     return {

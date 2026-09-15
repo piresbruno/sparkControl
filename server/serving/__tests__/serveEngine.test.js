@@ -331,6 +331,24 @@ test("join precedence: healthy(>warmup job) > starting > stopping > failed; prob
   assert.equal(m.servedIdMatch, true, "basename compare, case-insensitive");
 });
 
+test("join: port answering a FOREIGN engine → foreign, never healthy; matching ids stay healthy", () => {
+  const j = joinServeState;
+  const foreign = j({ desired: "running", probe: { health: 200, containers: {} }, ranks: { CONTAINER_HEAD: "absent" }, servedName: "GLM-EXL3", engineIds: ["qwen3.8-flash-next"] });
+  assert.equal(foreign.state, "foreign");
+  assert.equal(foreign.servedId, "qwen3.8-flash-next");
+  assert.equal(j({ desired: "running", probe: { health: 200 }, ranks: {}, servedName: "GLM-EXL3", engineIds: ["org/GLM-EXL3"] }).state, "healthy");
+  // no servedName in meta → cannot attribute, stays healthy (no false foreign)
+  assert.equal(j({ desired: "running", probe: { health: 200 }, ranks: {}, engineIds: ["whatever"] }).state, "healthy");
+});
+
+test("recipe-run script exports USER/LOGNAME for non-interactive shells", () => {
+  const script = buildRecipeRunScript("/opt/recipes/glm", "start.sh", "start");
+  assert.match(script, /\[ -n "\$\{USER:-\}" \] \|\| USER=\$\(id -un\); export USER/);
+  assert.match(script, /LOGNAME=\$USER; export LOGNAME/);
+  // and the stop verb exec too
+  assert.match(buildRecipeVerbCommand("/opt/recipes/glm", "start.sh", "stop"), /export USER/);
+});
+
 test("stateFor: running job + probe 200 → healthy warmup; ranks merged across head+peer", async () => {
   const f = mkFakes();
   const eng = mkEngine(f);

@@ -1242,6 +1242,7 @@ export interface ServeState {
     | "healthy"
     | "healthy-keyed"
     | "up"
+    | "foreign"
     | "stopped"
     | "failed"
     | "unknown"
@@ -1252,6 +1253,7 @@ export interface ServeState {
   servedIdMatch?: boolean | null;
   note?: string;
   reason?: string;
+  servedId?: string | null;
   authRequired?: boolean;
   exitCode?: number | null;
   drift: { drift: boolean; rebuild?: boolean };
