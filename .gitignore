@@ -14,6 +14,8 @@ config/llm-daily.json
 config/traces.sqlite
 config/traces.sqlite-*
 config/modelctl-jobs.json
+config/serve-recipes.json
+config/serve-deployments.json
 config/serving/
 config/gpu-memory.json
 config/gpu-memory.json.*

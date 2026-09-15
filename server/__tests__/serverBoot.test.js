@@ -23,6 +23,9 @@ for (const [k, v] of Object.entries({
   LLM_DAILY_JSON_PATH: "llm-daily.json",
   TRACES_DB_PATH: "traces.sqlite",
   SPARKDASH_JOBS_STATE_PATH: "jobs.json",
+  // Serve stores (plan P1) — never write repo config from the boot suite.
+  SPARKDASH_SERVE_RECIPES_PATH: "serve-recipes.json",
+  SPARKDASH_SERVE_DEPLOYMENTS_PATH: "serve-deployments.json",
   // path-scripts.json lives next to the serving scripts.
   SPARKDASH_PATH_SCRIPTS_PATH: path.join(tmp, "serving", "path-scripts.json"),
 })) process.env[k] = path.join(tmp, v);
