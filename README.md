@@ -176,7 +176,8 @@ with an env contract only — **no serve commands are generated**:
 
 - Seeded examples (`example-vllm.sh`, `example-llama-cpp.sh`) resolve model paths via `modelctl path "$MODEL_NAME" --local`.
 - Start/Stop/Status/Log over SSH **or the agent**, with placement-aware start: a missing model returns 409 plus sync/push remediations.
-- **Run a script by path** — instead of a `config/serving/` library script, the Serve script panel (node page CH·02) accepts an absolute path **on the target node** (`/home/me/start-vllm.sh`). It is checked at launch (`script not found on node` when absent) and gets a stable derived id (basename + path hash, persisted in `config/serving/path-scripts.json`) so Stop/Status/Log keep working across restarts. A non-empty path takes precedence over the library picker.
+- **Run a script by path** — instead of a `config/serving/` library script, the launch form accepts an absolute path **on the target node** (`/home/me/start-vllm.sh`). It is checked at launch (`script not found on node` when absent) and gets a stable derived id (basename + path hash, persisted with its port + home node in `config/serving/path-scripts.json`) so Stop/Status/Log keep working across restarts. A non-empty path takes precedence over the library picker.
+- **Launch lives in the Serve section** — script-class runs are supervised on the node but controlled cluster-wide: the Serve page lists every running script (plus recorded path-runs) next to recipe deployments, with the same launch form, endpoints, armed stop, and log tail. The node page keeps the engine bays (WS truth + armed stop); its "Serve new model…" button deep-links to /serve.
 - Edit scripts directly on disk (config volume); they survive container restarts.
 
 ### Serve — cluster model serving with recipes
@@ -184,10 +185,12 @@ with an env contract only — **no serve commands are generated**:
 The **Serve** section (nav, alongside Overview/Models/Analysis) controls model serving **cluster-wide**
 instead of node-by-node. The unit is a **recipe**: a folder the user owns on a node
 (`~/recipes/glm-serve/` with `start.sh` + `.env` — often a git repo; the dashboard never edits it),
-registered by `(node, path)`. Script-class panel runs on the node page (CH·02) stay as-is; recipes are a
-separate, cluster-scoped surface.
+registered by `(node, path)`. **Script-class** runs (library scripts / path scripts, the older
+`/api/serving/*` lane) are unified into the same table — rows show running state from a single
+status-all probe per node, ports from the launch record, and launch/stop/log work from here.
 
-- **CH·01 Deployments** — one row per recipe: recipe × node × port × joined state (`stopped → starting →
+- **CH·01 Deployments** — one row per recipe **plus one per live script-class run** (`kind: script` chip):
+  recipe × node × port × joined state (`stopped → starting →
   healthy`; `orphan` when its node is removed, `foreign` when the port answers another engine; drift chips
   when the folder's `git HEAD` moved or got dirty). Start / restart / armed-stop ride the recipe's **own
   dispatch verbs** (`start.sh start|stop|status|logs`); the dashboard supervises a detached driver job per
