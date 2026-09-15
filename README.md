@@ -26,6 +26,7 @@ upstream project; this fork tracks upstream and extends it with the **LocalAI Co
 - **Analysis** — every inference request/response through a built-in reverse proxy, with payloads, timing, and tokens (SQLite, 1-week retention).
 - **modelctl integration** — NAS model store inventory, HF downloads, node sync/push over CX7, placement planning.
 - **Serving scripts** — user-authored bash scripts the dashboard supervises on any node (env contract, no generated serve commands).
+- **Serve (cluster)** — cluster-wide serving over user-owned **recipe folders** on nodes: register → start/stop/restart/logs from one table, NAS↔node placement with sync/push remediations, capacity warnings, and a `/llm/cluster/<name>/v1` gateway across deployments.
 - **Spark Command Agent** — an outbound-WebSocket daemon per node for push metrics, LLM probes, job execution, and serving supervision (SSH demoted to bootstrap + fallback).
 - **Worker model identification** — Overview cards show the actually-running model on worker nodes.
 
@@ -177,6 +178,39 @@ with an env contract only — **no serve commands are generated**:
 - Start/Stop/Status/Log over SSH **or the agent**, with placement-aware start: a missing model returns 409 plus sync/push remediations.
 - **Run a script by path** — instead of a `config/serving/` library script, the Serve script panel (node page CH·02) accepts an absolute path **on the target node** (`/home/me/start-vllm.sh`). It is checked at launch (`script not found on node` when absent) and gets a stable derived id (basename + path hash, persisted in `config/serving/path-scripts.json`) so Stop/Status/Log keep working across restarts. A non-empty path takes precedence over the library picker.
 - Edit scripts directly on disk (config volume); they survive container restarts.
+
+### Serve — cluster model serving with recipes
+
+The **Serve** section (nav, alongside Overview/Models/Analysis) controls model serving **cluster-wide**
+instead of node-by-node. The unit is a **recipe**: a folder the user owns on a node
+(`~/recipes/glm-serve/` with `start.sh` + `.env` — often a git repo; the dashboard never edits it),
+registered by `(node, path)`. Script-class panel runs on the node page (CH·02) stay as-is; recipes are a
+separate, cluster-scoped surface.
+
+- **CH·01 Deployments** — one row per recipe: recipe × node × port × joined state (`stopped → starting →
+  healthy`; `orphan` when its node is removed, `foreign` when the port answers another engine; drift chips
+  when the folder's `git HEAD` moved or got dirty). Start / restart / armed-stop ride the recipe's **own
+  dispatch verbs** (`start.sh start|stop|status|logs`); the dashboard supervises a detached driver job per
+  run (survives dashboard restarts; re-attaches after node reboot as `orphan`-safe state). Expandable
+  console tails the driver log (node file) and the engine log (container `logs` verb / `docker logs`).
+  Endpoints per row: DIRECT (LAN) + PROXY (dashboard) with the API-key chip.
+- **CH·02 Recipes** — register by absolute node path (probe: entry variants, PORT, MODEL, containers,
+  dispatch verbs, `.env` secret **presence only** — values never leave the node), scan helper
+  (`find ~ -maxdepth 3 -name start.sh`), re-probe, unregister (garbage-collects the deployment).
+- **Placement [D-bridge]** — start pre-checks the recipe's `MODEL` against the node inventory: proven
+  **absent** ⇒ 409 with a remediation plan (sync from NAS store / push from a peer — queued as normal
+  modelctl jobs) and an explicit "pull from Hugging Face anyway" (force); **unknown** (modelctl off,
+  inventory stale) ⇒ warning chip, never blocks. When a transfer is needed the dialog also shows the
+  **capacity math** (`free X GB · needs Y GB` vs the node's store filesystem, minus
+  `Settings → modelctl.reserveFreeGiB`) and a transfer-contention warning — warnings never block.
+- **Multi-node recipes** — `NNODES` (or `WORKER_IP` ⇒ 2) declares a head+worker recipe; start refuses
+  (exact-delta dialog) unless the recipe's worker is the configured cluster worker.
+- **Gateway (P4)** — `http://<dashboard>:5555/llm/cluster/<servedName>/v1` proxies to running deployments
+  by `SERVED_MODEL_NAME` (fallback: model basename), healthy-first round-robin; unknown names 404 with the
+  live served-name list. Traced like any proxied LLM traffic (`cluster` is a reserved node id).
+
+State truth = server probe join (`server/serving/deployments.js`), 5 s poll. Persistence:
+`config/serving/recipes.json` + `deployments.json` (desired state), driver jobs in the shared job store.
 
 ### Spark Command Agent
 
