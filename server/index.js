@@ -1491,6 +1491,35 @@ function ensureSparkLlmPort(sparkId, port) {
   return true;
 }
 
+/** Remove a probe port unless other deployments/recipes still use it. */
+function dropSparkLlmPortIfUnused(sparkId, port) {
+  const spark = registry.getSpark(sparkId);
+  if (!spark || !Number.isInteger(port)) return false;
+  const stillUsed = serveRecipes
+    .list()
+    .some(
+      (r) =>
+        r.sparkId === sparkId &&
+        r.meta?.port === port &&
+        serveDeployments.byRecipe(r.id)?.desired === "running"
+    );
+  if (stillUsed) return false;
+  const current = Array.isArray(spark.llmPorts) ? spark.llmPorts : [];
+  if (!current.includes(port)) return false;
+  registry.updateSpark(sparkId, { llmPorts: current.filter((pp) => pp !== port) });
+  const updated = registry.getSpark(sparkId);
+  const monitor = monitors.get(sparkId);
+  if (monitor) monitor.updateConfig(updated);
+  else startMonitor(updated);
+  if (agentRegistry.isConnected(sparkId)) {
+    agentRegistry.send(sparkId, {
+      type: "config-update",
+      config: { llmPorts: updated.llmPorts || [], role: updated.role, llmMonitoring: updated.llmMonitoring !== false, kind: updated.kind, nasRoot: updated.nasRoot || "" },
+    });
+  }
+  return true;
+}
+
 const serveEngine = new ServeEngine({
   recipeStore: serveRecipes,
   deployStore: serveDeployments,
@@ -1508,6 +1537,11 @@ const serveEngine = new ServeEngine({
     // rows are per configured probe port (index-aligned — same zip the UI
     // does); attach the port so the join can match a recipe's PORT.
     return rows.map((r, i) => ({ ...r, port: ports[i] ?? null }));
+  },
+  // Stop settle: force the monitor's llm re-probe (comfy-cancel pattern).
+  nudgeLlm: (sparkId) => {
+    const mon = monitors.get(sparkId);
+    if (mon) void mon._pollDomain?.("llm");
   },
   // P3 matrix capacity: storage rows (MiB) from the live monitor snapshot.
   storageSnapshot: (sparkId) => {
@@ -1660,7 +1694,9 @@ app.delete("/api/serve/recipes/:id", (req, res) => {
       serveDeployments.remove(d.id);
     }
     serveRecipes.remove(r.id);
-    res.json({ success: true });
+    // D-port cleanup: a port the deployment auto-registered leaves with it.
+    const dropped = d?.portAdded && d.port ? dropSparkLlmPortIfUnused(r.sparkId, d.port) : false;
+    res.json({ success: true, portRemoved: dropped || undefined });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

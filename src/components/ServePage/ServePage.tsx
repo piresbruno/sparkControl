@@ -916,7 +916,7 @@ function RemediationJob({
       const res =
         rem.kind === "sync"
           ? await startJob({ kind: "sync", model: rem.model, sparkId: rem.targetSparkId || rem.sparkId })
-          : await startJob({ kind: "push", model: rem.model, sourceSparkId: rem.sparkId, targetSparkId: rem.targetSparkId });
+          : await startJob({ kind: "push", model: rem.model, sparkId: rem.sparkId, targetSparkId: rem.targetSparkId });
       setJobId(res.jobId);
     } catch (err) {
       pushToast(`transfer failed to start: ${httpError(err).message}`);

@@ -144,6 +144,17 @@ test("parseRecipeProbe: script-class dispatch (no status verb) + missing start.s
     fakeProbe({ env: "PORT=1", dispatch: "start\nstop" })
   );
   assert.equal(noDispatch.meta.class, "script");
+  assert.equal(noDispatch.meta.nnodes, 1);
+  // repo-class WITHOUT NNODES but WITH WORKER_IP → pair
+  const pair = parseRecipeProbe(
+    fakeProbe({ env: "PORT=1\nWORKER_IP=10.0.0.2", dispatch: "start\nstop\nstatus" })
+  );
+  assert.equal(pair.meta.nnodes, 2);
+  // repo-class single node (no NNODES, no WORKER_IP) → 1
+  const single = parseRecipeProbe(
+    fakeProbe({ env: "PORT=1", dispatch: "start\nstop\nstatus" })
+  );
+  assert.equal(single.meta.nnodes, 1);
   assert.ok(noDispatch.meta.verbs.includes("stop"));
   const noEntry = parseRecipeProbe(fakeProbe({ files: ["./download.sh 100"] }));
   assert.equal(noEntry.ok, false);

@@ -275,7 +275,11 @@ export function parseRecipeProbe(out) {
       headIp: vars.HEAD_IP || null,
       workerIp: vars.WORKER_IP || null,
       workerUser: vars.WORKER_USER || null,
-      nnodes: vars.NNODES ? Math.max(1, parseInt(vars.NNODES, 10) || 1) : dispatchOk ? 2 : 1,
+      nnodes: vars.NNODES
+        ? Math.max(1, parseInt(vars.NNODES, 10) || 1)
+        : vars.WORKER_IP
+          ? 2
+          : 1,
       tp: vars.TP ? parseInt(vars.TP, 10) || null : null,
       readyTimeoutS: vars.READY_TIMEOUT ? parseInt(vars.READY_TIMEOUT, 10) || null : null,
       maxModelLen: vars.MAX_MODEL_LEN ? parseInt(vars.MAX_MODEL_LEN, 10) || null : null,

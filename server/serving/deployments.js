@@ -474,6 +474,7 @@ export class ServeEngine {
    *   storageSnapshot?: (sparkId) => { label, available, total }[] | null, // for matrix capacity
    *   ensureLlmPort?: async (sparkId, port) => boolean,                  // add + hot-reload (returns added)
    *   dropLlmPort?: async (sparkId, port) => void,
+   *   nudgeLlm?: (sparkId) => void,  // force an immediate llm re-probe (stop settle)
    *   now?: () => number,
    *   probeTtlMs?: number,
    *   versionOf?: (recipe) => object|null,
@@ -611,7 +612,9 @@ export class ServeEngine {
     for (const rec of this._.recipeStore.list()) {
       const dep = this._.deployStore.byRecipe(rec.id);
       if (!dep || dep.desired !== "running") continue;
-      const label = rec.label || rec.path.split("/").pop();
+      // Serve the MODEL identity (not the recipe label): matrix rows are
+      // keyed by store name / repo id, so served marks land on the row the
+      // recipe actually runs (label kept as a fallback chip match).
       const ids = [rec.sparkId];
       // TP>1 recipes serve their peer too (rank on the worker)
       if (rec.meta?.workerIp) {
@@ -619,8 +622,10 @@ export class ServeEngine {
         if (peer) ids.push(peer.id);
       }
       for (const id of ids) {
-        (servedByNode[id] ||= []).push(label);
-        if (rec.meta?.servedName) servedByNode[id].push(rec.meta.servedName);
+        const arr = (servedByNode[id] ||= []);
+        arr.push(rec.label || rec.path.split("/").pop());
+        if (rec.meta?.model) arr.push(rec.meta.model);
+        if (rec.meta?.servedName) arr.push(rec.meta.servedName);
       }
     }
     const built = buildPlacementMatrix(sources, computes.map((sp) => sp.id), servedByNode);
@@ -745,6 +750,13 @@ export class ServeEngine {
       return { ok: false, error: `stop exec failed: ${err.message}`, partial: true };
     }
     this._probeCache.delete(recipeId);
+    // The WS llm[] row lags one monitor poll behind the vanished container —
+    // nudge an immediate re-probe (head + mapped peer) so the join settles.
+    if (this._.nudgeLlm) {
+      this._.nudgeLlm(spark.id);
+      const peer = this._peerSparkForWorkers(recipe);
+      if (peer) this._.nudgeLlm(peer.id);
+    }
     return { ok: true, output: out.trim().slice(-400) };
   }
 

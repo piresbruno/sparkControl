@@ -297,7 +297,7 @@ describe("ServePage — cluster deployments table", () => {
       await user.click(run);
       await waitFor(() =>
         expect(startJob).toHaveBeenCalledWith({
-          kind: "push", model: "glm", sourceSparkId: "spark-1", targetSparkId: "dgx-2",
+          kind: "push", model: "glm", sparkId: "spark-1", targetSparkId: "dgx-2",
         })
       );
     });
