@@ -12,11 +12,14 @@
  *   PORT         user-specified port
  *   EXTRA_ARGS   ONE shellQuote'd string the script expands unquoted
  *
- * Execution target = any spark (role-agnostic); default node = head → isLocal
- * → sole spark. Script content transported per run via base64 to
- * ~/.sparkdash/serving/<id>.sh. Supervision over SSH fallback via sshExec:
- * start (setsid nohup + pidfile + env snapshot, log overwritten per run),
- * stop (process-group kill ladder), status (pidfile + startedAt + env), log tail.
+ * Execution target = any spark (role-agnostic); default node = first
+ * serve-capable spark (kind "nas" EXCLUDED — plan D2), head → isLocal → sole.
+ * Script content transported per run via base64 to
+ * ~/.sparkcontrol/serving/<id>.sh. Supervision (SSH/local fallback path) uses
+ * ~/.sparkcontrol/runs — the SAME home the node agent supervises (plan P0b /
+ * D1 unification); the legacy ~/.sparkdash/runs dir is still probed by
+ * start-guard/stop/status/log until pre-upgrade live runs retire (adoptLegacy
+ * dual-read — switching the dir alone must never report a live engine stopped).
  */
 import fs from "fs";
 import path from "path";
@@ -37,6 +40,10 @@ export const SERVING_CONFIG_DIR =
 /** Persistence for node-local script paths started by path (not library id). */
 export const PATH_SCRIPTS_PATH =
   process.env.SPARKDASH_PATH_SCRIPTS_PATH || path.join(ROOT, "config", "serving", "path-scripts.json");
+
+/** Persistence for the port each script-class run started with (unification). */
+export const RUN_PORTS_PATH =
+  process.env.SPARKDASH_RUN_PORTS_PATH || path.join(ROOT, "config", "serving", "run-ports.json");
 
 /** Strict scriptId: 1–64 chars of [a-z0-9][a-z0-9._-], no leading dot/dash; `..` rejected explicitly. */
 const SCRIPT_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
@@ -99,10 +106,10 @@ const PATH_SCRIPTS_KEEP = 32;
  * start still proceeds (the UI keeps the scriptId from the start response).
  * @returns {boolean} persisted
  */
-export function recordPathScript(id, absPath, filePath = PATH_SCRIPTS_PATH) {
+export function recordPathScript(id, absPath, filePath = PATH_SCRIPTS_PATH, port = null, sparkId = null) {
   try {
     const map = getPathScripts(filePath);
-    map[id] = absPath;
+    map[id] = port != null || sparkId != null ? { path: absPath, port, sparkId } : absPath;
     // Bound the map: the no-scriptId status probe iterates every key, so an
     // unbounded file would grow SSH round trips per poll forever. JSON objects
     // preserve insertion order, so the oldest entries drop first.
@@ -112,6 +119,50 @@ export function recordPathScript(id, absPath, filePath = PATH_SCRIPTS_PATH) {
     return true;
   } catch (err) {
     console.error("[serving] failed to persist path script:", err.message);
+    return false;
+  }
+}
+
+/**
+ * Remember the port a script-class run was started with, keyed by
+ * `<sparkId>:<scriptId>` — the Serve section needs per-run ports the pidfile
+ * probe cannot know. Bounded like path-scripts (oldest drop first).
+ */
+export function recordRunPort(sparkId, scriptId, port, filePath = RUN_PORTS_PATH) {
+  try {
+    const map = getRunPorts(filePath);
+    map[`${sparkId}:${scriptId}`] = port;
+    const keys = Object.keys(map);
+    for (const k of keys.slice(0, Math.max(0, keys.length - 64))) delete map[k];
+    atomicWrite(filePath, JSON.stringify(map, null, 2) + "\n", 0o644);
+    return true;
+  } catch (err) {
+    console.error("[serving] failed to persist run port:", err.message);
+    return false;
+  }
+}
+
+/** Read the persisted run-port map ("<sparkId>:<scriptId>" → port). */
+export function getRunPorts(filePath = RUN_PORTS_PATH) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Forget a run's port (after a confirmed stop). */
+export function forgetRunPort(sparkId, scriptId, filePath = RUN_PORTS_PATH) {
+  try {
+    const map = getRunPorts(filePath);
+    const key = `${sparkId}:${scriptId}`;
+    if (!(key in map)) return false;
+    delete map[key];
+    atomicWrite(filePath, JSON.stringify(map, null, 2) + "\n", 0o644);
+    return true;
+  } catch (err) {
+    console.error("[serving] failed to drop run port:", err.message);
     return false;
   }
 }
@@ -126,8 +177,10 @@ export function resolveAnyScriptId(id, configDir = SERVING_CONFIG_DIR, filePath 
     /* not a library id */
   }
   const map = getPathScripts(filePath);
-  const p = map[id];
-  if (typeof p === "string" && p.startsWith("/")) return { kind: "path", path: p };
+  const rec = map[id];
+  const p = typeof rec === "string" ? rec : rec?.path;
+  if (typeof p === "string" && p.startsWith("/"))
+    return { kind: "path", path: p, port: typeof rec === "object" ? rec.port ?? null : null };
   throw new Error(`Unknown script id: ${id}`);
 }
 
@@ -198,18 +251,38 @@ export function seedServingScripts(configDir = SERVING_CONFIG_DIR, sourceDir = S
 
 // ─── Remote supervision command builders (pure) ───────────
 
+/** Unified supervision home — identical to the agent's (agent/src/main.js). */
+export const SERVE_RUNS_DIR = "~/.sparkcontrol/runs";
+export const SERVE_SCRIPT_DIR = "~/.sparkcontrol/serving";
+/** Pre-unification runs dir — dual-probed (never written again) so live
+ * legacy runs keep working across the upgrade (plan P0b adoptLegacy). */
+export const LEGACY_SERVE_RUNS_DIRS = ["~/.sparkdash/runs"];
+
+/** All candidate runs dirs, newest home first. */
+function runsDirs() {
+  return [SERVE_RUNS_DIR, ...LEGACY_SERVE_RUNS_DIRS];
+}
+
+/** Shell guard: alive pidfile in ANY candidate dir → already running. */
+function alreadyRunningGuard(id) {
+  return [
+    `for __D in ${runsDirs().join(" ")}; do`,
+    `  if [ -f "$__D/${id}.pid" ] && kill -0 "$(cat "$__D/${id}.pid")" 2>/dev/null; then echo "__ALREADY_RUNNING__"; exit 9; fi`,
+    "done",
+  ].join("\n");
+}
+
 /** Build the script-transport + detached-start command (pure). */
 export function buildServeStartCommand({ scriptId, scriptBody, modelName = "", port, extraArgs = "" }) {
   const b64 = Buffer.from(scriptBody, "utf8").toString("base64");
   const id = shellQuote(scriptId);
   return [
-    "mkdir -p ~/.sparkdash/runs ~/.sparkdash/serving",
-    `printf '%s' ${shellQuote(b64)} | base64 -d > ~/.sparkdash/serving/${id}.sh`,
-    `if [ -f ~/.sparkdash/runs/${id}.pid ] && kill -0 "$(cat ~/.sparkdash/runs/${id}.pid)" 2>/dev/null; then echo "__ALREADY_RUNNING__"; exit 9; fi`,
-    `setsid nohup env MODEL_NAME=${shellQuote(modelName)} PORT=${shellQuote(String(port))} EXTRA_ARGS=${shellQuote(extraArgs)} bash ~/.sparkdash/serving/${id}.sh > ~/.sparkdash/runs/${id}.log 2>&1 &`,
-    `echo $! > ~/.sparkdash/runs/${id}.pid`,
-    `date +%s > ~/.sparkdash/runs/${id}.env`,
-    `sleep 1; kill -0 "$(cat ~/.sparkdash/runs/${id}.pid)" 2>/dev/null && echo "__START_OK__" || echo "__START_DEAD__"`,
+    `mkdir -p ${SERVE_RUNS_DIR} ${SERVE_SCRIPT_DIR}`,
+    `printf '%s' ${shellQuote(b64)} | base64 -d > ${SERVE_SCRIPT_DIR}/${id}.sh`,
+    alreadyRunningGuard(id),
+    `setsid nohup env MODEL_NAME=${shellQuote(modelName)} PORT=${shellQuote(String(port))} EXTRA_ARGS=${shellQuote(extraArgs)} bash ${SERVE_SCRIPT_DIR}/${id}.sh > ${SERVE_RUNS_DIR}/${id}.log 2>&1 &`,
+    `echo $! > ${SERVE_RUNS_DIR}/${id}.pid`,
+    `sleep 1; kill -0 "$(cat ${SERVE_RUNS_DIR}/${id}.pid)" 2>/dev/null && echo "__START_OK__" || echo "__START_DEAD__"`,
   ].join("\n");
 }
 
@@ -222,47 +295,105 @@ export function buildServeStartPathCommand({ scriptId, scriptPath, modelName = "
   const id = shellQuote(scriptId);
   const quotedPath = shellQuote(scriptPath);
   return [
-    "mkdir -p ~/.sparkdash/runs",
+    `mkdir -p ${SERVE_RUNS_DIR}`,
     `[ -f ${quotedPath} ] || { echo "__NO_SCRIPT__"; exit 0; }`,
-    `if [ -f ~/.sparkdash/runs/${id}.pid ] && kill -0 "$(cat ~/.sparkdash/runs/${id}.pid)" 2>/dev/null; then echo "__ALREADY_RUNNING__"; exit 9; fi`,
-    `setsid nohup env MODEL_NAME=${shellQuote(modelName)} PORT=${shellQuote(String(port))} EXTRA_ARGS=${shellQuote(extraArgs)} bash ${quotedPath} > ~/.sparkdash/runs/${id}.log 2>&1 &`,
-    `echo $! > ~/.sparkdash/runs/${id}.pid`,
-    `date +%s > ~/.sparkdash/runs/${id}.env`,
-    `sleep 1; kill -0 "$(cat ~/.sparkdash/runs/${id}.pid)" 2>/dev/null && echo "__START_OK__" || echo "__START_DEAD__"`,
+    alreadyRunningGuard(id),
+    `setsid nohup env MODEL_NAME=${shellQuote(modelName)} PORT=${shellQuote(String(port))} EXTRA_ARGS=${shellQuote(extraArgs)} bash ${quotedPath} > ${SERVE_RUNS_DIR}/${id}.log 2>&1 &`,
+    `echo $! > ${SERVE_RUNS_DIR}/${id}.pid`,
+    `sleep 1; kill -0 "$(cat ${SERVE_RUNS_DIR}/${id}.pid)" 2>/dev/null && echo "__START_OK__" || echo "__START_DEAD__"`,
   ].join("\n");
 }
 
-/** Build the stop command: pidfile → kill process group → escalate. */
+/** Build the stop command: pidfile (any candidate dir) → process-group kill → escalate. */
 export function buildServeStopCommand(scriptId) {
   const id = shellQuote(scriptId);
+  const allPids = runsDirs().map((d) => `${d}/${id}.pid`).join(" ");
   return [
-    `if [ ! -r ~/.sparkdash/runs/${id}.pid ]; then echo "__NOT_RUNNING__"; exit 0; fi`,
-    `PGID=$(cat ~/.sparkdash/runs/${id}.pid)`,
+    '__PF=""',
+    `for __D in ${runsDirs().join(" ")}; do`,
+    `  if [ -z "$__PF" ] && [ -r "$__D/${id}.pid" ] && kill -0 "$(cat "$__D/${id}.pid")" 2>/dev/null; then __PF="$__D/${id}.pid"; fi`,
+    "done",
+    `if [ -z "$__PF" ]; then rm -f ${allPids}; echo "__NOT_RUNNING__"; exit 0; fi`,
+    'PGID=$(cat "$__PF")',
     `kill -- -"$PGID" 2>/dev/null || kill "$PGID" 2>/dev/null || true`,
     "sleep 1",
     `kill -0 "$PGID" 2>/dev/null && kill -9 -- -"$PGID" 2>/dev/null || true`,
-    `rm -f ~/.sparkdash/runs/${id}.pid`,
+    `rm -f ${allPids}`,
     'echo "__STOPPED__"',
   ].join("\n");
 }
 
-/** Build the status command: pidfile liveness + startedAt (pidfile mtime). */
+/** Build the status command: pidfile liveness (any candidate dir) + startedAt (mtime). */
 export function buildServeStatusCommand(scriptId) {
   const id = shellQuote(scriptId);
   return [
-    `if [ -r ~/.sparkdash/runs/${id}.pid ] && kill -0 "$(cat ~/.sparkdash/runs/${id}.pid)" 2>/dev/null; then`,
-    `  MTIME=$(stat -c %Y ~/.sparkdash/runs/${id}.pid 2>/dev/null || echo 0)`,
-    `  echo "running:$MTIME"`,
-    "else",
-    '  echo "stopped"',
-    "fi",
+    '__FOUND=""',
+    `for __D in ${runsDirs().join(" ")}; do`,
+    `  if [ -r "$__D/${id}.pid" ] && kill -0 "$(cat "$__D/${id}.pid")" 2>/dev/null; then`,
+    `    MTIME=$(stat -c %Y "$__D/${id}.pid" 2>/dev/null || echo 0)`,
+    '    echo "running:$MTIME"; __FOUND=1',
+    "  fi",
+    "done",
+    '[ -n "$__FOUND" ] || echo "stopped"',
   ].join("\n");
 }
 
-/** Build the log tail command. */
+/**
+ * Multi-probe: one exec answers the status of EVERY script id (kills the old
+ * N+1 serial discovery loop — plan P0b). Ids must already be validated
+ * (SCRIPT_ID_RE); unvalidated input throws.
+ */
+export function buildServeStatusAllCommand(scriptIds) {
+  const ids = [];
+  for (const id of scriptIds || []) {
+    if (typeof id !== "string" || !SCRIPT_ID_RE.test(id) || id.includes("..")) {
+      throw new Error(`Invalid script id: ${id}`);
+    }
+    ids.push(shellQuote(id));
+  }
+  if (ids.length === 0) return 'echo ""';
+  return [
+    `for __S in ${ids.join(" ")}; do`,
+    '  __ST="stopped"',
+    `  for __D in ${runsDirs().join(" ")}; do`,
+    '    if [ -r "$__D/$__S.pid" ] && kill -0 "$(cat "$__D/$__S.pid")" 2>/dev/null; then',
+    '      __ST="running:$(stat -c %Y "$__D/$__S.pid" 2>/dev/null || echo 0)"',
+    "    fi",
+    "  done",
+    '  echo "$__S $__ST"',
+    "done",
+  ].join("\n");
+}
+
+/**
+ * Parse buildServeStatusAllCommand output → [{ scriptId, running, startedAt }].
+ * Unparseable lines are skipped (a node returning garbage yields [], never a
+ * false "stopped" storm — callers treat [] + explicit ids as unknown).
+ */
+export function parseServeStatusAllOutput(out) {
+  const rows = [];
+  for (const line of String(out ?? "").split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    const m = t.match(/^([a-zA-Z0-9._-]+) (running|stopped)(?::(\d+))?$/);
+    if (!m) continue;
+    rows.push({
+      scriptId: m[1],
+      running: m[2] === "running",
+      startedAt: m[3] ? parseInt(m[3], 10) * 1000 : null,
+    });
+  }
+  return rows;
+}
+
+/** Build the log tail command (dual-dir: a pre-unification run keeps tailing). */
 export function buildServeLogCommand(scriptId, bytes = 4000) {
   const n = Math.max(500, Math.min(Math.round(Number(bytes) || 4000), 100_000));
-  return `tail -c ${n} ~/.sparkdash/runs/${shellQuote(scriptId)}.log 2>/dev/null || true`;
+  const id = shellQuote(scriptId);
+  const paths = runsDirs().map((d) => `${d}/${id}.log`);
+  const first = paths.shift();
+  const fallback = paths.length ? ` || tail -c ${n} ${paths.join(" 2>/dev/null || tail -c " + n)} 2>/dev/null` : "";
+  return `tail -c ${n} ${first} 2>/dev/null${fallback} || true`;
 }
 
 /** Parse start output → { started: boolean, alreadyRunning: boolean, error?: string } */

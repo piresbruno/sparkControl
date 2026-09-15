@@ -6,7 +6,10 @@ export interface Toast {
   kind: "ok" | "err";
 }
 
-export function useToasts(): { toasts: Toast[]; pushToast: (msg: string, kind?: "ok" | "err") => void } {
+/** Stable name for the push callback (consumers pass this, not the hook bag). */
+export type PushToast = (msg: string, kind?: "ok" | "err") => void;
+
+export function useToasts(): { toasts: Toast[]; pushToast: PushToast } {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastSeq = useRef(0);
   const pushToast = useCallback((msg: string, kind: Toast["kind"] = "err") => {

@@ -23,8 +23,12 @@ for (const [k, v] of Object.entries({
   LLM_DAILY_JSON_PATH: "llm-daily.json",
   TRACES_DB_PATH: "traces.sqlite",
   SPARKDASH_JOBS_STATE_PATH: "jobs.json",
+  // Serve stores (plan P1) — never write repo config from the boot suite.
+  SPARKDASH_SERVE_RECIPES_PATH: "serve-recipes.json",
+  SPARKDASH_SERVE_DEPLOYMENTS_PATH: "serve-deployments.json",
   // path-scripts.json lives next to the serving scripts.
   SPARKDASH_PATH_SCRIPTS_PATH: path.join(tmp, "serving", "path-scripts.json"),
+  SPARKDASH_RUN_PORTS_PATH: path.join(tmp, "serving", "run-ports.json"),
 })) process.env[k] = path.join(tmp, v);
 process.env.PORT = "5830";
 
@@ -348,7 +352,8 @@ test("serving start by scriptPath: validates before persisting, launches over ss
     const out = await r.json();
     assert.equal(r.status, 200, JSON.stringify(out));
     assert.match(out.scriptId, /^start-[0-9a-f]{6}$/);
-    assert.equal(JSON.parse(fs.readFileSync(mapPath, "utf8"))[out.scriptId], "/opt/start.sh");
+    // unification: the record carries the launch port + home node now
+    assert.deepEqual(JSON.parse(fs.readFileSync(mapPath, "utf8"))[out.scriptId], { path: "/opt/start.sh", port: 8899, sparkId: "cov-remote" });
     // The serving start runs its command directly over ssh (no job runner),
     // so the node-local guard and the bash <path> invocation are on the wire.
     const startCall = calls.find((c) => c.includes("__NO_SCRIPT__"));
@@ -357,7 +362,7 @@ test("serving start by scriptPath: validates before persisting, launches over ss
     // (shellQuote: "" → '', digits pass through.)
     // (shellQuote passes /opt/start.sh through: every char is in its safe set.)
     assert.match(startCall, /\[ -f \/opt\/start\.sh \] \|\| \{ echo "__NO_SCRIPT__"; exit 0; \}/);
-    assert.match(startCall, /setsid nohup env MODEL_NAME='' PORT=8899 EXTRA_ARGS='' bash \/opt\/start\.sh > ~\/.sparkdash\/runs\/start-[0-9a-f]{6}\.log 2>&1 &/);
+    assert.match(startCall, /setsid nohup env MODEL_NAME='' PORT=8899 EXTRA_ARGS='' bash \/opt\/start\.sh > ~\/.sparkcontrol\/runs\/start-[0-9a-f]{6}\.log 2>&1 &/);
     // Library starts upload the body; path runs must not touch the serving dir.
     assert.ok(!startCall.includes("~/.sparkdash/serving"), "no library-style script upload");
     // stop / log accept the path id (resolved via the persisted map).

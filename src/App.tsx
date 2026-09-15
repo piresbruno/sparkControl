@@ -13,12 +13,13 @@ import { ThemeSwitch } from "./components/ThemeSwitch";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { GearIcon, SparkIcon } from "./components/ui/icons";
 import { ConnectionBanner } from "./components/ui/ConnectionBanner";
-import { OVERVIEW_ID, ANALYSIS_ID, MODELS_ID } from "./constants";
+import { OVERVIEW_ID, ANALYSIS_ID, MODELS_ID, SERVE_ID } from "./constants";
 
 /** Sentinel tab ids — refreshFromApi must never bounce these back to a spark. */
-const SENTINEL_IDS = new Set([OVERVIEW_ID, ANALYSIS_ID, MODELS_ID]);
+const SENTINEL_IDS = new Set([OVERVIEW_ID, ANALYSIS_ID, MODELS_ID, SERVE_ID]);
 import { AnalysisPage } from "./components/AnalysisPage/AnalysisPage";
 import { ModelsPage } from "./components/ModelsPage/ModelsPage";
+import { ServePage } from "./components/ServePage/ServePage";
 import { NasPage } from "./components/NasPage/NasPage";
 import type { Settings, SparkSnapshot } from "./api/types";
 
@@ -151,9 +152,10 @@ function DashboardApp() {
   const isOverview = activeId === OVERVIEW_ID;
   const isAnalysis = activeId === ANALYSIS_ID;
   const isModels = activeId === MODELS_ID;
-  // Sentinel pages (Overview/Analysis/Models) never resolve to a spark —
+  const isServe = activeId === SERVE_ID;
+  // Sentinel pages (Overview/Analysis/Models/Serve) never resolve to a spark —
   // the displaySparks[0] fallback here must not hijack them.
-  const displayActive = isOverview || isAnalysis || isModels
+  const displayActive = isOverview || isAnalysis || isModels || isServe
     ? null
     : displaySparks.find((s) => s.id === activeId) || displaySparks[0] || activeSpark || null;
 
@@ -312,6 +314,8 @@ function DashboardApp() {
             <AnalysisPage />
           ) : isModels ? (
             <ModelsPage />
+          ) : isServe ? (
+            <ServePage sparks={displaySparks} onNavigate={navigate} />
           ) : displayActive?.kind === "nas" ? (
             <NasPage
               key={displayActive.id}

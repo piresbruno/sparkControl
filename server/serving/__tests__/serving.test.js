@@ -18,7 +18,12 @@ import {
   recordPathScript,
   getPathScripts,
   resolveAnyScriptId,
+  recordRunPort,
+  getRunPorts,
+  forgetRunPort,
   buildServeStartPathCommand,
+  buildServeStatusAllCommand,
+  parseServeStatusAllOutput,
 } from "../serving.js";
 
 let tmp;
@@ -86,8 +91,11 @@ test("buildServeStartCommand: env contract quoted, setsid+nohup, pidfile, log ov
   });
   assert.match(cmd, /env MODEL_NAME=m1 PORT=8080 EXTRA_ARGS='--gpu-memory-utilization 0\.9'/);
   assert.match(cmd, /setsid nohup env/);
-  assert.match(cmd, /echo \$! > ~\/\.sparkdash\/runs\/example-vllm\.pid/);
+  assert.match(cmd, /echo \$! > ~\/\.sparkcontrol\/runs\/example-vllm\.pid/);
   assert.match(cmd, /__ALREADY_RUNNING__/);
+  // P0b: the running-guard must ALSO read the legacy dir (adoptLegacy) so a
+  // pre-unification live run isn't double-started.
+  assert.match(cmd, /for __D in ~\/\.sparkcontrol\/runs ~\/\.sparkdash\/runs/);
   // Injection-safe env values.
   const evil = buildServeStartCommand({ scriptId: "s", scriptBody: "x", modelName: "a;rm -rf /", port: 1 });
   assert.ok(evil.includes("'a;rm -rf /'"));
@@ -102,7 +110,8 @@ test("buildServeStopCommand: group kill ladder + missing pidfile → not running
 
 test("buildServeStatusCommand + parse: running with startedAt / stopped / offline-unknown", () => {
   const cmd = buildServeStatusCommand("example-vllm");
-  assert.match(cmd, /kill -0 "\$\(cat ~\/\.sparkdash\/runs\/example-vllm\.pid\)"/);
+  assert.match(cmd, /for __D in ~\/\.sparkcontrol\/runs ~\/\.sparkdash\/runs/);
+  assert.match(cmd, /kill -0 "\$\(cat "\$__D\/example-vllm\.pid"\)"/);
   assert.match(cmd, /stat -c %Y/);
   assert.deepEqual(parseServeStatusOutput("running:1720000000"), { running: true, startedAt: 1720000000000 });
   assert.deepEqual(parseServeStatusOutput("stopped"), { running: false, startedAt: null });
@@ -119,7 +128,10 @@ test("parseServeStartOutput: ok / already-running / dead / unknown", () => {
 });
 
 test("buildServeLogCommand clamps byte counts", () => {
-  assert.equal(buildServeLogCommand("s", 100), `tail -c 500 ~/.sparkdash/runs/s.log 2>/dev/null || true`);
+  const cmd = buildServeLogCommand("s", 100);
+  assert.match(cmd, /^tail -c 500 ~\/\.sparkcontrol\/runs\/s\.log/);
+  // legacy path remains a tail fallback until old runs retire
+  assert.match(cmd, /~\/\.sparkdash\/runs\/s\.log/);
   assert.match(buildServeLogCommand("s", 999999), /tail -c 100000/);
 });
 
@@ -170,7 +182,7 @@ test("resolveAnyScriptId: library first, then path map, else throw", () => {
   recordPathScript("p-123456", "/home/me/run.sh", mapPath);
 
   assert.deepEqual(resolveAnyScriptId("lib", tmp, mapPath), { kind: "library", path: path.join(tmp, "lib.sh") });
-  assert.deepEqual(resolveAnyScriptId("p-123456", tmp, mapPath), { kind: "path", path: "/home/me/run.sh" });
+  assert.deepEqual(resolveAnyScriptId("p-123456", tmp, mapPath), { kind: "path", path: "/home/me/run.sh", port: null });
   assert.throws(() => resolveAnyScriptId("missing", tmp, mapPath));
   // A path-map id pointing outside root-ish shapes stays a plain string —
   // only library ids get traversal-guarded.
@@ -192,7 +204,7 @@ test("buildServeStartPathCommand: on-node file check, quoted path run, same env/
   // Engine runs the node-local path via bash with the env contract.
   assert.match(
     cmd,
-    /setsid nohup env MODEL_NAME=Qwen3-32B-Q4 PORT=8080 EXTRA_ARGS='--max-model-len 4096' bash '\/home\/me\/My Server \(v2\)\.sh' > ~\/\.sparkdash\/runs\/my-serve-123456\.log 2>&1 &/
+    /setsid nohup env MODEL_NAME=Qwen3-32B-Q4 PORT=8080 EXTRA_ARGS='--max-model-len 4096' bash '\/home\/me\/My Server \(v2\)\.sh' > ~\/\.sparkcontrol\/runs\/my-serve-123456\.log 2>&1 &/
   );
 });
 test("parseServeStartOutput: NO_SCRIPT maps to the check-the-path error", () => {
@@ -201,4 +213,56 @@ test("parseServeStartOutput: NO_SCRIPT maps to the check-the-path error", () => 
     alreadyRunning: false,
     error: "script not found on node — check the path",
   });
+});
+
+
+test("buildServeStatusAllCommand: one exec, every id, dual-dir, ids validated", () => {
+  const cmd = buildServeStatusAllCommand(["example-vllm", "start-123456"]);
+  assert.match(cmd, /for __S in example-vllm start-123456/);
+  assert.match(cmd, /for __D in ~\/\.sparkcontrol\/runs ~\/\.sparkdash\/runs/);
+  assert.throws(() => buildServeStatusAllCommand(["../../etc/passwd"]), /Invalid script id/);
+  assert.throws(() => buildServeStatusAllCommand(["a b;rm"]), /Invalid script id/);
+});
+
+test("parseServeStatusAllOutput: rows with ports, garbage skipped", () => {
+  const rows = parseServeStatusAllOutput(
+    "example-vllm running:1720000000\nstart-123456 stopped\nbogus line here\n\n"
+  );
+  assert.deepEqual(rows, [
+    { scriptId: "example-vllm", running: true, startedAt: 1720000000000 },
+    { scriptId: "start-123456", running: false, startedAt: null },
+  ]);
+});
+
+test("buildServeStopCommand: probes BOTH dirs, removes pidfiles in each", () => {
+  const cmd = buildServeStopCommand("example-vllm");
+  assert.match(cmd, /for __D in ~\/\.sparkcontrol\/runs ~\/\.sparkdash\/runs/);
+  assert.match(cmd, /__STOPPED__/);
+  assert.ok(cmd.includes("rm -f ~/.sparkcontrol/runs/example-vllm.pid ~/.sparkdash/runs/example-vllm.pid"));
+});
+
+// ─── run-port store + path-script port/sparkId records (unification) ───
+
+test("recordPathScript with port+sparkId stores a record; resolveAnyScriptId reads path; legacy strings still work", () => {
+  const mapPath = path.join(tmp, "path-scripts.json");
+  recordPathScript("p-a", "/home/me/run.sh", mapPath, 8123, "spark-x");
+  recordPathScript("p-b", "/home/me/legacy.sh", mapPath); // legacy plain string
+  const map = getPathScripts(mapPath);
+  assert.deepEqual(map["p-a"], { path: "/home/me/run.sh", port: 8123, sparkId: "spark-x" });
+  assert.equal(map["p-b"], "/home/me/legacy.sh");
+  assert.deepEqual(resolveAnyScriptId("p-a", tmp, mapPath), { kind: "path", path: "/home/me/run.sh", port: 8123 });
+  assert.deepEqual(resolveAnyScriptId("p-b", tmp, mapPath), { kind: "path", path: "/home/me/legacy.sh", port: null });
+});
+
+test("recordRunPort / getRunPorts / forgetRunPort round-trip + bound to 64", () => {
+  const p = path.join(tmp, "run-ports.json");
+  assert.deepEqual(getRunPorts(p), {});
+  recordRunPort("spark-1", "example-vllm", 8081, p);
+  recordRunPort("spark-2", "start-abc123", 9000, p);
+  assert.deepEqual(getRunPorts(p), { "spark-1:example-vllm": 8081, "spark-2:start-abc123": 9000 });
+  assert.equal(forgetRunPort("spark-1", "example-vllm", p), true);
+  assert.equal(forgetRunPort("spark-1", "example-vllm", p), false); // idempotent
+  assert.deepEqual(getRunPorts(p), { "spark-2:start-abc123": 9000 });
+  for (let i = 0; i < 70; i++) recordRunPort("s", `x-${i}`, 8000 + i, p);
+  assert.equal(Object.keys(getRunPorts(p)).length, 64);
 });

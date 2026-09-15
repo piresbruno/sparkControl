@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useRef, useState } from "react";
-import { OVERVIEW_ID, ANALYSIS_ID, MODELS_ID } from "../constants";
+import { OVERVIEW_ID, ANALYSIS_ID, MODELS_ID, SERVE_ID } from "../constants";
 
 export type RouteMode = "app" | "showcase";
 
@@ -41,6 +41,7 @@ export function useAppRoute(): AppRoute {
  *   /                  → Overview
  *   /analysis[?query]  → Analysis (query kept for ?spark=&port= init)
  *   /models            → Models
+ *   /serve             → Serve (cluster recipes + deployments)
  *   /spark/:id         → Spark detail page
  *   anything else      → null (caller decides; popstate defaults to Overview)
  */
@@ -50,6 +51,10 @@ export function activeIdFromPath(path: string): string | null {
   }
   if (path === "/models" || path.startsWith("/models?") || path.startsWith("/models/")) {
     return MODELS_ID;
+  }
+  // /serve and /serve?... (deep-links: ?recipe=&spark= preselect a row)
+  if (path === "/serve" || path.startsWith("/serve?") || path.startsWith("/serve/")) {
+    return SERVE_ID;
   }
   const match = path.match(/^\/spark\/([^/]+)/);
   if (match) return decodeURIComponent(match[1]);
@@ -64,6 +69,7 @@ export function activeIdFromPath(path: string): string | null {
  *   /             → Overview
  *   /analysis     → Analysis page (sentinel id; query params allowed)
  *   /models       → Models page (sentinel id)
+ *   /serve        → Serve page (sentinel id; ?recipe= deep-link)
  *   /spark/:id    → Spark detail page
  *   /showcase/:id → full-screen showcase (handled separately via useAppRoute)
  *
@@ -114,6 +120,7 @@ export function useRoute(
       if (nextId !== OVERVIEW_ID) {
         if (nextId === ANALYSIS_ID) url = "/analysis";
         else if (nextId === MODELS_ID) url = "/models";
+        else if (nextId === SERVE_ID) url = "/serve";
         else url = `/spark/${encodeURIComponent(nextId)}`;
       }
       window.history.pushState(null, "", url);

@@ -1131,12 +1131,6 @@ export interface MctlJob {
   lastError?: string;
 }
 
-export interface ServingScript {
-  id: string;
-  description: string;
-  defaultPort: number | null;
-}
-
 export interface ServingStatus {
   sparkId: string;
   scriptId?: string;
@@ -1147,7 +1141,197 @@ export interface ServingStatus {
 
 export interface Placement {
   status: "present" | "sync" | "push" | "unavailable";
-  remediations: Array<{ kind: "sync" | "push"; sparkId: string; targetSparkId?: string }>;
+  remediations: Remediation[];
+}
+
+// ─── Serve (cluster recipes + deployments) ─────────────────
+/** One launcher in a recipe folder (start.sh, start-tp4.sh, tp1/start.sh). */
+export interface RecipeVariant {
+  rel: string;
+  name: string;
+}
+
+/** Parsed read-only meta from the node probe (secret VALUES never appear). */
+export interface RecipeMeta {
+  port: number | null;
+  model: string | null;
+  modelFallback: string | null;
+  dflashModel: string | null;
+  servedName: string | null;
+  headIp: string | null;
+  workerIp: string | null;
+  workerUser: string | null;
+  nnodes: number | null;
+  tp: number | null;
+  readyTimeoutS: number | null;
+  maxModelLen: number | null;
+  image: string | null;
+  /** default-entry container set, e.g. { CONTAINER_HEAD: "glm-head", ... }. */
+  containers: Record<string, string>;
+  containersByEntry: Record<string, Record<string, string>>;
+  /** credential KEYS present in .env (booleans only). */
+  secretPresence: Record<string, boolean>;
+  entry: string | null;
+  variants: RecipeVariant[];
+  class: "repo" | "script";
+  verbs: string[];
+}
+
+export interface RecipeVersions {
+  gitHead: string | null;
+  dirtyBuild: boolean;
+  probedAt: number;
+}
+
+/** A registered recipe folder on a node (identity = sparkId + path). */
+export interface ServeRecipe {
+  id: string;
+  sparkId: string;
+  path: string;
+  label: string | null;
+  entry: string | null;
+  meta: RecipeMeta | null;
+  versions: RecipeVersions | null;
+  files: string[];
+  orphaned: boolean;
+  probeError: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ServeDeployment {
+  id: string;
+  recipeId: string;
+  desired: "running" | "stopped";
+  variant: string | null;
+  port: number | null;
+  portAdded?: boolean;
+  jobId: string | null;
+  startedWith: { version: RecipeVersions | null; at: number } | null;
+  createdAt: number;
+  updatedAt: number;
+  lastStopAt?: number;
+  deadAt?: number;
+}
+
+/** /api/serve/state row: recipe deployment joined with live probe truth. */
+export interface ServeState {
+  recipeId: string;
+  sparkId: string;
+  path: string;
+  label: string;
+  variant: string | null;
+  port: number | null;
+  servedName: string | null;
+  model: string | null;
+  topology: { nnodes: number | null; tp: number | null; workerIp: string | null; workerSparkId: string | null };
+  version: RecipeVersions | null;
+  orphaned: boolean;
+  probeError: string | null;
+  ranks: Record<string, "running" | "exited" | "absent" | "error"> | null;
+  engine: { health: number | null; modelsRaw: string | null; dockerError: string | null } | null;
+  state:
+    | "starting"
+    | "stopping"
+    | "healthy"
+    | "healthy-keyed"
+    | "up"
+    | "foreign"
+    | "stopped"
+    | "failed"
+    | "unknown"
+    | "orphan"
+    | "unstarted";
+  jobId?: string;
+  warmup?: boolean;
+  servedIdMatch?: boolean | null;
+  note?: string;
+  reason?: string;
+  servedId?: string | null;
+  authRequired?: boolean;
+  exitCode?: number | null;
+  drift: { drift: boolean; rebuild?: boolean };
+  deployment?: ServeDeployment | null;
+  job?: { jobId: string; status: string; exitCode: number | null; endedAt: number | null } | null;
+  error?: string;
+}
+
+export interface ServeStateResponse {
+  states: ServeState[];
+  at: number;
+}
+
+/** One script-class cluster row from GET /api/serve/scripts (unification). */
+export interface ScriptRun {
+  sparkId: string;
+  scriptId: string;
+  kind: "library" | "path";
+  description: string;
+  path: string | null;
+  port: number | null;
+  running: boolean;
+  startedAt: number | null;
+}
+
+/** Launch library (config/serving/) entry. */
+export interface ServeScriptEntry {
+  id: string;
+  description: string;
+  defaultPort: number | null;
+}
+
+export interface ServeScriptsResponse {
+  scripts: ServeScriptEntry[];
+  pathScripts: Record<string, { path: string; port?: number | null }>;
+  runs: ScriptRun[];
+  nodes: { sparkId: string; probeError: string | null }[];
+  at: number;
+}
+
+/** One model row of the placement matrix (P3). */
+export interface MatrixRow {
+  key: string;
+  name: string;
+  runtime: string | null;
+  repository: string | null;
+  bytes: number | null;
+  nas: "active" | "absent";
+  nodes: Record<string, "current" | "absent">;
+  servedOn: string[];
+}
+
+/** A per-node free-space verdict for one model (MiB-sourced, byte-normalized). */
+export interface CapacityNode {
+  sparkId: string;
+  mount: string;
+  freeBytes: number;
+  neededBytes: number;
+  fits: boolean;
+}
+
+export interface ServeMatrixResponse {
+  nodes: Array<{ sparkId: string; name: string }>;
+  models: MatrixRow[];
+  /** per compute node: raw storage rows ({label, available(MiB), total}) */
+  capacity: Record<string, Array<{ label: string; available: number; total: number }>>;
+  at: number;
+}
+
+/** Capacity verdict for a transfer target (P3 warn — never a blocker). */
+export interface PlacementCapacityWarn {
+  sparkId: string;
+  mount: string;
+  freeBytes: number;
+  neededBytes: number;
+  fits: boolean;
+}
+
+/** Remediation from a placement 409 — carries the resolved modelctl store name. */
+export interface Remediation {
+  kind: "sync" | "push";
+  sparkId: string;
+  targetSparkId?: string;
+  model?: string;
 }
 
 // ─── NAS node (kind "nas") ─────────────────────────────────

@@ -30,6 +30,7 @@ test("defaults expose new fields", () => {
     nasHostSparkId: null,
     remoteBin: "modelctl",
     source: "git+https://github.com/piresbruno/modelctl",
+    reserveFreeGiB: 0,
   });
   assert.deepEqual(s.agent, { tokenConfigured: false });
 });

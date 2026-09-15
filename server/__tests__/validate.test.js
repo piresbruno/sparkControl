@@ -53,6 +53,8 @@ test("isValidSparkId: reserved ids rejected", () => {
   assert.equal(isValidSparkId("__overview__"), false);
   assert.equal(isValidSparkId("__analysis__"), false);
   assert.equal(isValidSparkId("__models__"), false);
+  assert.equal(isValidSparkId("__serve__"), false);
+  assert.equal(isValidSparkId("cluster"), false, "reserved for /llm/cluster/<servedName>");
   assert.equal(isValidSparkId("a;b"), false);
 });
 

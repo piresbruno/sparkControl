@@ -148,6 +148,15 @@ export function SparkIcon({ className = "" }: { className?: string }) {
   );
 }
 
+/** Lightning bolt — the cluster Serve tab. */
+export function BoltIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg {...baseProps(className)}>
+      <path d="M13 2 4.5 13.5H11L9.8 22l8.7-11.5H12L13 2Z" />
+    </svg>
+  );
+}
+
 export function RotateIcon({ className = "" }: { className?: string }) {
   return (
     <svg {...baseProps(className)}>

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { SERVE_ID } from "../../constants";
 import type { ModelctlStatus, SparkConfig, SparkSnapshot } from "../../api/types";
 import { isLlmMonitoringEnabled, resolveSparkRole } from "../../api/sparkRole";
 import {
@@ -291,7 +292,20 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
             note={
               role === "worker"
                 ? "workers serve through their head"
-                : "serve script below · run tests in CH·03"
+                : "engine bays (live truth) · launch & manage runs in the Serve section"
+            }
+            aside={
+              /* Unification: script- and recipe-class control lives on /serve;
+                 the node page keeps WS engine truth + the armed hero stop. */
+              <button
+                type="button"
+                className="key"
+                style={{ padding: "1px 8px", fontSize: "var(--fs-10)" }}
+                onClick={() => onNavigate?.(SERVE_ID)}
+                title="Open the cluster Serve page (deployments, scripts, launch)"
+              >
+                Serve ▸
+              </button>
             }
           />
           <ScServing
