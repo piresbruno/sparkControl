@@ -32,6 +32,9 @@ import {
   rankStates,
   buildDriverLogCommand,
   buildEngineLogCommand,
+  buildPlacementMatrix,
+  capacityCheck,
+  checkTopology,
 } from "../deployments.js";
 
 function tmp() {
@@ -227,7 +230,9 @@ function mkFakes() {
       workerIp: "10.0.0.2", workerUser: null, headIp: "10.0.0.1",
       containers: { CONTAINER_HEAD: "glm-head", CONTAINER_WORKER: "glm-worker" },
       containersByEntry: { "start.sh": { CONTAINER_HEAD: "glm-head", CONTAINER_WORKER: "glm-worker" } },
-      entry: "start.sh", variants: [], class: "repo", verbs: ["start", "stop", "status", "logs", "restart"],
+      entry: "start.sh",
+      variants: [{ rel: "start-tp4.sh", name: "tp4" }],
+      class: "repo", verbs: ["start", "stop", "status", "logs", "restart"],
       secretPresence: {},
     },
     versions: { gitHead: "aaa", dirtyBuild: false, probedAt: Date.now() },
@@ -451,4 +456,119 @@ test("modelInInventory: name/repo/basename matching, unknown on missing list", (
   assert.equal(modelInInventory("other", models), false);
   assert.equal(modelInInventory("org/GLM", null), null);
   assert.equal(modelInInventory(null, models), null);
+});
+
+// ─── P3: matrix / topology / capacity (pure) ───────────────
+
+test("buildPlacementMatrix: per-source membership, NAS identity first, served labels", () => {
+  const sources = [
+    { nas: true, models: [{ name: "glm", runtime: "vllm", repository: "org/GLM", bytes: 176e9 }] },
+    { sparkId: "a", models: [{ name: "glm", runtime: "vllm", repository: "org/GLM", bytes: null }] },
+    { sparkId: "b", models: [] },
+    { sparkId: "b", models: [{ name: "qwen", runtime: null, repository: "org/Qwen", bytes: 40e9 }] },
+  ];
+  const m = buildPlacementMatrix(sources, ["a", "b"], { a: ["glm tp2", "GLM-EXL3"] });
+  assert.deepEqual(m.nodes, ["a", "b"]);
+  const glm = m.models.find((r) => r.key === "glm");
+  const qwen = m.models.find((r) => r.key === "qwen");
+  // membership per (model,node)
+  assert.equal(glm.nodes.a, "current");
+  assert.equal(glm.nodes.b, "absent");
+  assert.equal(qwen.nodes.a, "absent");
+  assert.equal(qwen.nodes.b, "current");
+  // NAS + identity/bytes from the store of record
+  assert.equal(glm.nas, "active");
+  assert.equal(qwen.nas, "absent");
+  assert.equal(glm.bytes, 176e9);
+  assert.equal(glm.repository, "org/GLM");
+  // served label (recipe name or servedName) marks nodes
+  assert.deepEqual(glm.servedOn, ["a"]);
+  assert.deepEqual(qwen.servedOn, []);
+});
+
+test("buildPlacementMatrix: local-name ↔ repository cross-match", () => {
+  // node registers the model under a different local name than the NAS row.
+  const sources = [
+    { nas: true, models: [{ name: "brandonmusic-glm-5-3-flash-tr3-4bpw", repository: "brandonmusic/GLM-5.3-Flash-tr3-4bpw", bytes: 1 }] },
+    { sparkId: "a", models: [{ name: "glm-5-3-flash-tr3-4bpw", repository: "brandonmusic/GLM-5.3-Flash-tr3-4bpw", bytes: 1 }] },
+  ];
+  const m = buildPlacementMatrix(sources, ["a"], {});
+  // both rows key differently by name, but share repository → node membership
+  // resolves via repository for the row whose name is the node's own.
+  const byRepo = m.models.filter((r) => r.repository === "brandonmusic/GLM-5.3-Flash-tr3-4bpw");
+  assert.equal(byRepo.length, 2);
+  assert.ok(byRepo.some((r) => r.nodes.a === "current"), "repository join marks node current");
+});
+
+test("checkTopology: one live variant per fleet size", () => {
+  assert.equal(checkTopology({ nnodes: 2 }, 2).ok, true);
+  assert.equal(checkTopology({ nnodes: 4 }, 2).ok, false);
+  assert.match(checkTopology({ nnodes: 4 }, 2).reason, /4 nodes.*2 compute/);
+  assert.equal(checkTopology({ nnodes: 1 }, 1).ok, true);
+  assert.equal(checkTopology({ nnodes: null }, 1).ok, true);
+});
+
+test("capacityCheck: MiB storage vs bytes, reserve honored", () => {
+  const row = { name: "glm", bytes: 176_000_000_000 };
+  const storage = { a: [{ label: "/", available: 300_000, total: 900_000 }], b: [{ label: "/", available: 100_000, total: 500_000 }] };
+  const c = capacityCheck(row, storage);
+  assert.equal(c.find((x) => x.sparkId === "a").fits, true);
+  assert.equal(c.find((x) => x.sparkId === "b").fits, false);
+  assert.equal(capacityCheck({ name: "x", bytes: null }, storage), null);
+});
+
+test("ServeEngine.matrix: nodes + served rows + capacity passthrough", async () => {
+  const f = mkFakes();
+  const eng = mkEngine(f, {
+    llmSnapshot: () => [],
+    storageSnapshot: (id) => [{ label: "/", available: 100000, total: 200000 }],
+  });
+  // live running deployment: mark desired running through a start
+  f.nodeModels["spark-a"] = [{ name: "glm", repository: "org/GLM" }];
+  f.nodeModels["spark-b"] = [{ name: "other", repository: "org/Other" }];
+  await eng.start(f.recipe.id);
+  const mx = await eng.matrix();
+  assert.deepEqual(mx.nodes.map((n) => n.sparkId).sort(), ["spark-a", "spark-b"]);
+  assert.equal(mx.capacity["spark-a"].length, 1);
+  // recipe's meta.model "glm" (repository org/GLM on spark-a only)
+  const glm = mx.models.find((r) => r.repository === "org/GLM");
+  assert.equal(glm.nodes["spark-a"], "current");
+  assert.equal(glm.nodes["spark-b"], "absent");
+  assert.ok(glm.servedOn.includes("spark-a"), "live deployment marks served");
+  fs.rmSync(f.dir, { recursive: true, force: true });
+});
+
+test("ServeEngine.start: topology 409 before placement; tp4 variant inference", async () => {
+  const f = mkFakes();
+  const eng = mkEngine(f);
+  // default entry nnodes=2 == fleet 2 → placement check would pass (present);
+  // tp4 variant → 4 > 2 → blocked with topology, never launched.
+  const out = await eng.start(f.recipe.id, { variant: "start-tp4.sh" });
+  assert.equal(out.ok, false);
+  assert.ok(out.topology, "topology payload");
+  assert.equal(out.topology.ok, false);
+  assert.equal(f.jobs.length, 0);
+  // and with placement check absent, the force escape STILL cannot bypass topology
+  f.nodeModels["spark-a"] = [];
+  const forced = await eng.start(f.recipe.id, { variant: "start-tp4.sh", force: true });
+  assert.equal(forced.ok, false);
+  assert.ok(forced.topology);
+  fs.rmSync(f.dir, { recursive: true, force: true });
+});
+
+test("placementCheck: parallel peer inventories all queried once each", async () => {
+  const f = mkFakes();
+  f.nodeModels["spark-a"] = []; // absent → peers + NAS fan out
+  const seen = [];
+  const origList = f.modelctl.listNodeModels;
+  f.modelctl.listNodeModels = async (sp) => {
+    seen.push(sp.id);
+    return origList(sp);
+  };
+  const eng = mkEngine(f);
+  const pc = await eng.placementCheck(f.recipe);
+  assert.equal(pc.check, "absent");
+  assert.equal(seen.filter((id) => id === "spark-b").length, 1, "peer queried exactly once");
+  assert.ok(seen.includes("spark-a"));
+  fs.rmSync(f.dir, { recursive: true, force: true });
 });

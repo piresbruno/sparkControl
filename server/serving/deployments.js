@@ -254,6 +254,116 @@ function normModel(s) {
   return base.toLowerCase();
 }
 
+/**
+ * Cluster placement matrix from per-source inventories (pure, P3). Each
+ * source lists ONLY its own models; membership is looked up per
+ * (model,node). Identity/bytes prefer the NAS (store of record), falling
+ * back to any node; keys match on local name, HF repo id, or basename.
+ * @param {Array<{sparkId?: string, nas?: boolean, models: Array<object>}>} sources
+ * @param {string[]} computeSparkIds column order
+ * @param {Record<string, string[]>} servedByNode live-deployment labels per node
+ */
+export function buildPlacementMatrix(sources, computeSparkIds, servedByNode = {}) {
+  const byId = new Map(); // sparkId -> models[]
+  let nas = null;
+  for (const src of sources || []) {
+    if (!src || !Array.isArray(src.models)) continue;
+    if (src.nas) {
+      nas = src.models;
+      continue;
+    }
+    if (src.sparkId) byId.set(src.sparkId, src.models);
+  }
+  const ids = computeSparkIds?.length ? computeSparkIds : [...byId.keys()];
+  const keyFor = (m) =>
+    String(m?.name || (m?.repository ? String(m.repository).toLowerCase() : "") || "").toLowerCase();
+  // Row identity: NAS first, then nodes (first-seen bytes/name win once set).
+  const identity = new Map();
+  const absorb = (m) => {
+    const k = keyFor(m);
+    if (!k) return;
+    const prev = identity.get(k);
+    identity.set(k, {
+      key: k,
+      name: m.name ?? prev?.name ?? k,
+      runtime: m.runtime ?? prev?.runtime ?? null,
+      repository: m.repository ?? prev?.repository ?? null,
+      bytes: m.bytes ?? prev?.bytes ?? null,
+    });
+  };
+  for (const m of nas || []) absorb(m);
+  for (const list of byId.values()) for (const m of list) absorb(m);
+
+  const holds = (list, row) =>
+    Array.isArray(list) &&
+    list.some((x) => {
+      const kx = keyFor(x);
+      return (
+        kx === row.key ||
+        (row.repository && kx === String(row.repository).toLowerCase()) ||
+        (row.name && x?.name === row.name)
+      );
+    });
+
+  const models = [];
+  for (const row of identity.values()) {
+    const nodes = {};
+    for (const id of ids) nodes[id] = holds(byId.get(id), row) ? "current" : "absent";
+    // served = a live recipe deployment on that node names this model
+    const servedOn = ids.filter((id) =>
+      (servedByNode[id] || []).some((label) => {
+        const l = String(label || "").toLowerCase();
+        if (!l) return false;
+        return (
+          l === row.key ||
+          row.key.includes(l) ||
+          l.includes(row.key) ||
+          (row.repository && l.includes(String(row.repository).toLowerCase()))
+        );
+      })
+    );
+    models.push({ ...row, nas: holds(nas, row) ? "active" : "absent", nodes, servedOn });
+  }
+  models.sort((a, b) => a.name.localeCompare(b.name));
+  return { nodes: ids, models };
+}
+
+/** Capacity preflight from matrix bytes vs per-node storage (pure). */
+export function capacityCheck(modelRow, storageByNode, reserveBytes = 0) {
+  if (!modelRow || modelRow.bytes == null) return null;
+  const out = [];
+  for (const [sparkId, rows] of Object.entries(storageByNode || {})) {
+    const list = Array.isArray(rows) ? rows : [];
+    // biggest available wins (model lands on the data mount)
+    const best = list.reduce((a, b) => ((b?.available ?? -1) > (a?.available ?? -1) ? b : a), null);
+    if (!best) continue;
+    const free = (best.available || 0) * 1024 * 1024; // collector is MiB
+    out.push({
+      sparkId,
+      mount: best.label,
+      freeBytes: free,
+      neededBytes: modelRow.bytes + reserveBytes,
+      fits: free >= modelRow.bytes + reserveBytes,
+    });
+  }
+  return out;
+}
+
+/** Topology guard (pure): nnodes declared by the variant vs available compute nodes. */
+export function checkTopology(variantMeta, computeNodeCount) {
+  const nn = variantMeta?.nnodes ?? null;
+  if (!nn || nn <= 1) return { ok: true, nnodes: nn || 1, computeNodes: computeNodeCount };
+  if (computeNodeCount < nn) {
+    return {
+      ok: false,
+      nnodes: nn,
+      computeNodes: computeNodeCount,
+      reason: `variant wants ${nn} nodes, cluster has ${computeNodeCount} compute node${computeNodeCount > 1 ? "s" : ""}`,
+    };
+  }
+  return { ok: true, nnodes: nn, computeNodes: computeNodeCount };
+}
+
 /** Model id ↔ inventory match: local name, HF repo id, or lowercased compare. */
 export function modelInInventory(model, models) {
   if (!model || !Array.isArray(models)) return null; // unknown
@@ -361,6 +471,7 @@ export class ServeEngine {
    *   getSettings: () => object,
    *   modelctl: { listNodeModels(spark), listNasModels(opts), modelctlEnabledSparks() },
    *   llmSnapshot?: (sparkId) => { available, modelId, port }[] | null,  // metrics.llm rows
+   *   storageSnapshot?: (sparkId) => { label, available, total }[] | null, // for matrix capacity
    *   ensureLlmPort?: async (sparkId, port) => boolean,                  // add + hot-reload (returns added)
    *   dropLlmPort?: async (sparkId, port) => void,
    *   now?: () => number,
@@ -413,8 +524,14 @@ export class ServeEngine {
 
   // ── lifecycle ──
 
+  /** Compute-node helper: every registered non-NAS spark. */
+  _computeSparks() {
+    return (this._.registry.sparks || []).filter((sp) => sp.kind !== "nas");
+  }
+
   /**
-   * Placement pre-check for the parsed MODEL on the head node.
+   * Placement pre-check for the parsed MODEL on the head node. Inventories
+   * fan out in parallel (P3 — was a serial per-peer round trip).
    * @returns {Promise<{ check: "present"|"absent"|"unknown", placement?: object }>}
    */
   async placementCheck(recipe) {
@@ -422,34 +539,76 @@ export class ServeEngine {
     if (!model) return { check: "unknown" };
     const spark = this._spark(recipe.sparkId);
     if (!spark || !spark.modelctlEnabled) return { check: "unknown" };
+    const { modelctl } = this._;
+    const inv = await modelctl.listNodeModels(spark).catch(() => null);
+    if (!inv || inv.error) return { check: "unknown" };
+    const present = modelInInventory(model, inv?.models);
+    if (present) return { check: "present" };
+    // Absent → remediation plan (sync from NAS / push from peer).
+    const peers = (await Promise.all(
+      (modelctl.modelctlEnabledSparks() || [])
+        .filter((p) => p.id !== spark.id && p.kind !== "nas")
+        .map(async (p) => {
+          const pInv = await modelctl.listNodeModels(p).catch(() => null);
+          return pInv?.models?.length ? { sparkId: p.id, models: pInv.models } : null;
+        })
+    )).filter(Boolean);
+    let nasInv = null;
     try {
-      const inv = await this._.modelctl.listNodeModels(spark);
-      if (inv?.error) return { check: "unknown" };
-      const present = modelInInventory(model, inv?.models);
-      if (present) return { check: "present" };
-      // Absent → remediation plan (sync from NAS / push from peer).
-      const peers = [];
-      for (const p of this._.modelctl.modelctlEnabledSparks()) {
-        if (p.id === spark.id) continue;
-        const pInv = await this._.modelctl.listNodeModels(p).catch(() => null);
-        if (pInv?.models?.length) peers.push({ sparkId: p.id, models: pInv.models });
-      }
-      let nasInv = null;
-      try {
-        const nas = await this._.modelctl.listNasModels();
-        if (nas?.models?.length) nasInv = { models: nas.models };
-      } catch {
-        /* NAS unknown → planPlacement degrades to push/unavailable */
-      }
-      const placement = planPlacement(model, {
-        target: { sparkId: spark.id, models: inv?.models ?? [] },
-        nas: nasInv,
-        peers,
-      });
-      return { check: "absent", placement };
+      const nas = await modelctl.listNasModels();
+      if (nas?.models?.length) nasInv = { models: nas.models };
     } catch {
-      return { check: "unknown" };
+      /* NAS unknown → planPlacement degrades to push/unavailable */
     }
+    const placement = planPlacement(model, {
+      target: { sparkId: spark.id, models: inv?.models ?? [] },
+      nas: nasInv,
+      peers,
+    });
+    return { check: "absent", placement };
+  }
+
+  /**
+   * Cluster placement matrix (P3): every source's OWN inventory + the live
+   * recipe deployments as served labels + capacity vs storage snapshots.
+   */
+  async matrix() {
+    const { modelctl } = this._;
+    const computes = this._computeSparks();
+    const nodeInv = await Promise.all(
+      computes.map(async (sp) => {
+        const inv = await modelctl.listNodeModels(sp).catch(() => null);
+        return { sparkId: sp.id, nas: false, models: inv?.models || [] };
+      })
+    );
+    const nasInv = await modelctl
+      .listNasModels()
+      .then((r) => (r?.models ? { nas: true, models: r.models } : null))
+      .catch(() => null);
+    const sources = [...(nasInv ? [nasInv] : []), ...nodeInv];
+    const servedByNode = {};
+    for (const rec of this._.recipeStore.list()) {
+      const dep = this._.deployStore.byRecipe(rec.id);
+      if (!dep || dep.desired !== "running") continue;
+      const label = rec.label || rec.path.split("/").pop();
+      const ids = [rec.sparkId];
+      // TP>1 recipes serve their peer too (rank on the worker)
+      if (rec.meta?.workerIp) {
+        const peer = this._peerSparkForWorkers(rec);
+        if (peer) ids.push(peer.id);
+      }
+      for (const id of ids) {
+        (servedByNode[id] ||= []).push(label);
+        if (rec.meta?.servedName) servedByNode[id].push(rec.meta.servedName);
+      }
+    }
+    const built = buildPlacementMatrix(sources, computes.map((sp) => sp.id), servedByNode);
+    const capacity = {};
+    for (const sp of computes) {
+      const snap = this._.storageSnapshot ? this._.storageSnapshot(sp.id) : null;
+      if (Array.isArray(snap)) capacity[sp.id] = snap;
+    }
+    return { nodes: built.nodes.map((id) => ({ sparkId: id, name: this._spark(id)?.name || id })), models: built.models, capacity, at: Date.now() };
   }
 
   /**
@@ -479,6 +638,22 @@ export class ServeEngine {
     const resource = this._resourceKey(recipe);
     if (this._.remoteJobs.hasActiveJobForResource(resource)) {
       return { ok: false, error: `a recipe-run job is already active for this folder` };
+    }
+
+    // [P3] topology guard: a variant whose NNODES exceed the fleet never
+    // starts (cheap, no inventories needed).
+    const variantMeta = {
+      nnodes: variant ? null : recipe.meta?.nnodes ?? null,
+    };
+    // Variant entries carry their own NNODES default (start-tp4.sh → 4); the
+    // probe only parsed the .env for the default entry — infer from the name.
+    if (variant) {
+      const m = variant.match(/tp(\d+)\b/i);
+      variantMeta.nnodes = m ? parseInt(m[1], 10) : recipe.meta?.nnodes ?? null;
+    }
+    const topo = checkTopology(variantMeta, this._computeSparks().length);
+    if (!topo.ok) {
+      return { ok: false, error: topo.reason, topology: topo };
     }
 
     // [D-bridge] hard block only when ABSENCE is proven; unknown warns never block.

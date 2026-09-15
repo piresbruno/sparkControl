@@ -1434,20 +1434,21 @@ app.get("/api/serving/placement", async (req, res) => {
   }
 });
 
-/** Placement for the start-409 path: real inventories, target override. */
+/** Placement for the start-409 path: real inventories (parallel fan-out, P3), target override. */
 async function planPlacementFor(model, targetSpark) {
-  const peers = modelctl.modelctlEnabledSparks().filter((s) => s.id !== targetSpark.id);
-  const [targetInv, nasInv] = await Promise.all([
+  const peers = modelctl.modelctlEnabledSparks().filter((s) => s.id !== targetSpark.id && s.kind !== "nas");
+  const [targetInv, nasInv, ...peerInvsRaw] = await Promise.all([
     modelctl.listNodeModels(targetSpark).catch(() => null),
     modelctl.listNasModels().catch(() => null),
+    ...peers.map((p) => modelctl.listNodeModels(p).catch(() => null)),
   ]);
   const peerInvs = [];
-  for (const p of peers) {
-    const inv = await modelctl.listNodeModels(p).catch(() => null);
+  peers.forEach((p, i) => {
+    const inv = peerInvsRaw[i];
     if (inv && Array.isArray(inv.models) && inv.models.length > 0) {
       peerInvs.push({ sparkId: p.id, models: inv.models });
     }
-  }
+  });
   return planPlacement(model, {
     target: { sparkId: targetSpark.id, models: targetInv?.models ?? [] },
     nas: nasInv?.models?.length ? { models: nasInv.models } : null,
@@ -1507,6 +1508,11 @@ const serveEngine = new ServeEngine({
     // rows are per configured probe port (index-aligned — same zip the UI
     // does); attach the port so the join can match a recipe's PORT.
     return rows.map((r, i) => ({ ...r, port: ports[i] ?? null }));
+  },
+  // P3 matrix capacity: storage rows (MiB) from the live monitor snapshot.
+  storageSnapshot: (sparkId) => {
+    const rows = monitors.get(sparkId)?.snapshot?.()?.metrics?.storage;
+    return Array.isArray(rows) ? rows : null;
   },
   ensureLlmPort: async (sparkId, port) => ensureSparkLlmPort(sparkId, port),
 });
@@ -1685,6 +1691,15 @@ app.post("/api/serve/deployments/:recipeId/:verb", async (req, res) => {
 app.get("/api/serve/deployments", async (req, res) => {
   try {
     res.json({ deployments: serveDeployments.list() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Cluster placement matrix (P3): model × node + served + capacity. */
+app.get("/api/serve/matrix", async (req, res) => {
+  try {
+    res.json(await serveEngine.matrix());
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
