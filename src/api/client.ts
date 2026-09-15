@@ -28,7 +28,6 @@ import type {
   ModelctlStatus,
   NasModel,
   Placement,
-  ServingScript,
   ServingStatus,
   ServeRecipe,
   ServeStateResponse,
@@ -590,10 +589,6 @@ export function getJob(jobId: string): Promise<MctlJob> {
 
 export function cancelJob(jobId: string): Promise<MctlJob> {
   return apiFetch(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
-}
-
-export function listServingScripts(): Promise<{ scripts: ServingScript[] }> {
-  return apiFetch("/api/serving/scripts");
 }
 
 export function servingStart(body: {

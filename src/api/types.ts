@@ -1131,12 +1131,6 @@ export interface MctlJob {
   lastError?: string;
 }
 
-export interface ServingScript {
-  id: string;
-  description: string;
-  defaultPort: number | null;
-}
-
 export interface ServingStatus {
   sparkId: string;
   scriptId?: string;
