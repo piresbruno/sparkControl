@@ -1174,6 +1174,9 @@ import {
   getPathScripts,
   resolveAnyScriptId,
   buildServeStartPathCommand,
+  recordRunPort,
+  getRunPorts,
+  forgetRunPort,
 } from "./serving/serving.js";
 
 /**
@@ -1239,7 +1242,8 @@ app.post("/api/serving/start", async (req, res) => {
 
     // Placement-aware start (B4): when a model is requested and absent on the
     // target node, answer 409 with remediations instead of starting.
-    if (body.modelName) {
+    // `force` (Serve-section parity with recipes) skips the check.
+    if (body.modelName && body.force !== true) {
       let inv = null;
       try {
         inv = await modelctl.listNodeModels(spark);
@@ -1250,6 +1254,7 @@ app.post("/api/serving/start", async (req, res) => {
         const placement = await planPlacementFor(body.modelName, spark);
         return res.status(409).json({
           error: `Model "${body.modelName}" is not present on ${spark.id}`,
+          blocked: true,
           placement,
         });
       }
@@ -1261,7 +1266,8 @@ app.post("/api/serving/start", async (req, res) => {
     }
     startingSparks.add(startKey);
     try {
-      if (isPathRun) recordPathScript(scriptId, body.scriptPath);
+      if (isPathRun) recordPathScript(scriptId, body.scriptPath, undefined, port, spark.id);
+      recordRunPort(spark.id, scriptId, port);
       const cmd = isPathRun
         ? buildServeStartPathCommand({
             scriptId,
@@ -1330,6 +1336,7 @@ app.post("/api/serving/stop", async (req, res) => {
     } catch (err) {
       return res.status(502).json({ error: `stop failed: ${err.message}` });
     }
+    forgetRunPort(spark.id, scriptId);
     res.json({ success: true, running: false, output: out.trim().slice(-200) });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1762,6 +1769,89 @@ app.get("/api/serve/state", async (req, res) => {
   try {
     const states = await serveEngine.listStates({ refresh: req.query.refresh === "1" });
     res.json({ states, at: Date.now() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Script-class cluster view (Serve-section unification): `scripts` is the
+ * launch-form library (config/serving/ ids + persisted path runs, with
+ * per-node running state from ONE status-all probe per online node);
+ * `runs` lists only rows worth a table line (running, or path-recorded).
+ * 5 s cache; port truth from run-ports records (pidfile probes can't know it).
+ */
+let serveScriptsCache = { at: 0, data: null };
+app.get("/api/serve/scripts", async (req, res) => {
+  try {
+    if (req.query.refresh !== "1" && serveScriptsCache.data && Date.now() - serveScriptsCache.at < 5000) {
+      return res.json(serveScriptsCache.data);
+    }
+    const libScripts = listServingScripts();
+    const pathMap = getPathScripts();
+    const runPorts = getRunPorts();
+    const libMeta = Object.fromEntries(libScripts.map((x) => [x.id, x]));
+    const ids = [...Object.keys(libMeta), ...Object.keys(pathMap)];
+    const sparks = (registry.sparks || []).filter((sp) => sp.kind !== "nas");
+    // One status-all exec per compute node (same probe budget as the recipe
+    // join); a failing node reports probeError, never a false "stopped".
+    const perNode = await Promise.all(
+      sparks.map(async (sp) => {
+        if (ids.length === 0) return { sparkId: sp.id, probeError: null, runs: [] };
+        try {
+          const out = await execForSpark(sp, buildServeStatusAllCommand(ids), { timeoutMs: 10_000 });
+          return { sparkId: sp.id, probeError: null, runs: parseServeStatusAllOutput(out) };
+        } catch (err) {
+          return { sparkId: sp.id, probeError: err.message, runs: [] };
+        }
+      })
+    );
+    // table rows: every RUNNING probe result + every path-recorded run that
+    // belongs to this node (stopped path rows stay addressable/startable;
+    // library scripts launch on demand and need no stopped row)
+    const runs = [];
+    for (const n of perNode) {
+      for (const r of n.runs) {
+        if (!r.running) {
+          forgetRunPort(n.sparkId, r.scriptId); // confirmed stopped: drop stale port
+          continue;
+        }
+        runs.push(runRow(n.sparkId, r.scriptId, r.startedAt));
+      }
+      if (n.probeError) continue; // unknown truth — don't claim stopped rows
+      const runningIds = new Set(n.runs.filter((x) => x.running).map((x) => x.scriptId));
+      for (const [id, rec] of Object.entries(pathMap)) {
+        if (runningIds.has(id)) continue;
+        const owner = typeof rec === "object" ? rec?.sparkId : null;
+        if (owner && owner !== n.sparkId) continue;
+        runs.push({ ...runRow(n.sparkId, id, null), running: false });
+      }
+    }
+    function runRow(sparkId, scriptId, startedAt) {
+      const lib = libMeta[scriptId];
+      const rec = pathMap[scriptId];
+      return {
+        sparkId,
+        scriptId,
+        kind: lib ? "library" : "path",
+        description: lib?.description || "",
+        path: typeof rec === "object" ? rec?.path ?? null : rec ?? null,
+        port: runPorts[`${sparkId}:${scriptId}`] ?? (typeof rec === "object" ? rec?.port ?? null : null) ?? lib?.defaultPort ?? null,
+        running: true,
+        startedAt: startedAt ?? null,
+      };
+    }
+    const data = {
+      scripts: libScripts,
+      pathScripts: Object.fromEntries(
+        Object.entries(pathMap).map(([k, v]) => [k, typeof v === "object" ? v : { path: v }])
+      ),
+      runs,
+      nodes: perNode.map((n) => ({ sparkId: n.sparkId, probeError: n.probeError })),
+      at: Date.now(),
+    };
+    serveScriptsCache = { at: Date.now(), data };
+    res.json(data);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ServePage } from "./ServePage";
-import type { ServeRecipe, ServeState } from "../../api/types";
+import type { ServeRecipe, ServeScriptsResponse, ServeState } from "../../api/types";
 
 vi.mock("../../api/client", () => ({
   listServeRecipes: vi.fn(),
@@ -17,6 +17,10 @@ vi.mock("../../api/client", () => ({
   getJob: vi.fn(),
   serveMatrix: vi.fn(),
   startJob: vi.fn(),
+  serveScripts: vi.fn(),
+  servingStart: vi.fn(),
+  servingStop: vi.fn(),
+  servingLog: vi.fn(),
 }));
 
 import {
@@ -27,6 +31,10 @@ import {
   getJob,
   serveMatrix,
   startJob,
+  serveScripts,
+  servingStart,
+  servingStop,
+  servingLog,
 } from "../../api/client";
 
 const recipe = (over: Partial<ServeRecipe> = {}): ServeRecipe => ({
@@ -112,6 +120,18 @@ const matrixResp = () => ({
   at: Date.now(),
 });
 
+const scriptsResp = (over: Partial<ServeScriptsResponse> = {}): ServeScriptsResponse => ({
+  scripts: [{ id: "example-vllm", description: "vLLM example", defaultPort: 8080 }],
+  pathScripts: { "start-abc123": { path: "/home/me/start-vllm.sh" } },
+  runs: [
+    { sparkId: "spark-1", scriptId: "example-vllm", kind: "library", description: "vLLM example", path: null, port: 8082, running: true, startedAt: 1700000000000 },
+    { sparkId: "dgx-2", scriptId: "start-abc123", kind: "path", description: "", path: "/home/me/start-vllm.sh", port: null, running: false, startedAt: null },
+  ],
+  nodes: [],
+  at: Date.now(),
+  ...over,
+});
+
 beforeEach(() => {
   vi.mocked(listServeRecipes).mockResolvedValue({ recipes: [recipe()] });
   vi.mocked(serveState).mockResolvedValue({ states: [state()], at: Date.now() });
@@ -120,6 +140,9 @@ beforeEach(() => {
   vi.mocked(getJob).mockResolvedValue({ jobId: "job-1", kind: "sync", name: "s", sparkId: "spark-a", status: "completed", createdAt: 1, startedAt: 1, endedAt: 2, exitCode: 0, logTail: "done" } as never);
   vi.mocked(startJob).mockResolvedValue({ jobId: "job-t", kind: "sync", sparkId: "spark-a" } as never);
   vi.mocked(serveMatrix).mockResolvedValue(matrixResp());
+  // script-class rows off by default; unification tests install the fixture
+  vi.mocked(serveScripts).mockResolvedValue({ scripts: [], pathScripts: {}, runs: [], nodes: [], at: Date.now() });
+  vi.mocked(servingLog).mockResolvedValue({ sparkId: "spark-1", scriptId: "example-vllm", log: "engine up" });
 });
 
 afterEach(() => {
@@ -326,5 +349,100 @@ describe("ServePage — cluster deployments table", () => {
       await user.type(screen.getByPlaceholderText("filter models…"), "qwen");
       expect(screen.queryByText("served")).toBeNull();
     });
+  });
+});
+
+describe("ServePage — script-class unification", () => {
+  it("renders running + stopped path script rows beside recipe deployments", async () => {
+    vi.mocked(serveScripts).mockResolvedValue(scriptsResp());
+    render(<ServePage sparks={sparks} onNavigate={vi.fn()} />);
+    const running = await screen.findByText("example-vllm");
+    const runningRow = running.closest(".st-row") as HTMLElement;
+    expect(runningRow.textContent).toContain("running");
+    expect(runningRow.textContent).toContain("8082");
+    const stopped = await screen.findByText("start-vllm.sh");
+    const stoppedRow = stopped.closest(".st-row") as HTMLElement;
+    expect(stoppedRow.textContent).toContain("stopped");
+    expect(stoppedRow.textContent).toContain("/home/me/start-vllm.sh");
+  });
+
+  it("stopped path row ▶ start pre-fills the launch form with node + path", async () => {
+    const user = userEvent.setup();
+    vi.mocked(serveScripts).mockResolvedValue(scriptsResp());
+    render(<ServePage sparks={sparks} onNavigate={vi.fn()} />);
+    const stopped = await screen.findByText("start-vllm.sh");
+    const row = stopped.closest(".st-row") as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: /▶ start/ }));
+    await waitFor(() =>
+      expect((screen.getByPlaceholderText(/takes precedence over the library script/) as HTMLInputElement).value).toBe("/home/me/start-vllm.sh")
+    );
+  });
+
+  it("launch with a script path calls servingStart with sparkId + scriptPath", async () => {
+    const user = userEvent.setup();
+    vi.mocked(serveScripts).mockResolvedValue(scriptsResp());
+    vi.mocked(servingStart).mockResolvedValue({ success: true, sparkId: "spark-1", scriptId: "derived-abc123", port: 8081 });
+    render(<ServePage sparks={sparks} onNavigate={vi.fn()} />);
+    await screen.findByText("example-vllm");
+    await user.click(screen.getByRole("button", { name: /▶ launch script…/ }));
+    const selects = screen.getAllByRole("combobox");
+    // [0] = node picker on the Serve page (recipe-class table has none)
+    await user.selectOptions(selects[0] as HTMLSelectElement, "spark-1");
+    await user.type(screen.getByPlaceholderText(/start-vllm\.sh/), "/tmp/echo-serve.sh");
+    await user.click(screen.getByRole("button", { name: /^▶ Start$/ }));
+    await waitFor(() =>
+      expect(servingStart).toHaveBeenCalledWith(
+        expect.objectContaining({ sparkId: "spark-1", scriptPath: "/tmp/echo-serve.sh", port: 8081 })
+      )
+    );
+  });
+
+  it("library flow keeps scriptId (no scriptPath) when path is empty", async () => {
+    const user = userEvent.setup();
+    vi.mocked(serveScripts).mockResolvedValue(scriptsResp());
+    vi.mocked(servingStart).mockResolvedValue({ success: true, sparkId: "spark-1", scriptId: "example-vllm", port: 8080 });
+    render(<ServePage sparks={sparks} onNavigate={vi.fn()} />);
+    await screen.findByText("example-vllm");
+    await user.click(screen.getByRole("button", { name: /▶ launch script…/ }));
+    const selects = screen.getAllByRole("combobox");
+    await user.selectOptions(selects[1] as HTMLSelectElement, "example-vllm");
+    await user.click(screen.getByRole("button", { name: /^▶ Start$/ }));
+    await waitFor(() => expect(servingStart).toHaveBeenCalled());
+    const call = vi.mocked(servingStart).mock.calls[0][0];
+    expect(call).toEqual(expect.objectContaining({ sparkId: "spark-1", scriptId: "example-vllm" }));
+    expect(call.scriptPath).toBeUndefined();
+  });
+
+  it("blocked script launch opens the placement dialog and force retries with force:true", async () => {
+    const user = userEvent.setup();
+    vi.mocked(serveScripts).mockResolvedValue(scriptsResp());
+    vi.mocked(servingStart)
+      .mockRejectedValueOnce({ status: 409, payload: { blocked: true, placement: null }, message: "Model \"m\" is not present on spark-1" })
+      .mockResolvedValueOnce({ success: true, sparkId: "spark-1", scriptId: "example-vllm", port: 8080 });
+    render(<ServePage sparks={sparks} onNavigate={vi.fn()} />);
+    await screen.findByText("example-vllm");
+    await user.click(screen.getByRole("button", { name: /▶ launch script…/ }));
+    const selects = screen.getAllByRole("combobox");
+    await user.selectOptions(selects[1] as HTMLSelectElement, "example-vllm");
+    // set a model so the server-side gate (parity) is exercised via the form
+    await user.type(screen.getByPlaceholderText(/script default/), "m");
+    await user.click(screen.getByRole("button", { name: /^▶ Start$/ }));
+    await screen.findByText(/Weights not on the node/);
+    await user.click(screen.getByRole("button", { name: /Pull from HF anyway/ }));
+    await waitFor(() =>
+      expect(servingStart).toHaveBeenLastCalledWith(expect.objectContaining({ force: true, scriptId: "example-vllm" }))
+    );
+  });
+
+  it("■ stop arms and calls servingStop for the script row", async () => {
+    const user = userEvent.setup();
+    vi.mocked(serveScripts).mockResolvedValue(scriptsResp());
+    vi.mocked(servingStop).mockResolvedValue({ success: true, running: false });
+    render(<ServePage sparks={sparks} onNavigate={vi.fn()} />);
+    const chip = await screen.findByText("example-vllm");
+    const row = chip.closest(".st-row") as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: /■ stop/ }));
+    await user.click(within(row).getByRole("button", { name: /confirm stop/ }));
+    await waitFor(() => expect(servingStop).toHaveBeenCalledWith({ sparkId: "spark-1", scriptId: "example-vllm" }));
   });
 });

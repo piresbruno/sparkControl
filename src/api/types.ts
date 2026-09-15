@@ -1267,6 +1267,33 @@ export interface ServeStateResponse {
   at: number;
 }
 
+/** One script-class cluster row from GET /api/serve/scripts (unification). */
+export interface ScriptRun {
+  sparkId: string;
+  scriptId: string;
+  kind: "library" | "path";
+  description: string;
+  path: string | null;
+  port: number | null;
+  running: boolean;
+  startedAt: number | null;
+}
+
+/** Launch library (config/serving/) entry. */
+export interface ServeScriptEntry {
+  id: string;
+  description: string;
+  defaultPort: number | null;
+}
+
+export interface ServeScriptsResponse {
+  scripts: ServeScriptEntry[];
+  pathScripts: Record<string, { path: string; port?: number | null }>;
+  runs: ScriptRun[];
+  nodes: { sparkId: string; probeError: string | null }[];
+  at: number;
+}
+
 /** One model row of the placement matrix (P3). */
 export interface MatrixRow {
   key: string;

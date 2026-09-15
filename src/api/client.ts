@@ -34,6 +34,7 @@ import type {
   ServeStateResponse,
   ServeDeployment,
   ServeMatrixResponse,
+  ServeScriptsResponse,
   InventoryResponse,
   NasQueueEntry,
   ModelctlRelease,
@@ -603,6 +604,8 @@ export function servingStart(body: {
   modelName?: string;
   port: number;
   extraArgs?: string;
+  /** Skip the placement pre-check (HF pull anyway) — recipe-class parity. */
+  force?: boolean;
 }): Promise<{ success: boolean; sparkId: string; scriptId: string; port: number }> {
   return apiFetch("/api/serving/start", { method: "POST", body: JSON.stringify(body) });
 }
@@ -669,6 +672,11 @@ export function serveDeploymentAction(
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+/** Script-class cluster view (Serve-section unification; 5 s server cache). */
+export function serveScripts(refresh = false): Promise<ServeScriptsResponse> {
+  return apiFetch(`/api/serve/scripts${refresh ? "?refresh=1" : ""}`);
 }
 
 /** Cluster placement matrix: model × node + served + capacity (P3). */

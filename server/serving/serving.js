@@ -41,6 +41,10 @@ export const SERVING_CONFIG_DIR =
 export const PATH_SCRIPTS_PATH =
   process.env.SPARKDASH_PATH_SCRIPTS_PATH || path.join(ROOT, "config", "serving", "path-scripts.json");
 
+/** Persistence for the port each script-class run started with (unification). */
+export const RUN_PORTS_PATH =
+  process.env.SPARKDASH_RUN_PORTS_PATH || path.join(ROOT, "config", "serving", "run-ports.json");
+
 /** Strict scriptId: 1–64 chars of [a-z0-9][a-z0-9._-], no leading dot/dash; `..` rejected explicitly. */
 const SCRIPT_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
@@ -102,10 +106,10 @@ const PATH_SCRIPTS_KEEP = 32;
  * start still proceeds (the UI keeps the scriptId from the start response).
  * @returns {boolean} persisted
  */
-export function recordPathScript(id, absPath, filePath = PATH_SCRIPTS_PATH) {
+export function recordPathScript(id, absPath, filePath = PATH_SCRIPTS_PATH, port = null, sparkId = null) {
   try {
     const map = getPathScripts(filePath);
-    map[id] = absPath;
+    map[id] = port != null || sparkId != null ? { path: absPath, port, sparkId } : absPath;
     // Bound the map: the no-scriptId status probe iterates every key, so an
     // unbounded file would grow SSH round trips per poll forever. JSON objects
     // preserve insertion order, so the oldest entries drop first.
@@ -115,6 +119,50 @@ export function recordPathScript(id, absPath, filePath = PATH_SCRIPTS_PATH) {
     return true;
   } catch (err) {
     console.error("[serving] failed to persist path script:", err.message);
+    return false;
+  }
+}
+
+/**
+ * Remember the port a script-class run was started with, keyed by
+ * `<sparkId>:<scriptId>` — the Serve section needs per-run ports the pidfile
+ * probe cannot know. Bounded like path-scripts (oldest drop first).
+ */
+export function recordRunPort(sparkId, scriptId, port, filePath = RUN_PORTS_PATH) {
+  try {
+    const map = getRunPorts(filePath);
+    map[`${sparkId}:${scriptId}`] = port;
+    const keys = Object.keys(map);
+    for (const k of keys.slice(0, Math.max(0, keys.length - 64))) delete map[k];
+    atomicWrite(filePath, JSON.stringify(map, null, 2) + "\n", 0o644);
+    return true;
+  } catch (err) {
+    console.error("[serving] failed to persist run port:", err.message);
+    return false;
+  }
+}
+
+/** Read the persisted run-port map ("<sparkId>:<scriptId>" → port). */
+export function getRunPorts(filePath = RUN_PORTS_PATH) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Forget a run's port (after a confirmed stop). */
+export function forgetRunPort(sparkId, scriptId, filePath = RUN_PORTS_PATH) {
+  try {
+    const map = getRunPorts(filePath);
+    const key = `${sparkId}:${scriptId}`;
+    if (!(key in map)) return false;
+    delete map[key];
+    atomicWrite(filePath, JSON.stringify(map, null, 2) + "\n", 0o644);
+    return true;
+  } catch (err) {
+    console.error("[serving] failed to drop run port:", err.message);
     return false;
   }
 }
@@ -129,8 +177,10 @@ export function resolveAnyScriptId(id, configDir = SERVING_CONFIG_DIR, filePath 
     /* not a library id */
   }
   const map = getPathScripts(filePath);
-  const p = map[id];
-  if (typeof p === "string" && p.startsWith("/")) return { kind: "path", path: p };
+  const rec = map[id];
+  const p = typeof rec === "string" ? rec : rec?.path;
+  if (typeof p === "string" && p.startsWith("/"))
+    return { kind: "path", path: p, port: typeof rec === "object" ? rec.port ?? null : null };
   throw new Error(`Unknown script id: ${id}`);
 }
 

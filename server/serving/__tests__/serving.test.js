@@ -18,6 +18,9 @@ import {
   recordPathScript,
   getPathScripts,
   resolveAnyScriptId,
+  recordRunPort,
+  getRunPorts,
+  forgetRunPort,
   buildServeStartPathCommand,
   buildServeStatusAllCommand,
   parseServeStatusAllOutput,
@@ -179,7 +182,7 @@ test("resolveAnyScriptId: library first, then path map, else throw", () => {
   recordPathScript("p-123456", "/home/me/run.sh", mapPath);
 
   assert.deepEqual(resolveAnyScriptId("lib", tmp, mapPath), { kind: "library", path: path.join(tmp, "lib.sh") });
-  assert.deepEqual(resolveAnyScriptId("p-123456", tmp, mapPath), { kind: "path", path: "/home/me/run.sh" });
+  assert.deepEqual(resolveAnyScriptId("p-123456", tmp, mapPath), { kind: "path", path: "/home/me/run.sh", port: null });
   assert.throws(() => resolveAnyScriptId("missing", tmp, mapPath));
   // A path-map id pointing outside root-ish shapes stays a plain string —
   // only library ids get traversal-guarded.
@@ -236,4 +239,30 @@ test("buildServeStopCommand: probes BOTH dirs, removes pidfiles in each", () => 
   assert.match(cmd, /for __D in ~\/\.sparkcontrol\/runs ~\/\.sparkdash\/runs/);
   assert.match(cmd, /__STOPPED__/);
   assert.ok(cmd.includes("rm -f ~/.sparkcontrol/runs/example-vllm.pid ~/.sparkdash/runs/example-vllm.pid"));
+});
+
+// ─── run-port store + path-script port/sparkId records (unification) ───
+
+test("recordPathScript with port+sparkId stores a record; resolveAnyScriptId reads path; legacy strings still work", () => {
+  const mapPath = path.join(tmp, "path-scripts.json");
+  recordPathScript("p-a", "/home/me/run.sh", mapPath, 8123, "spark-x");
+  recordPathScript("p-b", "/home/me/legacy.sh", mapPath); // legacy plain string
+  const map = getPathScripts(mapPath);
+  assert.deepEqual(map["p-a"], { path: "/home/me/run.sh", port: 8123, sparkId: "spark-x" });
+  assert.equal(map["p-b"], "/home/me/legacy.sh");
+  assert.deepEqual(resolveAnyScriptId("p-a", tmp, mapPath), { kind: "path", path: "/home/me/run.sh", port: 8123 });
+  assert.deepEqual(resolveAnyScriptId("p-b", tmp, mapPath), { kind: "path", path: "/home/me/legacy.sh", port: null });
+});
+
+test("recordRunPort / getRunPorts / forgetRunPort round-trip + bound to 64", () => {
+  const p = path.join(tmp, "run-ports.json");
+  assert.deepEqual(getRunPorts(p), {});
+  recordRunPort("spark-1", "example-vllm", 8081, p);
+  recordRunPort("spark-2", "start-abc123", 9000, p);
+  assert.deepEqual(getRunPorts(p), { "spark-1:example-vllm": 8081, "spark-2:start-abc123": 9000 });
+  assert.equal(forgetRunPort("spark-1", "example-vllm", p), true);
+  assert.equal(forgetRunPort("spark-1", "example-vllm", p), false); // idempotent
+  assert.deepEqual(getRunPorts(p), { "spark-2:start-abc123": 9000 });
+  for (let i = 0; i < 70; i++) recordRunPort("s", `x-${i}`, 8000 + i, p);
+  assert.equal(Object.keys(getRunPorts(p)).length, 64);
 });

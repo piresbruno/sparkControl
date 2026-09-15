@@ -20,7 +20,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { MctlJob, Placement, PlacementCapacityWarn, ServeMatrixResponse, ServeRecipe, ServeState, SparkSnapshot } from "../../api/types";
+import type { MctlJob, Placement, PlacementCapacityWarn, ScriptRun, ServeMatrixResponse, ServeRecipe, ServeScriptsResponse, ServeState, SparkSnapshot } from "../../api/types";
 import {
   deleteServeRecipe,
   getJob,
@@ -31,7 +31,11 @@ import {
   serveDeploymentAction,
   serveLogs,
   serveMatrix,
+  serveScripts,
   serveState,
+  servingLog,
+  servingStart,
+  servingStop,
   setLlmApiKey,
   startJob,
 } from "../../api/client";
@@ -69,6 +73,17 @@ function httpError(err: unknown): HttpError {
   return { message: e?.message || String(err), status: e?.status, payload: e?.payload };
 }
 
+/** Script-class launch request (Serve-page form → legacy /api/serving/start). */
+interface ScriptLaunchBody {
+  sparkId: string;
+  scriptId: string;
+  scriptPath?: string;
+  modelName?: string;
+  port: number;
+  extraArgs?: string;
+  force?: boolean;
+}
+
 function isLive(st?: ServeState): boolean {
   return Boolean(st && ["starting", "healthy", "healthy-keyed", "up", "stopping"].includes(st.state));
 }
@@ -78,11 +93,23 @@ export function ServePage({ sparks, onNavigate }: ServePageProps) {
   const [recipes, setRecipes] = useState<ServeRecipe[] | null>(null);
   const [states, setStates] = useState<Record<string, ServeState>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
-  const [blocked, setBlocked] = useState<{ recipe: ServeRecipe; error: string; placement: Placement | null; warnings?: string[] } | null>(null);
+  const [blocked, setBlocked] = useState<{
+    kind: "recipe" | "script";
+    recipe: ServeRecipe;
+    /** script class only: the launch body to retry with force:true */
+    launchBody?: ScriptLaunchBody;
+    error: string;
+    placement: Placement | null;
+    warnings?: string[];
+  } | null>(null);
   const [topologyBlocked, setTopologyBlocked] = useState<{ recipe: ServeRecipe; error: string } | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [keyDialog, setKeyDialog] = useState<{ sparkId: string; port: number } | null>(null);
+  const [scriptFormOpen, setScriptFormOpen] = useState(false);
+  const [scriptPrefill, setScriptPrefill] = useState<{ sparkId: string; scriptId: string; path: string | null; nonce: number } | null>(null);
   const [recipesErr, setRecipesErr] = useState<string | null>(null);
+  const [scriptData, setScriptData] = useState<ServeScriptsResponse | null>(null);
+  const [scriptBusy, setScriptBusy] = useState<Record<string, boolean>>({});
   const alive = useRef(true);
 
   useEffect(() => {
@@ -116,12 +143,26 @@ export function ServePage({ sparks, onNavigate }: ServePageProps) {
     }
   }, []);
 
+  const pollScripts = useCallback(async (refresh = false) => {
+    try {
+      const res = await serveScripts(refresh);
+      if (!alive.current) return;
+      setScriptData(res);
+    } catch {
+      /* script rows keep the last join; nodes going offline show stale rows */
+    }
+  }, []);
+
   useEffect(() => {
     void loadRecipes();
     void pollStates();
-    const t = window.setInterval(() => void pollStates(), STATE_POLL_MS);
+    void pollScripts();
+    const t = window.setInterval(() => {
+      void pollStates();
+      void pollScripts();
+    }, STATE_POLL_MS);
     return () => window.clearInterval(t);
-  }, [loadRecipes, pollStates]);
+  }, [loadRecipes, pollStates, pollScripts]);
 
   const sparkName = useCallback((id: string) => sparks.find((s) => s.id === id)?.name || id, [sparks]);
 
@@ -142,7 +183,7 @@ export function ServePage({ sparks, onNavigate }: ServePageProps) {
       } catch (err) {
         const e = httpError(err);
         if (e.payload?.blocked) {
-          setBlocked({ recipe, error: e.message, placement: e.payload.placement ?? null, warnings: e.payload.warnings || [] });
+          setBlocked({ kind: "recipe", recipe, error: e.message, placement: e.payload.placement ?? null, warnings: e.payload.warnings || [] });
         } else if (e.payload?.topology) {
           setTopologyBlocked({ recipe, error: e.message });
         } else {
@@ -157,6 +198,63 @@ export function ServePage({ sparks, onNavigate }: ServePageProps) {
       }
     },
     [pollStates, pushToast]
+  );
+
+  const scriptKey = (r: ScriptRun) => `${r.sparkId}:${r.scriptId}`;
+
+  /** Stop a script-class run (node+script addressed; legacy route). */
+  const stopScript = useCallback(
+    async (r: ScriptRun) => {
+      const k = scriptKey(r);
+      setScriptBusy((prev) => ({ ...prev, [k]: true }));
+      try {
+        await servingStop({ sparkId: r.sparkId, scriptId: r.scriptId });
+        pushToast(`stop requested — ${r.scriptId} on ${sparkName(r.sparkId)}`);
+      } catch (err) {
+        pushToast(`stop failed: ${httpError(err).message}`);
+      } finally {
+        setScriptBusy((prev) => {
+          const n = { ...prev };
+          delete n[k];
+          return n;
+        });
+        void pollScripts(true);
+      }
+    },
+    [pollScripts, pushToast, sparkName]
+  );
+
+  /** Launch from the Serve-page form; placement 409 opens the shared dialog. */
+  const launchScript = useCallback(
+    async (body: ScriptLaunchBody) => {
+      try {
+        const res = await servingStart(body);
+        pushToast(
+          body.force
+            ? `start requested — ${res.scriptId} (placement check skipped)`
+            : `start requested — ${res.scriptId} on ${sparkName(res.sparkId)}`,
+          "ok"
+        );
+        void pollScripts(true);
+        return true;
+      } catch (err) {
+        const e = httpError(err);
+        if (e.payload?.blocked) {
+          setBlocked({
+            kind: "script",
+            recipe: { id: `${body.sparkId}:${body.scriptId || "path"}`, sparkId: body.sparkId } as ServeRecipe,
+            launchBody: body,
+            error: e.message,
+            placement: e.payload.placement ?? null,
+            warnings: e.payload.warnings || [],
+          });
+          return false;
+        }
+        pushToast(`start failed: ${e.message}`);
+        return false;
+      }
+    },
+    [pollScripts, pushToast, sparkName]
   );
 
   return (
@@ -174,6 +272,7 @@ export function ServePage({ sparks, onNavigate }: ServePageProps) {
               onClick={() => {
                 void loadRecipes(true);
                 void pollStates();
+                void pollScripts(true);
               }}
             >
               ⟳ refresh
@@ -182,6 +281,14 @@ export function ServePage({ sparks, onNavigate }: ServePageProps) {
         />
         <ScModule label="Deployments" className="mb-4">
           <DeploymentsTable
+            scriptRows={scriptData?.runs ?? []}
+            scriptBusy={scriptBusy}
+            onStopScript={(r) => void stopScript(r)}
+            onLaunchScript={(r) => {
+              setScriptFormOpen(true);
+              setScriptPrefill({ sparkId: r.sparkId, scriptId: r.kind === "path" ? "" : r.scriptId, path: r.path, nonce: Date.now() });
+              window.setTimeout(() => document.getElementById("serve-launch")?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
+            }}
             recipes={recipes}
             states={states}
             busy={busy}
@@ -195,6 +302,18 @@ export function ServePage({ sparks, onNavigate }: ServePageProps) {
             onStop={(r) => void runAction(r, "stop")}
             onKey={(sparkId, port) => setKeyDialog({ sparkId, port })}
             onNavigateNode={onNavigate}
+          />
+        </ScModule>
+
+        <ScModule label="Script-class launch" className="mb-4">
+          <ScriptLaunchPanel
+            sparks={sparks}
+            scripts={scriptData?.scripts ?? []}
+            onLaunch={launchScript}
+            open={scriptFormOpen}
+            setOpen={setScriptFormOpen}
+            prefill={scriptPrefill}
+            sparkName={sparkName}
           />
         </ScModule>
 
@@ -235,9 +354,10 @@ export function ServePage({ sparks, onNavigate }: ServePageProps) {
           }}
           pushToast={pushToast}
           onForce={() => {
-            const r = blocked.recipe;
+            const b = blocked;
             setBlocked(null);
-            void runAction(r, "start", { force: true });
+            if (b.kind === "recipe") void runAction(b.recipe, "start", { force: true });
+            else if (b.launchBody) void launchScript({ ...b.launchBody, force: true });
           }}
         />
       )}
@@ -279,6 +399,10 @@ function DeploymentsTable({
   onStop,
   onKey,
   onNavigateNode,
+  scriptRows,
+  scriptBusy,
+  onStopScript,
+  onLaunchScript,
 }: {
   recipes: ServeRecipe[] | null;
   states: Record<string, ServeState>;
@@ -293,14 +417,18 @@ function DeploymentsTable({
   onStop: (r: ServeRecipe) => void;
   onKey: (sparkId: string, port: number) => void;
   onNavigateNode: (id: string | null) => void;
+  scriptRows: ScriptRun[];
+  scriptBusy: Record<string, boolean>;
+  onStopScript: (r: ScriptRun) => void;
+  onLaunchScript: (r: ScriptRun) => void;
 }) {
   if (recipes === null) return <div className="empty-note">loading recipes…</div>;
   if (recipesErr) return <div className="empty-note">recipe list failed: {recipesErr}</div>;
-  if (recipes.length === 0) {
+  if (recipes.length === 0 && scriptRows.length === 0) {
     return (
       <div className="empty-note">
-        No recipes registered yet — register a recipe folder below (CH·02), e.g. a git clone of a serve
-        recipe on one of the Sparks.
+        Nothing serving yet — register a recipe folder (CH·02), start a script below, or launch a
+        <b> script-class run</b> from the launch panel.
       </div>
     );
   }
@@ -381,6 +509,21 @@ function DeploymentsTable({
           </div>
         );
       })}
+      {scriptRows.map((r) => (
+        <ScriptRow
+          key={`${r.sparkId}:${r.scriptId}`}
+          r={r}
+          sparks={sparks}
+          sparkName={sparkName}
+          busy={Boolean(scriptBusy[`${r.sparkId}:${r.scriptId}`])}
+          onStop={onStopScript}
+          onKey={onKey}
+          onNavigateNode={onNavigateNode}
+          onLaunchScript={() => onLaunchScript(r)}
+          expanded={expanded === `script:${r.sparkId}:${r.scriptId}`}
+          setExpanded={setExpanded}
+        />
+      ))}
     </div>
   );
 }
@@ -554,6 +697,341 @@ function KeyChip({
     <button type="button" onClick={onClick} title="Manage the dashboard proxy-injection key (engine auth lives in the recipe .env)">
       <ScChip tone={tone}>key · {state} ✎</ScChip>
     </button>
+  );
+}
+
+// ─── script-class row (legacy /api/serving/* runs) ────────
+
+/**
+ * One script-class run (library script or node-path script) in the shared
+ * table. Lifecycle rides the legacy sparkId-addressed routes; truth is the
+ * cluster status-all probe (GET /api/serve/scripts), port from run records.
+ */
+function ScriptRow({
+  r,
+  sparks,
+  sparkName,
+  busy,
+  onStop,
+  onKey,
+  onNavigateNode,
+  onLaunchScript,
+  expanded,
+  setExpanded,
+}: {
+  r: ScriptRun;
+  sparks: SparkSnapshot[];
+  sparkName: (id: string) => string;
+  busy: boolean;
+  onStop: (r: ScriptRun) => void;
+  onKey: (sparkId: string, port: number) => void;
+  onNavigateNode: (id: string | null) => void;
+  onLaunchScript: () => void;
+  expanded: boolean;
+  setExpanded: (id: string | null) => void;
+}) {
+  const [armed, setArmed] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const armStop = () => {
+    if (armed) {
+      window.clearTimeout(timer.current);
+      setArmed(false);
+      onStop(r);
+      return;
+    }
+    setArmed(true);
+    timer.current = window.setTimeout(() => setArmed(false), 3000);
+  };
+  const spark = sparks.find((sp) => sp.id === r.sparkId);
+  const nodeOffline = !spark?.online;
+  const key = `script:${r.sparkId}:${r.scriptId}`;
+  return (
+    <div>
+      <div className={`st-row${expanded ? " is-expanded" : ""}`} role="row">
+        <div className="st-row__main">
+          <span className="st-name" title={r.path || r.scriptId}>
+            {r.kind === "path" ? (r.path || "").split("/").pop() || r.scriptId : r.scriptId}
+            <ScChip tone="default">script</ScChip>
+          </span>
+          {r.kind === "path" && <span className="st-sub" title={r.path || ""}>{r.path}</span>}
+          {r.kind === "library" && r.description && <span className="st-sub">{r.description}</span>}
+        </div>
+        <div className="st-row__main">
+          <button
+            type="button"
+            className="key"
+            style={{ padding: 0, border: "none", background: "none", cursor: "pointer", fontFamily: "var(--mono)", fontSize: "var(--fs-12)", fontWeight: 700, color: "var(--color-text-strong)" }}
+            onClick={() => onNavigateNode(r.sparkId)}
+            title="Open node page"
+          >
+            {sparkName(r.sparkId)}
+          </button>
+        </div>
+        <div className="st-sub">{r.port ?? "—"}</div>
+        <div className="st-state">
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <ScLed state={r.running ? "success" : "off"} />
+            <span style={{ fontFamily: "var(--mono)", fontSize: "var(--fs-11)", fontWeight: 700, color: "var(--color-text-strong)" }}>
+              {r.running ? "running" : nodeOffline ? "unknown · node offline" : "stopped"}
+            </span>
+            {r.running && r.startedAt ? (
+              <span className="st-sub">{new Date(r.startedAt).toLocaleTimeString()}</span>
+            ) : null}
+          </span>
+        </div>
+        <div className="st-row__main">
+          <span className="st-sub">—</span>
+        </div>
+        <div className="st-endpoints st-col--hide">
+          {r.port != null && r.running && (
+            <>
+              <EndpointCell spark={spark} port={r.port} kind="direct" />
+              <EndpointCell spark={spark} port={r.port} kind="proxy" onTraces={() => { window.location.href = `/analysis?spark=${encodeURIComponent(r.sparkId)}&port=${r.port}`; }} />
+              <KeyChip spark={spark} port={r.port} onClick={() => onKey(r.sparkId, r.port!)} engineHasKey={false} />
+            </>
+          )}
+        </div>
+        <div className="st-actions" onClick={(e) => e.stopPropagation()}>
+          <button
+            type="button"
+            className="key"
+            style={{ padding: "1px 8px", fontSize: "var(--fs-10)" }}
+            onClick={() => setExpanded(expanded ? null : key)}
+            title="Script log tail"
+          >
+            {expanded ? "▾ logs" : "▸ logs"}
+          </button>
+          {busy ? (
+            <ScChip>working…</ScChip>
+          ) : r.running ? (
+            <button
+              type="button"
+              className="key key--danger"
+              style={{ padding: "1px 8px", fontSize: "var(--fs-10)", ...(armed ? { background: "color-mix(in srgb, var(--color-danger) 18%, transparent)" } : null) }}
+              onClick={armStop}
+              title="Stop the supervised script (pidfile kill on the node)"
+            >
+              {armed ? "confirm stop" : "■ stop"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="key key--primary"
+              style={{ padding: "1px 8px", fontSize: "var(--fs-10)" }}
+              onClick={onLaunchScript}
+              title="Pre-fill the launch panel with this script"
+            >
+              ▶ start
+            </button>
+          )}
+        </div>
+      </div>
+      {expanded && <ScriptLog sparkId={r.sparkId} scriptId={r.scriptId} sparkName={sparkName(r.sparkId)} />}
+    </div>
+  );
+}
+
+/** 5 s tail of a script-class log (same source as the old node-page panel). */
+function ScriptLog({ sparkId, scriptId, sparkName }: { sparkId: string; scriptId: string; sparkName: string }) {
+  const LOG_CAP = 200;
+  const [lines, setLines] = useState<string[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const ref = useRef<HTMLPreElement | null>(null);
+  useEffect(() => {
+    let dead = false;
+    const tick = () => {
+      servingLog(sparkId, scriptId)
+        .then((r) => {
+          if (dead) return;
+          const ls = (r.log ?? "").split("\n");
+          while (ls.length && !ls[ls.length - 1]) ls.pop();
+          setLines(ls.slice(-LOG_CAP));
+          setErr(null);
+        })
+        .catch((e) => !dead && setErr(String(e instanceof Error ? e.message : e).slice(0, 200)));
+    };
+    tick();
+    const t = window.setInterval(tick, LOG_POLL_MS);
+    return () => {
+      dead = true;
+      window.clearInterval(t);
+    };
+  }, [sparkId, scriptId]);
+  useEffect(() => {
+    const el = ref.current;
+    if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 60) el.scrollTop = el.scrollHeight;
+  }, [lines]);
+  return (
+    <div className="st-detail">
+      <div className="logs-head">
+        <span className={`chip${lines.length ? " chip--live" : ""}`}>
+          <span className="led" aria-hidden="true" />
+          tail · serving
+        </span>
+        <span className="logs-head__source">{sparkName} · {scriptId}</span>
+      </div>
+      {err ? <ScChip tone="err">{err}</ScChip> : null}
+      {lines.length > 0 ? (
+        <pre className="trace-body__pre" ref={ref}>
+          {lines.map((line, i) => (
+            <span key={i}>
+              {tokenizeLogLine(line).map((tok, j) => (
+                <span key={j} className={tok.cls ?? undefined}>
+                  {tok.text}
+                </span>
+              ))}
+              {i < lines.length - 1 ? "\n" : null}
+            </span>
+          ))}
+        </pre>
+      ) : !err ? (
+        <p className="empty-note" style={{ margin: 0 }}>No log output yet.</p>
+      ) : null}
+    </div>
+  );
+}
+
+// ─── script-class launch panel ─────────────────────────────
+
+function ScriptLaunchPanel({
+  sparks,
+  scripts,
+  onLaunch,
+  open,
+  setOpen,
+  prefill,
+  sparkName,
+}: {
+  sparks: SparkSnapshot[];
+  scripts: ServeScriptsResponse["scripts"];
+  onLaunch: (body: ScriptLaunchBody) => Promise<boolean>;
+  open: boolean;
+  setOpen: (v: boolean) => void;
+  prefill: { sparkId: string; scriptId: string; path: string | null; nonce: number } | null;
+  sparkName: (id: string) => string;
+}) {
+  const computeNodes = sparks.filter((sp) => sp.kind !== "nas");
+  const [sparkId, setSparkId] = useState(computeNodes[0]?.id || "");
+  const [scriptId, setScriptId] = useState("");
+  const [scriptPath, setScriptPath] = useState("");
+  const [modelName, setModelName] = useState("");
+  const [port, setPort] = useState("8081");
+  const [extraArgs, setExtraArgs] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // default port follows the picked library script
+  const defaultPort = scripts.find((x) => x.id === scriptId)?.defaultPort;
+  useEffect(() => {
+    if (defaultPort != null) setPort(String(defaultPort));
+  }, [defaultPort]);
+
+  // "▶ start" on a stopped script row pre-fills this form
+  useEffect(() => {
+    if (!prefill) return;
+    setSparkId(prefill.sparkId);
+    setScriptId(prefill.scriptId);
+    setScriptPath(prefill.path ?? "");
+  }, [prefill?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!open) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <p className="empty-note" style={{ margin: 0 }}>
+          Run a library script from <code>config/serving/</code> or any script path on a node —
+          supervised on the node, shown with the recipe deployments above.
+        </p>
+        <button type="button" className="key key--primary" style={{ padding: "1px 8px", fontSize: "var(--fs-10)", whiteSpace: "nowrap" }} onClick={() => setOpen(true)}>
+          ▶ launch script…
+        </button>
+      </div>
+    );
+  }
+  const trimmedPath = scriptPath.trim();
+  const submit = async () => {
+    setErr(null);
+    const p = Number(port);
+    if (!Number.isInteger(p) || p < 1 || p > 65535) {
+      setErr("Port must be an integer 1–65535.");
+      return;
+    }
+    if (!trimmedPath && !scriptId) {
+      setErr("Pick a serve script or set a path");
+      return;
+    }
+    if (!sparkId) {
+      setErr("No target node");
+      return;
+    }
+    setBusy(true);
+    try {
+      const ok = await onLaunch({
+        sparkId,
+        ...(trimmedPath ? { scriptPath: trimmedPath, scriptId: "" } : { scriptId }),
+        modelName: modelName.trim() || undefined,
+        port: p,
+        extraArgs: extraArgs.trim() || undefined,
+      });
+      if (ok) setOpen(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div id="serve-launch" className="launch-grid">
+      <label className="field">
+        <span className="field__label">Node</span>
+        <select className="select-inline" value={sparkId} onChange={(e) => setSparkId(e.target.value)}>
+          {computeNodes.length === 0 && <option value="">— no nodes —</option>}
+          {computeNodes.map((sp) => (
+            <option key={sp.id} value={sp.id}>{sp.name}</option>
+          ))}
+        </select>
+      </label>
+      <label className="field">
+        <span className="field__label">Serve script</span>
+        <select className="select-inline" value={trimmedPath ? "" : scriptId} disabled={trimmedPath !== ""} onChange={(e) => setScriptId(e.target.value)}>
+          <option value="">— choose —</option>
+          {scripts.map((sc) => (
+            <option key={sc.id} value={sc.id}>{sc.id}{sc.description ? ` — ${sc.description}` : ""}</option>
+          ))}
+        </select>
+      </label>
+      <label className="field">
+        <span className="field__label">Port</span>
+        <input type="number" className="font-tabular" min={1} max={65535} value={port} onChange={(e) => setPort(e.target.value)} />
+      </label>
+      <label className="field">
+        <span className="field__label">Model</span>
+        <input type="text" placeholder="script default" value={modelName} onChange={(e) => setModelName(e.target.value)} />
+      </label>
+      <label className="field" style={{ gridColumn: "1 / -1" }}>
+        <span className="field__label">Script path on node</span>
+        <input
+          type="text"
+          placeholder="/home/me/start-vllm.sh — takes precedence over the library script above"
+          value={scriptPath}
+          onChange={(e) => setScriptPath(e.target.value)}
+        />
+      </label>
+      <label className="field" style={{ gridColumn: "1 / -1" }}>
+        <span className="field__label">Extra args</span>
+        <input type="text" placeholder="--ctx 32768 --mem 0.9" value={extraArgs} onChange={(e) => setExtraArgs(e.target.value)} />
+      </label>
+      <div className="row" style={{ gap: 6, flexWrap: "nowrap", gridColumn: "1 / -1" }}>
+        <button className="key key--run" type="button" disabled={busy || (trimmedPath === "" && !scriptId)} onClick={() => void submit()}>
+          {busy ? "starting…" : "▶ Start"}
+        </button>
+        <button className="key" type="button" onClick={() => setOpen(false)}>✕ cancel</button>
+        {err ? <ScChip tone="err">{err}</ScChip> : null}
+      </div>
+      <p className="bus-hint" style={{ margin: 0, gridColumn: "1 / -1" }}>
+        {trimmedPath
+          ? `Runs ${trimmedPath} on ${sparkName(sparkId)} — the file must exist on the node.`
+          : `The script runs on ${sparkName(sparkId)}; port joins the LLM probe list once the engine answers.`}
+      </p>
+    </div>
   );
 }
 

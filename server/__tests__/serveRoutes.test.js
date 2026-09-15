@@ -14,6 +14,8 @@ const fakeHome = path.join(tmp, "home");
 fs.mkdirSync(fakeHome, { recursive: true });
 process.env.HOME = fakeHome;
 process.env.SPARKDASH_SERVING_CONFIG_DIR = path.join(tmp, "serving");
+process.env.SPARKDASH_PATH_SCRIPTS_PATH = path.join(tmp, "serving", "path-scripts.json");
+process.env.SPARKDASH_RUN_PORTS_PATH = path.join(tmp, "serving", "run-ports.json");
 for (const [k, v] of Object.entries({
   SETTINGS_JSON_PATH: "settings.json",
   SPARKS_SECRETS_PATH: "secrets.json",
@@ -346,5 +348,75 @@ test("status ?all=1 multi-run list + legacy shape still default", async () => {
     assert.equal(calls.filter((c) => c.includes("for __S in")).length, 2);
   } finally {
     _setExecFile(null);
+  }
+});
+
+// ─── Serve-section unification: /api/serve/scripts cluster view ───
+
+test("GET /api/serve/scripts: library list + running/path rows with ports", async () => {
+  const { _setExecFile } = await import("../collectors/ssh.js");
+  // a library script exists in the isolated serving config dir
+  const fsP = await import("node:fs");
+  const pathP = await import("node:path");
+  const cfgDir = process.env.SPARKDASH_SERVING_CONFIG_DIR;
+  fsP.mkdirSync(cfgDir, { recursive: true });
+  fsP.writeFileSync(
+    pathP.join(cfgDir, "example-vllm.sh"),
+    "#!/usr/bin/env bash\n# sparkdash-serve: description=vLLM example defaultPort=8080\n"
+  );
+  const calls = [];
+  _setExecFile((file, args, opts, cb) => {
+    const cmd = args.join(" ");
+    calls.push(cmd);
+    if (cmd.includes("for __S in")) return cb(null, "example-vllm running:1700000000\n", "");
+    if (cmd.includes("setsid nohup env")) return cb(null, "__START_OK__", "");
+    if (cmd.includes("__ST=")) return cb(null, "example-vllm running:1700000000\n", "");
+    if (cmd.includes("__FOUND=")) return cb(null, "running:1700000000", "");
+    if (cmd.includes("PGID")) return cb(null, "__STOPPED__", "");
+    return cb(null, "ok", "");
+  });
+  try {
+    const add = await j(
+      await fetch(`${BASE}/api/sparks`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: "uni-spark", name: "U", isLocal: false, lanIp: "10.0.0.12", ssh: { host: "10.0.0.12", user: "root", auth: "key" } }),
+      })
+    );
+    assert.equal(add.status, 200);
+
+    // launch a path-run → port recorded; stop → row kept as stopped path entry
+    const st = await j(
+      await fetch(`${BASE}/api/serving/start`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sparkId: "uni-spark", scriptPath: "/home/me/start-x.sh", port: 9090 }),
+      })
+    );
+    assert.equal(st.status, 200, JSON.stringify(st.body));
+    assert.equal(st.body.status.running, true);
+    assert.ok(st.body.scriptId.startsWith("start-x-"), st.body.scriptId);
+
+    const list = await j(await fetch(`${BASE}/api/serve/scripts?refresh=1`));
+    assert.equal(list.status, 200);
+    assert.ok(list.body.scripts.some((x) => x.id === "example-vllm"), "library list includes seeded example-vllm");
+    // path-recorded run is visible as a stopped row on its node, with the port
+    const pathRow = list.body.runs.find((r) => r.kind === "path");
+    assert.ok(pathRow, "path row present");
+    assert.equal(pathRow.sparkId, "uni-spark");
+    assert.equal(pathRow.path, "/home/me/start-x.sh");
+    assert.equal(pathRow.port, 9090, "run-port persisted at start");
+    // the running library script row carries a port (defaultPort fallback)
+    const runRow = list.body.runs.find((r) => r.scriptId === "example-vllm");
+    assert.ok(runRow?.running, "example-vllm running row");
+    assert.equal(runRow.port, 8080);
+    assert.ok(list.body.nodes.some((n) => n.sparkId === "uni-spark" && !n.probeError));
+    // caching: refresh omitted → same payload, no extra execs
+    const before = calls.length;
+    await j(await fetch(`${BASE}/api/serve/scripts`));
+    assert.equal(calls.length, before, "5 s cache must not re-probe");
+  } finally {
+    _setExecFile(null);
+    fsP.rmSync(pathP.join(cfgDir, "example-vllm.sh"), { force: true });
   }
 });

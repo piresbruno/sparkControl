@@ -28,6 +28,7 @@ for (const [k, v] of Object.entries({
   SPARKDASH_SERVE_DEPLOYMENTS_PATH: "serve-deployments.json",
   // path-scripts.json lives next to the serving scripts.
   SPARKDASH_PATH_SCRIPTS_PATH: path.join(tmp, "serving", "path-scripts.json"),
+  SPARKDASH_RUN_PORTS_PATH: path.join(tmp, "serving", "run-ports.json"),
 })) process.env[k] = path.join(tmp, v);
 process.env.PORT = "5830";
 
@@ -351,7 +352,8 @@ test("serving start by scriptPath: validates before persisting, launches over ss
     const out = await r.json();
     assert.equal(r.status, 200, JSON.stringify(out));
     assert.match(out.scriptId, /^start-[0-9a-f]{6}$/);
-    assert.equal(JSON.parse(fs.readFileSync(mapPath, "utf8"))[out.scriptId], "/opt/start.sh");
+    // unification: the record carries the launch port + home node now
+    assert.deepEqual(JSON.parse(fs.readFileSync(mapPath, "utf8"))[out.scriptId], { path: "/opt/start.sh", port: 8899, sparkId: "cov-remote" });
     // The serving start runs its command directly over ssh (no job runner),
     // so the node-local guard and the bash <path> invocation are on the wire.
     const startCall = calls.find((c) => c.includes("__NO_SCRIPT__"));
