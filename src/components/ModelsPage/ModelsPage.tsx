@@ -379,8 +379,7 @@ export function ModelsPage() {
           onPage={setPage}
         />
         <p className="empty-note" style={{ margin: "10px 2px 0" }}>
-          To sync, push, serve or stop a model on a specific node, open that node from Overview →{" "}
-          <b>Models</b> channel.
+          Sync, push, and serve controls live in the Serve section (cluster → Serve → Placement).<b>Models</b> channel.
         </p>
       </section>
 

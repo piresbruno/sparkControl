@@ -284,7 +284,9 @@ test("start: absent MODEL → 409-shape block with placement remediation; force 
   const blocked = await eng.start(f.recipe.id);
   assert.equal(blocked.blocked, true);
   assert.equal(blocked.placement.status, "push"); // peer holds it
-  assert.deepEqual(blocked.placement.remediations, [{ kind: "push", sparkId: "spark-b", targetSparkId: "spark-a" }]);
+  assert.deepEqual(blocked.placement.remediations, [
+    { kind: "push", sparkId: "spark-b", targetSparkId: "spark-a", model: "glm" },
+  ]);
   assert.match(blocked.error, /pull it from Hugging Face/);
   assert.equal(f.jobs.length, 0, "nothing launched while blocked");
 
@@ -535,6 +537,28 @@ test("ServeEngine.matrix: nodes + served rows + capacity passthrough", async () 
   assert.equal(glm.nodes["spark-a"], "current");
   assert.equal(glm.nodes["spark-b"], "absent");
   assert.ok(glm.servedOn.includes("spark-a"), "live deployment marks served");
+  fs.rmSync(f.dir, { recursive: true, force: true });
+});
+
+test("placementCheck: remediations carry the resolved modelctl STORE name", async () => {
+  const f = mkFakes();
+  // recipe meta.model is the HF repo id; the peer registers it under a store name.
+  f.recipe.meta = { ...f.recipe.meta, model: "brandonmusic/GLM-5.3-tr3" };
+  f.nodeModels["spark-a"] = [];
+  f.nodeModels["spark-b"] = [{ name: "glm-tr3-store", repository: "brandonmusic/GLM-5.3-tr3" }];
+  const eng = mkEngine(f);
+  const pc = await eng.placementCheck(f.recipe);
+  assert.equal(pc.check, "absent");
+  assert.equal(pc.placement.status, "push");
+  assert.deepEqual(pc.placement.remediations, [
+    { kind: "push", sparkId: "spark-b", targetSparkId: "spark-a", model: "glm-tr3-store" },
+  ]);
+  // sync path resolves from the NAS list too
+  f.nodeModels["spark-b"] = [];
+  f.modelctl.listNasModels = async () => ({ models: [{ name: "glm-nas-name", repository: "brandonmusic/GLM-5.3-tr3" }] });
+  const pc2 = await eng.placementCheck(f.recipe);
+  assert.equal(pc2.placement.remediations[0].kind, "sync");
+  assert.equal(pc2.placement.remediations[0].model, "glm-nas-name");
   fs.rmSync(f.dir, { recursive: true, force: true });
 });
 

@@ -560,12 +560,33 @@ export class ServeEngine {
     } catch {
       /* NAS unknown → planPlacement degrades to push/unavailable */
     }
-    const placement = planPlacement(model, {
+    // planPlacement matches STORE names exactly, but a recipe's MODEL is
+    // usually the HF repo id — resolve the canonical store name from any
+    // inventory that holds the model (NAS first: store of record), then plan
+    // and carry that name on every remediation (jobs take store names).
+    const looser = String(model).toLowerCase();
+    const base = looser.includes("/") ? looser.split("/").pop() : looser;
+    const holdsLoose = (list) =>
+      (list || []).find(
+        (m) =>
+          m?.name === model ||
+          String(m?.repository || "").toLowerCase() === looser ||
+          String(m?.name || "").toLowerCase() === looser ||
+          String(m?.repository || "").toLowerCase() === base ||
+          String(m?.name || "").toLowerCase() === base
+      )?.name ?? null;
+    const canonical =
+      holdsLoose(nasInv?.models) ||
+      peers.map((p) => holdsLoose(p.models)).find(Boolean) ||
+      holdsLoose(inv?.models) ||
+      model;
+    const placement = planPlacement(canonical, {
       target: { sparkId: spark.id, models: inv?.models ?? [] },
       nas: nasInv,
       peers,
     });
-    return { check: "absent", placement };
+    const remediations = placement.remediations.map((rem) => ({ ...rem, model: canonical }));
+    return { check: "absent", placement: { ...placement, remediations } };
   }
 
   /**

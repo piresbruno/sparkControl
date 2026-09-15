@@ -1681,6 +1681,9 @@ app.post("/api/serve/deployments/:recipeId/:verb", async (req, res) => {
     else if (verb === "stop") out = await serveEngine.stop(req.params.recipeId);
     else out = await serveEngine.restart(req.params.recipeId);
     if (out.blocked) return res.status(409).json({ error: out.error, blocked: true, placement: out.placement });
+    // Topology refusal (P3) rides its own 409 — the UI shows the exact delta.
+    if (!out.ok && out.topology)
+      return res.status(409).json({ error: out.error, topology: out.topology });
     if (!out.ok) return res.status(400).json({ error: out.error, partial: out.partial });
     res.status(verb === "start" ? 202 : 200).json(out);
   } catch (err) {

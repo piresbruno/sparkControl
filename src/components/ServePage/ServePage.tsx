@@ -20,17 +20,20 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { Placement, ServeRecipe, ServeState, SparkSnapshot } from "../../api/types";
+import type { MctlJob, Placement, ServeMatrixResponse, ServeRecipe, ServeState, SparkSnapshot } from "../../api/types";
 import {
   deleteServeRecipe,
+  getJob,
   listServeRecipes,
   refreshServeRecipe,
   registerServeRecipe,
   scanServeRecipes,
   serveDeploymentAction,
   serveLogs,
+  serveMatrix,
   serveState,
   setLlmApiKey,
+  startJob,
 } from "../../api/client";
 import { useModalPresence } from "../../hooks/useModalPresence";
 import { ScChip, ScChHead, ScCopy, ScLed, ScModule, ScSubpanel } from "../SparkPage/console/ScKit";
@@ -51,7 +54,7 @@ interface ServePageProps {
 interface HttpError {
   message: string;
   status?: number;
-  payload?: { blocked?: boolean; placement?: Placement };
+  payload?: { blocked?: boolean; placement?: Placement; topology?: { nnodes: number; computeNodes: number } };
 }
 
 function httpError(err: unknown): HttpError {
@@ -69,6 +72,7 @@ export function ServePage({ sparks, onNavigate }: ServePageProps) {
   const [states, setStates] = useState<Record<string, ServeState>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [blocked, setBlocked] = useState<{ recipe: ServeRecipe; error: string; placement: Placement | null } | null>(null);
+  const [topologyBlocked, setTopologyBlocked] = useState<{ recipe: ServeRecipe; error: string } | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [keyDialog, setKeyDialog] = useState<{ sparkId: string; port: number } | null>(null);
   const [recipesErr, setRecipesErr] = useState<string | null>(null);
@@ -130,6 +134,8 @@ export function ServePage({ sparks, onNavigate }: ServePageProps) {
         const e = httpError(err);
         if (e.payload?.blocked) {
           setBlocked({ recipe, error: e.message, placement: e.payload.placement ?? null });
+        } else if (e.payload?.topology) {
+          setTopologyBlocked({ recipe, error: e.message });
         } else {
           pushToast(`${verb} failed: ${e.message}`);
         }
@@ -198,17 +204,38 @@ export function ServePage({ sparks, onNavigate }: ServePageProps) {
             pushToast={pushToast}
           />
         </ScModule>
+
+        <ScChHead
+          code="CH·03"
+          title="Placement"
+          note="model × node matrix from modelctl inventories · transfers run as jobs (sync NAS→node, push over the fabric)"
+        />
+        <ScModule label="Model placement">
+          <MatrixPanel sparks={sparks} onChanged={() => void loadRecipes()} pushToast={pushToast} />
+        </ScModule>
       </div>
       <ToastStack toasts={toasts} />
       {blocked && (
         <BlockedDialog
           onClose={() => setBlocked(null)}
           info={blocked}
+          sparks={sparks}
+          onChanged={() => {
+            void loadRecipes();
+            void pollStates();
+          }}
+          pushToast={pushToast}
           onForce={() => {
             const r = blocked.recipe;
             setBlocked(null);
             void runAction(r, "start", { force: true });
           }}
+        />
+      )}
+      {topologyBlocked && (
+        <TopologyDialog
+          info={topologyBlocked}
+          onClose={() => setTopologyBlocked(null)}
         />
       )}
       {keyDialog && (
@@ -851,7 +878,110 @@ function RegisterForm({ sparks, onDone, pushToast }: { sparks: SparkSnapshot[]; 
 
 // ─── blocked dialog (placement 409) ────────────────────────
 
-function BlockedDialog({ info, onClose, onForce }: { info: { recipe: ServeRecipe; error: string; placement: Placement | null }; onClose: () => void; onForce: () => void }) {
+/**
+ * One remediation: start the modelctl transfer job and follow it to a terminal
+ * state (existing job kinds: sync = NAS→node, push = peer→node over CX7).
+ * Re-checks placement on success so the block clears itself.
+ */
+function RemediationJob({
+  rem,
+  sparks,
+  sparkName,
+  onDone,
+  pushToast,
+}: {
+  rem: { kind: "sync" | "push"; sparkId: string; targetSparkId?: string; model?: string };
+  sparks: SparkSnapshot[];
+  sparkName: (id: string) => string;
+  onDone: () => void;
+  pushToast: PushToast;
+}) {
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [job, setJob] = useState<MctlJob | null>(null);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
+  const label =
+    rem.kind === "sync"
+      ? `sync ${rem.model || ""} · NAS → ${sparkName(rem.targetSparkId || rem.sparkId)}`
+      : `push ${rem.model || ""} · ${sparkName(rem.sparkId)} → ${sparkName(rem.targetSparkId || "")} (fabric)`;
+
+  const start = async () => {
+    try {
+      const res =
+        rem.kind === "sync"
+          ? await startJob({ kind: "sync", model: rem.model, sparkId: rem.targetSparkId || rem.sparkId })
+          : await startJob({ kind: "push", model: rem.model, sourceSparkId: rem.sparkId, targetSparkId: rem.targetSparkId });
+      setJobId(res.jobId);
+    } catch (err) {
+      pushToast(`transfer failed to start: ${httpError(err).message}`);
+    }
+  };
+
+  useEffect(() => {
+    if (!jobId) return;
+    let dead = false;
+    const tick = async () => {
+      try {
+        const j = await getJob(jobId);
+        if (dead) return;
+        setJob(j);
+        if (j.status !== "running") {
+          onDone();
+          if (j.status === "completed") pushToast(`${rem.kind} finished`, "ok");
+          else pushToast(`${rem.kind} ${j.status}${j.exitCode != null ? ` (exit ${j.exitCode})` : ""}`);
+        }
+      } catch {
+        /* transient */
+      }
+    };
+    void tick();
+    const t = window.setInterval(() => void tick(), 4000);
+    return () => {
+      dead = true;
+      window.clearInterval(t);
+    };
+  }, [jobId, rem.kind, onDone, pushToast]);
+
+  return (
+    <div className="st-endpoint">
+      <button type="button" className="key key--primary" style={{ padding: "1px 8px", fontSize: "var(--fs-10)" }} onClick={() => void start()} disabled={Boolean(jobId && !job?.endedAt)}>
+        {jobId ? "↻ again" : "▶ run"}
+      </button>
+      <span className="st-sub" style={{ whiteSpace: "normal" }}>
+        {label}
+        {job ? ` · ${job.status}${job.status === "running" ? "…" : ""}` : ""}
+      </span>
+      {job?.logTail ? (
+        <span className="st-sub" style={{ whiteSpace: "normal" }} title={job.logTail}>
+          {job.logTail.split("\n").filter(Boolean).slice(-1)[0]?.slice(0, 90) || ""}
+        </span>
+      ) : null}
+      {job && !sparks.length ? null : null}
+    </div>
+  );
+}
+
+function BlockedDialog({
+  info,
+  sparks,
+  onChanged,
+  pushToast,
+  onClose,
+  onForce,
+}: {
+  info: { recipe: ServeRecipe; error: string; placement: Placement | null };
+  sparks: SparkSnapshot[];
+  onChanged: () => void;
+  pushToast: PushToast;
+  onClose: () => void;
+  onForce: () => void;
+}) {
   const { mounted, visible } = useModalPresence(true);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -862,6 +992,7 @@ function BlockedDialog({ info, onClose, onForce }: { info: { recipe: ServeRecipe
   }, [onClose]);
   if (!mounted) return null;
   const p = info.placement;
+  const sparkName = (id: string) => sparks.find((sp) => sp.id === id)?.name || id;
   return createPortal(
     <div className={`modal-overlay${visible ? " is-open" : ""}`} onClick={onClose}>
       <div className="modal-sheet max-w-md" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
@@ -871,33 +1002,222 @@ function BlockedDialog({ info, onClose, onForce }: { info: { recipe: ServeRecipe
         <div className="modal-sheet__body space-y-3">
           <p className="text-xs text-muted" style={{ whiteSpace: "pre-wrap" }}>{info.error}</p>
           {p && p.remediations.length > 0 ? (
-            <div className="sub-card" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <span className="field__label">Remediations ({p.status})</span>
+            <div className="sub-card" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <span className="field__label">Fix placement ({p.status})</span>
               {p.remediations.map((rem, i) => (
-                <div key={i} className="st-sub" style={{ whiteSpace: "normal" }}>
-                  {rem.kind === "sync"
-                    ? `modelctl sync-local ${info.recipe.meta?.model || ""} --source-root <NAS store> → ${rem.sparkId}`
-                    : `modelctl push ${rem.sparkId} → ${rem.targetSparkId} (over the fabric)`}
-                </div>
+                <RemediationJob
+                  key={`${rem.kind}-${rem.sparkId}-${i}`}
+                  rem={rem}
+                  sparks={sparks}
+                  sparkName={sparkName}
+                  onDone={onChanged}
+                  pushToast={pushToast}
+                />
               ))}
-              <span className="pill-note">One-click transfers land with the model-bridge phase (P3). Until then run the command shown, or force below.</span>
+              <span className="pill-note">
+                Transfers run as modelctl jobs. When the weights are present, start again — the recipe will
+                then skip its own download (its cache logic). This dialog never edits the recipe's .env.
+              </span>
             </div>
           ) : (
             <p className="pill-note">
-              No NAS/peer source found for this model ({p?.status || "unavailable"}) — starting means the
-              recipe pulls it from Hugging Face itself (may run a long time).
+              No NAS/peer source found for this model ({p?.status || "unavailable"}) — the recipe would pull
+              it from Hugging Face itself (may run a long time).
             </p>
           )}
         </div>
         <div className="modal-sheet__footer">
           <div className="modal-sheet__footer-actions">
-            <button type="button" className="bench-btn bench-btn--ghost" onClick={onClose}>Cancel</button>
+            <button type="button" className="bench-btn bench-btn--ghost" onClick={onClose}>Close</button>
             <button type="button" className="bench-btn bench-btn--danger" onClick={onForce}>Pull from HF anyway (force)</button>
           </div>
         </div>
       </div>
     </div>,
     document.body
+  );
+}
+
+/** Variant needs more nodes than the fleet has (P3) — hard refusal, no bypass. */
+function TopologyDialog({ info, onClose }: { info: { recipe: ServeRecipe; error: string }; onClose: () => void }) {
+  const { mounted, visible } = useModalPresence(true);
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [onClose]);
+  if (!mounted) return null;
+  return createPortal(
+    <div className={`modal-overlay${visible ? " is-open" : ""}`} onClick={onClose}>
+      <div className="modal-sheet max-w-md" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+        <div className="modal-sheet__header flex items-center gap-2" style={{ color: "var(--color-danger)" }}>
+          <span className="text-sm font-semibold">Topology too big for this cluster</span>
+        </div>
+        <div className="modal-sheet__body space-y-3">
+          <p className="text-xs text-muted" style={{ whiteSpace: "pre-wrap" }}>{info.error}</p>
+          <p className="pill-note">
+            Adding the missing nodes (Overview → +) unlocks this variant. This refusal cannot be forced —
+            the recipe would fail mid-launch.
+          </p>
+        </div>
+        <div className="modal-sheet__footer">
+          <div className="modal-sheet__footer-actions">
+            <button type="button" className="bench-btn bench-btn--primary" onClick={onClose}>OK</button>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+// ─── CH·03 placement matrix ────────────────────────────────
+
+const MATRIX_POLL_MS = 30_000;
+
+function MatrixPanel({
+  sparks,
+  onChanged,
+  pushToast,
+}: {
+  sparks: SparkSnapshot[];
+  onChanged: () => void;
+  pushToast: PushToast;
+}) {
+  const [mx, setMx] = useState<ServeMatrixResponse | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await serveMatrix();
+      if (alive.current) {
+        setMx(res);
+        setErr(null);
+      }
+    } catch (e) {
+      if (alive.current) setErr(httpError(e).message);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+    const t = window.setInterval(() => void load(), MATRIX_POLL_MS);
+    return () => window.clearInterval(t);
+  }, [load]);
+
+  const computes = sparks.filter((sp) => sp.kind !== "nas");
+  const sparkName = (id: string) => sparks.find((sp) => sp.id === id)?.name || id;
+  const rows = (mx?.models || []).filter(
+    (r) => !query || r.name.toLowerCase().includes(query.toLowerCase()) || (r.repository || "").toLowerCase().includes(query.toLowerCase())
+  );
+
+  if (computes.length === 0) return <div className="empty-note">No compute nodes.</div>;
+  if (err) return <div className="empty-note">matrix failed: {err}</div>;
+  if (!mx) return <div className="empty-note">loading placement…</div>;
+
+  return (
+    <div style={{ ["--mt-n" as string]: mx.nodes.length }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="filter models…"
+          className="mono"
+          style={{ flex: "0 0 220px", border: "1px solid var(--color-border)", borderRadius: 6, background: "var(--color-surface-elevated)", color: "var(--color-text)", padding: "2px 8px", fontSize: "var(--fs-11)" }}
+        />
+        <span className="pill-note">{mx.models.length} models</span>
+        <button type="button" className="key" style={{ marginLeft: "auto", padding: "1px 8px", fontSize: "var(--fs-10)" }} onClick={() => void load()}>
+          ⟳ refresh
+        </button>
+      </div>
+      <div className="mt-head" role="row">
+        <span>Model</span>
+        <span>NAS</span>
+        {mx.nodes.map((n) => (
+          <span key={n.sparkId} title={n.name}>{n.name}</span>
+        ))}
+        <span>Actions</span>
+      </div>
+      {rows.length === 0 && <div className="empty-note">Nothing matches.</div>}
+      {rows.map((r) => {
+        const missing = mx.nodes.filter((n) => r.nodes[n.sparkId] !== "current");
+        // per-missing-node remediation (NAS has it → sync; a peer holds it → push)
+        const canSync = r.nas === "active";
+        const peerOf = (targetId: string) => mx.nodes.find((n) => n.sparkId !== targetId && r.nodes[n.sparkId] === "current");
+        return (
+          <div key={r.key} className="mt-row" role="row">
+            <div className="st-row__main">
+              <span className="st-name" title={r.repository || r.name}>{r.name}</span>
+              <span className="st-sub">
+                {r.repository || "—"}
+                {r.bytes != null ? ` · ${(r.bytes / 1e9).toFixed(1)} GB` : ""}
+                {r.runtime ? ` · ${r.runtime}` : ""}
+              </span>
+            </div>
+            <div>{r.nas === "active" ? <ScChip tone="accent">in store</ScChip> : <ScChip>absent</ScChip>}</div>
+            {mx.nodes.map((n) => (
+              <div key={n.sparkId}>
+                {r.nodes[n.sparkId] === "current" ? (
+                  r.servedOn.includes(n.sparkId) ? (
+                    <ScChip tone="live" title="served by a live recipe deployment">served</ScChip>
+                  ) : (
+                    <ScChip tone="accent">present</ScChip>
+                  )
+                ) : (
+                  <ScChip>absent</ScChip>
+                )}
+              </div>
+            ))}
+            <div className="st-actions">
+              {missing.length === 0 ? (
+                <span className="st-sub">everywhere</span>
+              ) : (
+                missing.map((n) => {
+                  const peer = peerOf(n.sparkId);
+                  const rem = canSync
+                    ? { kind: "sync" as const, sparkId: n.sparkId, targetSparkId: n.sparkId, model: r.name }
+                    : peer
+                      ? { kind: "push" as const, sparkId: peer.sparkId, targetSparkId: n.sparkId, model: r.name }
+                      : null;
+                  return rem ? (
+                    <RemediationJob
+                      key={`${r.key}-${n.sparkId}`}
+                      rem={rem}
+                      sparks={sparks}
+                      sparkName={sparkName}
+                      onDone={() => {
+                        void load();
+                        onChanged();
+                      }}
+                      pushToast={pushToast}
+                    />
+                  ) : (
+                    <span key={n.sparkId} className="st-sub" title="not in the NAS store and no node holds it">
+                      {sparkName(n.sparkId)}: no source
+                    </span>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        );
+      })}
+      <span className="pill-note">
+        sync = modelctl sync-local from the NAS store; push = modelctl push between nodes over the fabric
+        (runs on the holder). Capacity vs free space is checked before a serve start, not here.
+      </span>
+    </div>
   );
 }
 

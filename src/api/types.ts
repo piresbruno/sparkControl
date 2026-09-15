@@ -1147,7 +1147,7 @@ export interface ServingStatus {
 
 export interface Placement {
   status: "present" | "sync" | "push" | "unavailable";
-  remediations: Array<{ kind: "sync" | "push"; sparkId: string; targetSparkId?: string }>;
+  remediations: Remediation[];
 }
 
 // ─── Serve (cluster recipes + deployments) ─────────────────
@@ -1265,6 +1265,43 @@ export interface ServeState {
 export interface ServeStateResponse {
   states: ServeState[];
   at: number;
+}
+
+/** One model row of the placement matrix (P3). */
+export interface MatrixRow {
+  key: string;
+  name: string;
+  runtime: string | null;
+  repository: string | null;
+  bytes: number | null;
+  nas: "active" | "absent";
+  nodes: Record<string, "current" | "absent">;
+  servedOn: string[];
+}
+
+/** A per-node free-space verdict for one model (MiB-sourced, byte-normalized). */
+export interface CapacityNode {
+  sparkId: string;
+  mount: string;
+  freeBytes: number;
+  neededBytes: number;
+  fits: boolean;
+}
+
+export interface ServeMatrixResponse {
+  nodes: Array<{ sparkId: string; name: string }>;
+  models: MatrixRow[];
+  /** per compute node: raw storage rows ({label, available(MiB), total}) */
+  capacity: Record<string, Array<{ label: string; available: number; total: number }>>;
+  at: number;
+}
+
+/** Remediation from a placement 409 — carries the resolved modelctl store name. */
+export interface Remediation {
+  kind: "sync" | "push";
+  sparkId: string;
+  targetSparkId?: string;
+  model?: string;
 }
 
 // ─── NAS node (kind "nas") ─────────────────────────────────

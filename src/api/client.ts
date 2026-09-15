@@ -33,6 +33,7 @@ import type {
   ServeRecipe,
   ServeStateResponse,
   ServeDeployment,
+  ServeMatrixResponse,
   InventoryResponse,
   NasQueueEntry,
   ModelctlRelease,
@@ -668,6 +669,11 @@ export function serveDeploymentAction(
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+/** Cluster placement matrix: model × node + served + capacity (P3). */
+export function serveMatrix(): Promise<ServeMatrixResponse> {
+  return apiFetch("/api/serve/matrix");
 }
 
 /** Cluster join for the Serve table (5 s poll). */

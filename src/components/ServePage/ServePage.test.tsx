@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ServePage } from "./ServePage";
 import type { ServeRecipe, ServeState } from "../../api/types";
@@ -14,6 +14,9 @@ vi.mock("../../api/client", () => ({
   serveState: vi.fn(),
   serveLogs: vi.fn(),
   setLlmApiKey: vi.fn(),
+  getJob: vi.fn(),
+  serveMatrix: vi.fn(),
+  startJob: vi.fn(),
 }));
 
 import {
@@ -21,6 +24,9 @@ import {
   serveDeploymentAction,
   serveState,
   serveLogs,
+  getJob,
+  serveMatrix,
+  startJob,
 } from "../../api/client";
 
 const recipe = (over: Partial<ServeRecipe> = {}): ServeRecipe => ({
@@ -85,11 +91,35 @@ const sparks = [
   { id: "dgx-2", name: "DGX 2", kind: "spark", online: true, lanIp: "10.0.0.2", llmApiKeyPorts: [] },
 ] as never;
 
+const matrixResp = () => ({
+  nodes: [
+    { sparkId: "spark-1", name: "DGX 1" },
+    { sparkId: "dgx-2", name: "DGX 2" },
+  ],
+  models: [
+    {
+      key: "glm", name: "glm", runtime: "vllm", repository: "org/GLM", bytes: 1.76e11,
+      nas: "active" as const, nodes: { "spark-1": "current" as const, "dgx-2": "absent" as const },
+      servedOn: ["spark-1"],
+    },
+    {
+      key: "qwen", name: "qwen", runtime: null, repository: "org/Qwen", bytes: 4e10,
+      nas: "absent" as const, nodes: { "spark-1": "absent" as const, "dgx-2": "absent" as const },
+      servedOn: [],
+    },
+  ],
+  capacity: {},
+  at: Date.now(),
+});
+
 beforeEach(() => {
   vi.mocked(listServeRecipes).mockResolvedValue({ recipes: [recipe()] });
   vi.mocked(serveState).mockResolvedValue({ states: [state()], at: Date.now() });
   vi.mocked(serveLogs).mockResolvedValue({ log: "line one" });
   vi.mocked(serveDeploymentAction).mockResolvedValue({ jobId: "job-1" });
+  vi.mocked(getJob).mockResolvedValue({ jobId: "job-1", kind: "sync", name: "s", sparkId: "spark-a", status: "completed", createdAt: 1, startedAt: 1, endedAt: 2, exitCode: 0, logTail: "done" } as never);
+  vi.mocked(startJob).mockResolvedValue({ jobId: "job-t", kind: "sync", sparkId: "spark-a" } as never);
+  vi.mocked(serveMatrix).mockResolvedValue(matrixResp());
 });
 
 afterEach(() => {
@@ -130,9 +160,8 @@ describe("ServePage — cluster deployments table", () => {
     );
   });
 
-  it("a placement 409 from start opens the blocked dialog with remediations + force", async () => {
+  it("a placement 409 opens the blocked dialog with runnable remediation + force", async () => {
     const user = userEvent.setup();
-    // stopped state → ▶ start visible
     vi.mocked(serveState).mockResolvedValue({
       states: [state({ state: "stopped", ranks: { CONTAINER_HEAD: "absent" } })],
       at: Date.now(),
@@ -141,20 +170,48 @@ describe("ServePage — cluster deployments table", () => {
       status: 409,
       payload: {
         blocked: true,
-        placement: { status: "sync", remediations: [{ kind: "sync", sparkId: "spark-1" }] },
+        placement: {
+          status: "sync",
+          remediations: [{ kind: "sync", sparkId: "spark-1", targetSparkId: "spark-1", model: "glm-store" }],
+        },
       },
     });
     vi.mocked(serveDeploymentAction).mockRejectedValueOnce(blockedErr);
     render(<ServePage sparks={sparks} onNavigate={vi.fn()} />);
     await user.click(await screen.findByText("▶ start"));
     expect(await screen.findByText("Weights not on the node")).toBeTruthy();
-    expect(screen.getByText(/modelctl sync-local org\/GLM/)).toBeTruthy();
+    // P3: the remediation is runnable, and carries the resolved store name
+    expect(screen.getByText(/sync glm-store · NAS →/)).toBeTruthy();
+    const dialog = screen.getByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "▶ run" }));
+    await waitFor(() =>
+      expect(startJob).toHaveBeenCalledWith({ kind: "sync", model: "glm-store", sparkId: "spark-1" })
+    );
+    // force path still escapes
     await user.click(screen.getByText("Pull from HF anyway (force)"));
     await waitFor(() =>
       expect(serveDeploymentAction).toHaveBeenCalledWith("glm-abcdef", "start", { force: true })
     );
-    // dialog gone
     await waitFor(() => expect(screen.queryByText("Weights not on the node")).toBeNull());
+  });
+
+  it("a topology 409 opens the hard refusal (no force path)", async () => {
+    const user = userEvent.setup();
+    vi.mocked(serveState).mockResolvedValue({
+      states: [state({ state: "stopped", ranks: { CONTAINER_HEAD: "absent" } })],
+      at: Date.now(),
+    });
+    vi.mocked(serveDeploymentAction).mockRejectedValueOnce(
+      Object.assign(new Error("variant wants 4 nodes, cluster has 2 compute nodes"), {
+        status: 409,
+        payload: { topology: { nnodes: 4, computeNodes: 2 } },
+      })
+    );
+    render(<ServePage sparks={sparks} onNavigate={vi.fn()} />);
+    await user.click(await screen.findByText("▶ start"));
+    expect(await screen.findByText("Topology too big for this cluster")).toBeTruthy();
+    expect(screen.getByText(/cannot be forced/)).toBeTruthy();
+    expect(screen.queryByText("Pull from HF anyway (force)")).toBeNull();
   });
 
   it("drift chip renders with rebuild nuance", async () => {
@@ -211,5 +268,62 @@ describe("ServePage — cluster deployments table", () => {
     expect(await screen.findByText("node removed")).toBeTruthy();
     expect(screen.queryByText("■ stop")).toBeNull();
     expect(screen.queryByText("▶ start")).toBeNull();
+  });
+
+  describe("CH·03 placement matrix", () => {
+    it("renders per-node columns with served/present/absent chips", async () => {
+      render(<ServePage sparks={sparks} onNavigate={vi.fn()} />);
+      expect(await screen.findByText("CH·03")).toBeTruthy();
+      // glm: current+served on spark-1, absent on dgx-2; qwen absent everywhere
+      expect(await screen.findByText("served")).toBeTruthy();
+      expect(screen.getAllByText("absent").length).toBeGreaterThan(2);
+      expect(screen.getByText("in store")).toBeTruthy();
+      expect(screen.getByText(/176.0 GB/)).toBeTruthy();
+    });
+
+    it("runs a push remediation for a node missing a peer-held model", async () => {
+      const user = userEvent.setup();
+      vi.mocked(serveMatrix).mockResolvedValue({
+        ...matrixResp(),
+        models: [
+          {
+            key: "glm", name: "glm", runtime: "vllm", repository: "org/GLM", bytes: null,
+            nas: "absent", nodes: { "spark-1": "current", "dgx-2": "absent" }, servedOn: [],
+          },
+        ],
+      } as never);
+      render(<ServePage sparks={sparks} onNavigate={vi.fn()} />);
+      const run = await screen.findByRole("button", { name: "▶ run" });
+      await user.click(run);
+      await waitFor(() =>
+        expect(startJob).toHaveBeenCalledWith({
+          kind: "push", model: "glm", sourceSparkId: "spark-1", targetSparkId: "dgx-2",
+        })
+      );
+    });
+
+    it("offers no-source when neither NAS nor a peer holds the model", async () => {
+      vi.mocked(serveMatrix).mockResolvedValue({
+        ...matrixResp(),
+        models: [
+          {
+            key: "solo", name: "solo", runtime: null, repository: "org/Solo", bytes: null,
+            nas: "absent", nodes: { "spark-1": "absent", "dgx-2": "absent" }, servedOn: [],
+          },
+        ],
+      } as never);
+      render(<ServePage sparks={sparks} onNavigate={vi.fn()} />);
+      // one "no source" affordance per missing node (2 nodes here)
+      expect((await screen.findAllByText(/no source/)).length).toBe(2);
+      expect(screen.queryByRole("button", { name: "▶ run" })).toBeNull();
+    });
+
+    it("filters models by query", async () => {
+      const user = userEvent.setup();
+      render(<ServePage sparks={sparks} onNavigate={vi.fn()} />);
+      await screen.findByText("served");
+      await user.type(screen.getByPlaceholderText("filter models…"), "qwen");
+      expect(screen.queryByText("served")).toBeNull();
+    });
   });
 });

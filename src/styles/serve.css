@@ -149,3 +149,27 @@
   font-size: var(--fs-11);
   color: var(--color-muted);
 }
+
+/* matrix (CH·03): one column per compute node (2..6 typical) */
+.serve-page .mt-head,
+.serve-page .mt-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.6fr) 90px repeat(var(--mt-n, 2), minmax(72px, 0.7fr)) minmax(180px, 1.4fr);
+  gap: 10px;
+  align-items: center;
+  padding: 8px 12px;
+  border-top: 1px solid var(--color-grid);
+}
+.serve-page .mt-head {
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+  border-bottom: 1px solid var(--color-border);
+  border-top: 0;
+}
+.serve-page .mt-row:hover {
+  background: var(--color-surface-hover);
+}
