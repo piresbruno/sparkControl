@@ -1296,6 +1296,15 @@ export interface ServeMatrixResponse {
   at: number;
 }
 
+/** Capacity verdict for a transfer target (P3 warn — never a blocker). */
+export interface PlacementCapacityWarn {
+  sparkId: string;
+  mount: string;
+  freeBytes: number;
+  neededBytes: number;
+  fits: boolean;
+}
+
 /** Remediation from a placement 409 — carries the resolved modelctl store name. */
 export interface Remediation {
   kind: "sync" | "push";

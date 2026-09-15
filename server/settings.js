@@ -42,6 +42,8 @@ const DEFAULTS = Object.freeze({
     nasHostSparkId: null,
     remoteBin: "modelctl",
     source: "git+https://github.com/piresbruno/modelctl",
+    /** Free-space headroom kept out of capacity checks (GiB, 0 = none). */
+    reserveFreeGiB: 0,
   }),
   /**
    * The agent token itself lives encrypted in secretsStore (never plaintext
@@ -54,7 +56,7 @@ const DEFAULTS = Object.freeze({
 /** Agent token secret name in the secretsStore appSecrets bucket. */
 export const AGENT_TOKEN_SECRET = "agentToken";
 
-const MODELCTL_KEYS = ["nasRoot", "nasHostSparkId", "remoteBin", "source"];
+const MODELCTL_KEYS = ["nasRoot", "nasHostSparkId", "remoteBin", "source", "reserveFreeGiB"];
 
 function _isValidToken(t) {
   return typeof t === "string" && /^[0-9a-f]{64}$/.test(t);
@@ -193,6 +195,9 @@ function _mergeModelctl(candidate) {
     if (v === undefined) continue;
     if (k === "nasHostSparkId") {
       out[k] = typeof v === "string" && v ? v : null;
+    } else if (k === "reserveFreeGiB") {
+      const n = Number(v);
+      out[k] = Number.isFinite(n) && n >= 0 ? Math.round(n) : DEFAULTS.modelctl.reserveFreeGiB;
     } else if (typeof v === "string" && v.trim()) {
       out[k] = v;
     }

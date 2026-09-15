@@ -471,7 +471,8 @@ export class ServeEngine {
    *   getSettings: () => object,
    *   modelctl: { listNodeModels(spark), listNasModels(opts), modelctlEnabledSparks() },
    *   llmSnapshot?: (sparkId) => { available, modelId, port }[] | null,  // metrics.llm rows
-   *   storageSnapshot?: (sparkId) => { label, available, total }[] | null, // for matrix capacity
+   *   storageSnapshot?: (sparkId) => { label, available, total }[] | null, // capacity warn (P3; MiB rows)
+   *   settings.modelctl.reserveFreeGiB — headroom kept out of the capacity check
    *   ensureLlmPort?: async (sparkId, port) => boolean,                  // add + hot-reload (returns added)
    *   dropLlmPort?: async (sparkId, port) => void,
    *   nudgeLlm?: (sparkId) => void,  // force an immediate llm re-probe (stop settle)
@@ -530,6 +531,24 @@ export class ServeEngine {
     return (this._.registry.sparks || []).filter((sp) => sp.kind !== "nas");
   }
 
+  /** Per-node free-space verdict for a model row (P3 capacity warn). */
+  _capacityReport(targetSparkId, holder) {
+    if (!holder || holder.bytes == null || !this._.storageSnapshot) return null;
+    const cfg = this._.getSettings?.() || {};
+    const reserveGiB = Number(cfg.modelctl?.reserveFreeGiB);
+    const reserveBytes = Number.isFinite(reserveGiB) && reserveGiB > 0 ? reserveGiB * 1024 ** 3 : 0;
+    const rows = {};
+    const snap = this._.storageSnapshot(targetSparkId);
+    if (Array.isArray(snap)) rows[targetSparkId] = snap;
+    const check = capacityCheck(holder, rows, reserveBytes);
+    return check?.find((c) => c.sparkId === targetSparkId) || null;
+  }
+
+  /** True while a non-serve job is active on the node (transfer contention). */
+  _contentionWarn(sparkId) {
+    return this._.remoteJobs.hasActiveJobForNode?.(sparkId) ?? false;
+  }
+
   /**
    * Placement pre-check for the parsed MODEL on the head node. Inventories
    * fan out in parallel (P3 — was a serial per-peer round trip).
@@ -544,7 +563,7 @@ export class ServeEngine {
     const inv = await modelctl.listNodeModels(spark).catch(() => null);
     if (!inv || inv.error) return { check: "unknown" };
     const present = modelInInventory(model, inv?.models);
-    if (present) return { check: "present" };
+    if (present) return { check: "present", contention: this._contentionWarn(spark.id) };
     // Absent → remediation plan (sync from NAS / push from peer).
     const peers = (await Promise.all(
       (modelctl.modelctlEnabledSparks() || [])
@@ -587,7 +606,19 @@ export class ServeEngine {
       peers,
     });
     const remediations = placement.remediations.map((rem) => ({ ...rem, model: canonical }));
-    return { check: "absent", placement: { ...placement, remediations } };
+    // Capacity math for the transfer (plan P3: show the bytes, warn never
+    // block): bytes of the canonical model from whichever inventory holds it.
+    const holder =
+      (nasInv?.models || []).find((m) => m?.name === canonical) ||
+      peers.flatMap((p) => p.models).find((m) => m?.name === canonical) ||
+      null;
+    const capacity = this._capacityReport(spark.id, holder);
+    return {
+      check: "absent",
+      placement: { ...placement, remediations },
+      capacity,
+      contention: this._contentionWarn(spark.id),
+    };
   }
 
   /**
@@ -683,16 +714,49 @@ export class ServeEngine {
     }
 
     // [D-bridge] hard block only when ABSENCE is proven; unknown warns never block.
+    // Capacity + contention ride the response as WARNINGS (never blockers).
+    let warnings = [];
     if (!force) {
       const pc = await this.placementCheck(recipe);
+      if (pc.capacity?.fits === false) {
+        warnings.push(
+          `free space on ${recipe.sparkId}: ${(pc.capacity.freeBytes / 1e9).toFixed(1)} GB available, needs ${(pc.capacity.neededBytes / 1e9).toFixed(1)} GB`
+        );
+      }
+      if (pc.contention) warnings.push(`a job is already running on ${recipe.sparkId} (transfer contention)`);
       if (pc.check === "absent") {
         return {
           ok: false,
           blocked: true,
           error: `model "${recipe.meta.model}" is not on ${recipe.sparkId} — starting would pull it from Hugging Face`,
           placement: pc.placement,
+          capacity: pc.capacity || null,
+          contention: Boolean(pc.contention),
+          warnings,
         };
       }
+    } else {
+      // Force path: still show the math (the HF pull lands on this node's disk).
+      // Best-effort bytes lookup from the NAS store — absent → no warning.
+      let holderBytes = null;
+      try {
+        const nas = await this._.modelctl.listNasModels().catch(() => null);
+        const looser = String(recipe.meta?.model || "").toLowerCase();
+        const m = (nas?.models || []).find(
+          (x) => x?.name === recipe.meta?.model || String(x?.repository || "").toLowerCase() === looser
+        );
+        holderBytes = m?.bytes ?? null;
+      } catch {
+        /* bytes unknown — no capacity warning */
+      }
+      const cap = this._capacityReport(recipe.sparkId, holderBytes != null ? { bytes: holderBytes } : null);
+      if (cap && cap.fits === false) {
+        warnings.push(
+          `free space on ${recipe.sparkId}: ${(cap.freeBytes / 1e9).toFixed(1)} GB available, needs ${(cap.neededBytes / 1e9).toFixed(1)} GB`
+        );
+      }
+      if (this._contentionWarn(recipe.sparkId))
+        warnings.push(`a job is already running on ${recipe.sparkId} (transfer contention)`);
     }
 
     // D-port: register the recipe port so WS probes (and hero/bench/proxy) exist.
@@ -716,7 +780,7 @@ export class ServeEngine {
       portAdded: portAdded || undefined,
       startedWith: { version: this._.versionOf ? this._.versionOf(recipe) : recipe.versions || null, at: Date.now() },
     });
-    return { ok: true, jobId, deployment };
+    return { ok: true, jobId, deployment, warnings };
   }
 
   /**

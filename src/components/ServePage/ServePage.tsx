@@ -20,7 +20,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { MctlJob, Placement, ServeMatrixResponse, ServeRecipe, ServeState, SparkSnapshot } from "../../api/types";
+import type { MctlJob, Placement, PlacementCapacityWarn, ServeMatrixResponse, ServeRecipe, ServeState, SparkSnapshot } from "../../api/types";
 import {
   deleteServeRecipe,
   getJob,
@@ -54,7 +54,14 @@ interface ServePageProps {
 interface HttpError {
   message: string;
   status?: number;
-  payload?: { blocked?: boolean; placement?: Placement; topology?: { nnodes: number; computeNodes: number } };
+  payload?: {
+    blocked?: boolean;
+    placement?: Placement;
+    topology?: { nnodes: number; computeNodes: number };
+    capacity?: PlacementCapacityWarn | null;
+    contention?: boolean;
+    warnings?: string[];
+  };
 }
 
 function httpError(err: unknown): HttpError {
@@ -71,7 +78,7 @@ export function ServePage({ sparks, onNavigate }: ServePageProps) {
   const [recipes, setRecipes] = useState<ServeRecipe[] | null>(null);
   const [states, setStates] = useState<Record<string, ServeState>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
-  const [blocked, setBlocked] = useState<{ recipe: ServeRecipe; error: string; placement: Placement | null } | null>(null);
+  const [blocked, setBlocked] = useState<{ recipe: ServeRecipe; error: string; placement: Placement | null; warnings?: string[] } | null>(null);
   const [topologyBlocked, setTopologyBlocked] = useState<{ recipe: ServeRecipe; error: string } | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [keyDialog, setKeyDialog] = useState<{ sparkId: string; port: number } | null>(null);
@@ -122,18 +129,20 @@ export function ServePage({ sparks, onNavigate }: ServePageProps) {
     async (recipe: ServeRecipe, verb: "start" | "stop" | "restart", body: { variant?: string | null; force?: boolean } = {}) => {
       setBusy((prev) => ({ ...prev, [recipe.id]: true }));
       try {
-        await serveDeploymentAction(recipe.id, verb, body);
+        const res = await serveDeploymentAction(recipe.id, verb, body);
         pushToast(
           verb === "start"
             ? `start requested — ${recipe.label || recipe.path.split("/").pop()} (driver job detached; watch the row)`
             : `${verb} requested`,
           "ok"
         );
+        // P3 warnings (capacity math / transfer contention) — advisory only.
+        for (const w of res.warnings || []) pushToast(`warn: ${w}`);
         await pollStates();
       } catch (err) {
         const e = httpError(err);
         if (e.payload?.blocked) {
-          setBlocked({ recipe, error: e.message, placement: e.payload.placement ?? null });
+          setBlocked({ recipe, error: e.message, placement: e.payload.placement ?? null, warnings: e.payload.warnings || [] });
         } else if (e.payload?.topology) {
           setTopologyBlocked({ recipe, error: e.message });
         } else {
@@ -984,7 +993,7 @@ function BlockedDialog({
   onClose,
   onForce,
 }: {
-  info: { recipe: ServeRecipe; error: string; placement: Placement | null };
+  info: { recipe: ServeRecipe; error: string; placement: Placement | null; warnings?: string[] };
   sparks: SparkSnapshot[];
   onChanged: () => void;
   pushToast: PushToast;
@@ -1010,6 +1019,13 @@ function BlockedDialog({
         </div>
         <div className="modal-sheet__body space-y-3">
           <p className="text-xs text-muted" style={{ whiteSpace: "pre-wrap" }}>{info.error}</p>
+          {info.warnings && info.warnings.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+              {info.warnings.map((w, i) => (
+                <span key={i} className="st-sub" style={{ color: "var(--color-warning)" }}>⚠ {w}</span>
+              ))}
+            </div>
+          )}
           {p && p.remediations.length > 0 ? (
             <div className="sub-card" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <span className="field__label">Fix placement ({p.status})</span>

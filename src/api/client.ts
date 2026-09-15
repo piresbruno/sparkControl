@@ -664,7 +664,7 @@ export function serveDeploymentAction(
   recipeId: string,
   verb: "start" | "stop" | "restart",
   body: { variant?: string | null; force?: boolean } = {}
-): Promise<{ jobId?: string; ok?: boolean; deployment?: ServeDeployment }> {
+): Promise<{ jobId?: string; ok?: boolean; deployment?: ServeDeployment; warnings?: string[] }> {
   return apiFetch(`/api/serve/deployments/${encodeURIComponent(recipeId)}/${verb}`, {
     method: "POST",
     body: JSON.stringify(body),

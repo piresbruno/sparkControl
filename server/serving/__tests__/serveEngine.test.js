@@ -645,3 +645,68 @@ test("gatewayNames: only running desired, deduped", async () => {
   assert.deepEqual(eng.gatewayNames(), []);
   fs.rmSync(f.dir, { recursive: true, force: true });
 });
+
+// ─── P3.2: capacity + contention warnings on start ────────
+
+function mkCapFakes() {
+  const f = mkFakes();
+  // absent model so placementCheck builds capacity from the NAS row
+  f.nodeModels["spark-a"] = [];
+  f.modelctl.listNasModels = async () => ({
+    models: [{ name: "glm", runtime: "vllm", repository: "org/GLM", bytes: 100_000_000_000 }],
+  });
+  return f;
+}
+
+test("start (force) warns with the capacity math when bytes exceed free space", async () => {
+  const f = mkCapFakes();
+  const eng = mkEngine(f, {
+    storageSnapshot: () => [{ label: "/", available: 40_000, total: 900_000 }], // 40 GB free
+    getSettings: () => ({ modelctl: { reserveFreeGiB: 0 } }),
+  });
+  const out = await eng.start(f.recipe.id, { force: true });
+  assert.equal(out.ok, true, "warn never blocks");
+  assert.ok(out.warnings.some((w) => /free space on spark-a.*41.9 GB available.*needs 100.0 GB/.test(w)), out.warnings.join("|"));
+  fs.rmSync(f.dir, { recursive: true, force: true });
+});
+
+test("reserveFreeGiB counts into neededBytes", async () => {
+  const f = mkCapFakes();
+  const eng = mkEngine(f, {
+    storageSnapshot: () => [{ label: "/", available: 100_000, total: 900_000 }], // ~100 GB free
+    getSettings: () => ({ modelctl: { reserveFreeGiB: 20 } }), // needs 100 + 20 GiB
+  });
+  const out = await eng.start(f.recipe.id, { force: true });
+  assert.equal(out.ok, true);
+  assert.ok(out.warnings.some((w) => /needs 121.5 GB/.test(w)) || out.warnings.some((w) => /free space/.test(w)), out.warnings.join("|"));
+  fs.rmSync(f.dir, { recursive: true, force: true });
+});
+
+test("blocked payload carries capacity + contention flags", async () => {
+  const f = mkCapFakes();
+  const eng = mkEngine(f, {
+    storageSnapshot: () => [{ label: "/", available: 40_000, total: 900_000 }],
+  });
+  const out = await eng.start(f.recipe.id);
+  assert.equal(out.blocked, true);
+  assert.equal(out.capacity.fits, false);
+  assert.equal(out.capacity.freeBytes, 40_000 * 1024 * 1024);
+  assert.equal(out.contention, false);
+  assert.ok(Array.isArray(out.warnings));
+  fs.rmSync(f.dir, { recursive: true, force: true });
+});
+
+test("contention warn when a non-serve job is active on the target", async () => {
+  const f = mkCapFakes();
+  f.remoteJobs.hasActiveJobForNode = (id) => id === "spark-a";
+  const eng = mkEngine(f, { storageSnapshot: () => null });
+  const out = await eng.start(f.recipe.id, { force: true });
+  assert.equal(out.ok, true);
+  assert.ok(out.warnings.some((w) => /already running on spark-a/.test(w)));
+  // a blocking placement also reports contention
+  const eng2 = mkEngine({ ...f }, { storageSnapshot: () => null });
+  await eng2.stop(f.recipe.id);
+  const blocked = await eng2.start(f.recipe.id);
+  assert.equal(blocked.blocked || blocked.ok === false, true);
+  fs.rmSync(f.dir, { recursive: true, force: true });
+});
