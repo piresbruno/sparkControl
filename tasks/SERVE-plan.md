@@ -1,10 +1,12 @@
 # SERVE Plan — cluster-level Model Serving with Recipes
 
-Status: proposal rev 4 (2026-09-15). Rev 3 scoped to **start/stop/restart/logs only — no recipe editing in
-the UI; recipe folders (and `.env`) stay user-owned on nodes**. Rev 4 incorporates a two-axis adversarial
-review (operational + architectural); both verdicts were "not implementable as written" — the 9 load-bearing
-breaks are fixed below and marked **[R4]**. New tree evidence verified directly (remoteJobs.js:56,115-130,
-342-358,388-396; SparkRegistry.js:86,203-226; recipe start.sh:1693-1711,1723-1734; config/sparks.json ports).
+Status: proposal rev 5 (2026-09-15). Rev 3 scoped to **start/stop/restart/logs only — no recipe editing in
+the UI; recipe folders (and `.env`) stay user-owned on nodes**. Rev 4 fixed the 9 load-bearing breaks found
+by a two-axis adversarial review (operational + architectural; reports: agent://OpsAdversary,
+agent://ArchAdversary). Rev 5 locks the six open decisions (user, 2026-09-15), marked **[D·x]** — including
+placement upgraded from advisory to a **hard block** [D-bridge]. Tree evidence verified directly
+(remoteJobs.js:56,115-130,342-358,388-396; SparkRegistry.js:86,203-226; recipe start.sh:1693-1711,1726-1734;
+config/sparks.json ports).
 
 ## 0. Problem
 
@@ -107,13 +109,18 @@ deployment { id, recipeId, variant?, desired: running|stopped,
     chip (recipe-owner semantics; UI footnote).
   - `unknown` = node offline (never rendered as stopped).
   - Manual `ssh ./start.sh` start/restart ⇒ still correct: state comes from probes, containers are truth.
-- **Placement advisory [R4]**: recipe start bypasses `/api/serving/start`'s 409+placement gate entirely
-  (that gate only exists there and only with `modelName`, index.js:1226-1240) ⇒ a model already on the NAS
-  would silently trigger a 164 GiB internet pull. Cheap pre-start check: parsed `MODEL` vs
-  `modelctl.listNodeModels(head)` (best-effort, offline-tolerant) → advisory chip
-  **"not on node — recipe will pull ~N GiB from HF"** + (P3) `sync NAS→node` / `push` one-clicks that
-  set the recipe's own `SKIP_DOWNLOAD=1/SKIP_SYNC=1` **via the user editing `.env` or a one-shot
-  `env`-prefix** (no `.env` mutation by the dashboard).
+- **Placement gate [D-bridge: hard block, rev 5]**: recipe start bypasses `/api/serving/start`'s 409+placement
+  gate entirely (that gate exists only there and only with `modelName`, index.js:1226-1240) ⇒ a model already
+  on the NAS would silently trigger a 164 GiB internet pull. Dashboard `▶` now **blocks** start when the
+  parsed `MODEL` is absent on the head: 409 `{error, placement}` with remediation rows (`sync NAS→head` /
+  `push peer→head` / `download→NAS`; job buttons land P3 [D-bridge: defer]). **Escape hatch**: explicit
+  "pull from HF anyway" confirm in the blocked dialog — same click-through, never silent. Skip conditions:
+  `MODEL` unparseable, `modelctl list --local` errored, or node offline ⇒ warn chip only (never block on
+  unknown). The gate is dashboard-side only; `ssh ./start.sh` keeps recipe semantics (download-if-missing)
+  untouched, and its runs still join as probe truth.
+  When present-on-node: chip `weights present — recipe download step will skip (cache hit)`; the dashboard
+  does **not** write `.env` and does not inject `SKIP_*` (D2 caller-export overlay cut in rev 3; recipe's own
+  cache-skip logic handles it, start.sh header: "Already complete? Exits 0").
 
 ### 1.3 Logs and containers [R4 — container model fixed]
 
@@ -135,15 +142,16 @@ deployment { id, recipeId, variant?, desired: running|stopped,
   persists only a 4 KB tail (remoteJobs.js:127); node-side job logs prune at **7 days**
   (JOB_PRUNE_CMD :60-61) — UI shows both windows honestly.
 - **Engine log** = `docker logs --tail N` / `--since <cursor>` per rank (never the blocking `logs` verb);
-  5 s incremental tail, `trace-body__pre` + `tokenizeLogLine`.
+  5 s incremental tail, `trace-body__pre` + `tokenizeLogLine`. **[D-logs]** worker rank: direct on the
+  mapped node's own transport (agent/SSH); head's ssh hop fallback only when rank unmapped or peer offline.
 
 ### 1.4 Serve section (`/serve`)
 
 No recipe editor, params editor, dry-run, file browser.
 
 - **CH·01 DEPLOYMENTS** — recipe · variant/topology chip · head (+ peer ranks mapped) · port · served id ·
-  state (`starting` elapsed / `healthy` / `stopping` / `stopped` / `drift` / `unknown`) · version ·
-  placement-advisory chip · endpoint rows: DIRECT `http://<lanIp>:<PORT>/v1`, PROXY
+  state (`starting` elapsed / `healthy` / `stopping` / `stopped` / `drift` / `unknown` /
+  `blocked — model not on node`) · version · endpoint rows: DIRECT `http://<lanIp>:<PORT>/v1`, PROXY
   `/llm/<sparkId>/<port>/v1` (+ `/analysis?spark=&port=` traces link) · key chip **[R4]**: state =
   **probed enforcement** (`/v1/models` 401 test via node exec) + `.env` VLLM_API_KEY presence + dashboard
   proxy-injection key (`setLlmApiKey`, fixes D6) — three badges, mismatch warning; the dialog edits only
@@ -151,8 +159,9 @@ No recipe editor, params editor, dry-run, file browser.
   actions: `▶` / `⟳` / `■` (3 s arm) · row expand: driver tail + engine console (rank switch).
   Poll `GET /api/serve/state` (fan-out, 5 s).
 - **CH·02 RECIPES** — registered folders: node · path · parsed meta (port/containers/served name/NNODES/
-  READY_TIMEOUT) · git HEAD + dirty flags · variants · badges `running via <deployment>` / `idle` /
-  `orphaned` · register flow (node + path + scan) · optional `clone on node…` (job).
+  READY_TIMEOUT) · git HEAD + dirty flags · variants (**one live per folder** [D-folder] — enforced by the
+  (sparkId,path) lock; starting a second variant requires stopping the first) · badges `running via
+  <deployment>` / `idle` / `orphaned` · register flow (node + path + scan) · optional `clone on node…` (job).
 - **[R4] Script-class scope decision (rev 3 Open Q4 resolved)**: `/serve` is **recipe-class only**;
   script-class (examples) keeps its existing node-page launch/stop panel untouched through P2 — removal
   would strand live runs (`ServingStatus`/`useServingLifecycle`/hero-bay stop are its only affordances;
@@ -172,7 +181,7 @@ No recipe editor, params editor, dry-run, file browser.
 (long-lived recipe services; conflicts with benches/traces). **modelctl cluster plan**: defers node
 agents/APIs/reconciliation = sparkControl's lane; boundary: modelctl = data plane, sparkControl = serving
 control plane; their reservations/capacity feed P3. Recipe `MODEL` ids land in the HF cache — the same
-cache `modelctl list --local` registers — which makes the §1.2 advisory cheap.
+cache `modelctl list --local` registers — which makes the §1.2 placement check cheap.
 
 ## 3. Phases
 
@@ -197,12 +206,15 @@ Acceptance: pre-upgrade `~/.sparkdash/runs/*.pid` live run still stops via UI af
 2. Routes: `GET/POST/DELETE /api/serve/recipes[/scan|:id]` (probe-on-read, TTL cache).
 3. Deployments store (`config/serve-deployments.json`) + engine: start/restart (§1.2 job path), stop
    (§1.2 TERM-first), join (WS ∪ job ∪ docker-probe per rank), **llmPorts auto-register/unregister
-   offer**, placement advisory, version drift, boot re-probe (state only; auto-start OFF default).
+   offer**, placement hard-block [D-bridge], version drift, boot re-probe [D-boot] (**re-probe only: a dead
+   engine with desired=running surfaces `failed/stopped` + ▶; never auto-starts; live containers adopt silently**).
 4. Logs: driver-file tail builder + docker-logs-per-rank builder (cursor `--since`).
    Acceptance (live cluster): register GLM → probe lists PORT=8888, container set {head,worker}, served
-   id, TP=2, HEAD; `▶` auto-adds 8888 to spark-1 llmPorts, job tail streams preflight→pull→rsync→warmup;
-   after load: `healthy :8888`; `■` mid-download: driver TERM'd, no late launch, `stopping`→`stopped`;
-   manual ssh restart: UI agrees; dashboard restart mid-`starting`: row restores (pinned job + probe).
+   id, TP=2, HEAD; **absent model: ▶ 409-blocks with placement rows + escape-hatch confirm; model synced to
+   node (modelctl by hand, P3 makes it one-click) → ▶ allowed with cache-hit chip**; `▶` auto-adds 8888 to
+   spark-1 llmPorts, job tail streams preflight→pull→rsync→warmup; after load: `healthy :8888`; `■`
+   mid-download: driver TERM'd, no late launch, `stopping`→`stopped`; manual ssh restart: UI agrees;
+   **dashboard restart while engine dead: row surfaces `failed` + ▶, nothing auto-starts [D-boot]**.
 
 ### Phase 2 — Serve section UI — M
 1. Sentinel wiring (SERVE_ID, route×2, tabs×3, BoltIcon); `ServePage` CH·01/02 per §1.4 (kit reuse:
@@ -213,12 +225,14 @@ Acceptance: pre-upgrade `~/.sparkdash/runs/*.pid` live run still stops via UI af
    vitest: state matrix, arm-stop, key dialog, orphan GC.
 
 ### Phase 3 — model bridge + placement (transfer half of the original ask) — M
-1. Advisory chip → one-click remediation: `modelctl sync-local NAS→head` / `push head→peer` (CX7) /
-   `download→NAS`, all existing job kinds + 4 s tail; result re-runs placement check →
-   suggests user set `SKIP_DOWNLOAD=1 SKIP_SYNC=1` in `.env` (guidance + copyable line; no `.env` write).
+1. **Remediation buttons for the [D-bridge] blocked dialog**: `modelctl sync-local NAS→head` /
+   `push peer→head` (CX7) / `download→NAS` — existing job kinds + 4 s tail; completion re-runs the
+   placement check and clears the block (no `.env` writes, no `SKIP_*` injection — recipe's own cache-skip
+   logic engages).
 2. Model×node matrix (orphaned `.models-split` CSS), shared `/models` ↔ Serve; capacity preflight with
    byte math + **contention warn vs live recipe-run (P0a lock interplay)**; `nasRootFor` everywhere (D7).
-3. Topology awareness: NNODES > fleet ⇒ disabled row + exact delta; peer-inventory parallelization.
+3. Topology awareness: NNODES > fleet ⇒ disabled row + exact delta; peer-inventory parallelization
+   (the per-head placement check shares this fan-out).
 
 ### Phase 4 — servedName gateway (optional) — M
 `/llm/cluster/<servedName>/v1` in `llmProxy`: probe-health round-robin + failover. `SERVED_MODEL_NAME`
@@ -237,7 +251,7 @@ topology declared) — script-scraping fallback stands meanwhile; zero adoption 
 - 0b: legacy-pidfile stop-after-switch regression test.
 - UI: vitest (§3 P2 list). E2E: §3 P1 acceptance walk live, 2 Sparks + NAS; screenshots.
 
-## 5. Risks / open questions
+## 5. Risks
 
 | Risk | Mitigation |
 |---|---|
@@ -246,8 +260,18 @@ topology declared) — script-scraping fallback stands meanwhile; zero adoption 
 | Stop race | TERM-first (§1.2); desired=stopped wins over job terminal states |
 | Recipe update mid-run | HEAD+dirty drift chip; rebuild-vs-restart distinguished; restart always manual |
 | Port auto-registration surprise | registration logged in row ("port added by deployment"), removal offered with deployment; operator can pre-add ports manually and deployment reuses them |
+| **[D-bridge] false block** (stale `list --local` cache, repo-id vs local-name mismatch, modelctl off) | check is offline-tolerant: errors/unparseable/unregistered-modelctl ⇒ warn chip, never block; id matching = name ∧ repository fields of parseModelctlList; escape hatch always present |
 | Two dashboards / same folder | out of scope (single-operator homelab); probe truth minimizes damage |
 | nsenter'd host user lacks docker group on spark-1 | probe reports `docker: permission denied` rank row; recipe status-verb fallback |
 | Key chip confusion (3 key sources) | tri-badge + explicit copy ("proxy injection ≠ engine auth") — engine key stays `.env`-owned |
 
-Open Qs (pre-P1): (1) worker engine-log direct-from-peer vs head ssh hop — default direct when mapped+agent, else hop; (2) multiple deployments per folder (e.g. tp1 + tp4 variants never co-live — assumed one live variant per folder, enforced by (sparkId,path) lock); (3) whether placement-advisory should hard-block without a `MODEL`-meta parse (proposal: never block; homelab, HF pulls are legitimate).
+## 6. Decisions log (locked 2026-09-15, user)
+
+| ID | Decision |
+|---|---|
+| D-bridge | Model-transfer UI **deferred to P3**; P1/P2 ship the placement **hard block** (§1.2) with escape hatch; buttons land with P3. |
+| D-port | Deployment **auto-adds meta.PORT to spark.llmPorts**, visible badge + offered removal; operator may pre-add and deployment reuses. |
+| D-boot | **Re-probe only** on dashboard restart; dead desired=running ⇒ `failed` row + manual ▶; live containers adopted; auto-start never (opt-in revisit only with P4). |
+| D-logs | Worker-rank logs **direct via peer's own transport**; head ssh-hop fallback for unmapped ranks / offline peer. |
+| D-folder | **One live variant per folder** — (sparkId, path) lock; second variant requires stopping the first. |
+| D-gate-strength | Placement gate = **block unless present** (rev 5 amendment to the rev-4 advisory), bounded by the skip-conditions in §1.2 and the false-block row in §5. |
