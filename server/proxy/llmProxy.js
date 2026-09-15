@@ -9,6 +9,11 @@
  * Behavior contract (plan A2):
  *  - 404 unknown sparkId; 400 non-integer/out-of-range port (1–65535);
  *    403 when the resolved target host is not allowed (isAllowedTargetHost).
+ *  - P4 cluster gateway: `/llm/cluster/<servedName>/...` resolves the name to
+ *    live recipe deployments (healthy-first, round-robin) and forwards as if
+ *    the caller had used /llm/<sparkId>/<port>. 404 with {known:[…]} when no
+ *    deployment serves that name. "cluster" is a reserved spark id, so the
+ *    route can never collide with a node named cluster.
  *  - Auth injection: client Authorization header always wins; else the stored
  *    per-port LLM key is injected as `Authorization: Bearer <key>`.
  *  - Forward via http.request: same method/path/query; hop-by-hop headers
@@ -86,27 +91,72 @@ function _toolNames(parsed) {
  *                      proxyMaxInflightPerPort?: number }),
  *   traceStore: { record(entry: object): unknown },
  *   inflight?: ReturnType<typeof import("./inflightRegistry.js").createInflightRegistry>,
+ *   gateway?: {
+ *     targets(servedName: string): Array<{ sparkId: string, port: number, healthy: boolean }>,
+ *     names(): string[],
+ *   },
  * }} deps
  * @returns {Router}
  */
-export function createLlmProxy({ registry, secrets, settings, traceStore, inflight = createInflightRegistry() }) {
+export function createLlmProxy({ registry, secrets, settings, traceStore, inflight = createInflightRegistry(), gateway = null }) {
   const router = Router();
 
+  // P4 gateway BEFORE the spark/port routes ("cluster" is a reserved spark id).
+  router.all("/cluster/:servedName/*splat", handler);
+  router.all("/cluster/:servedName", handler);
   router.all("/:sparkId/:port/*splat", handler);
   router.all("/:sparkId/:port", handler);
+
+  // Round-robin cursors per served name (selection-time, per process).
+  const rr = new Map();
 
   return router;
 
   async function handler(req, res) {
     const start = Date.now();
-    const sparkId = req.params.sparkId;
+
+    // ─── P4: resolve /llm/cluster/<servedName>/... to a live deployment ───
+    let sparkId;
+    let port;
+    let urlPrefix; // consumed by this route — upstream path is the remainder
+    if (req.params.servedName) {
+      if (!gateway) {
+        return res.status(503).json({ error: "cluster gateway not available" });
+      }
+      const name = decodeURIComponent(req.params.servedName);
+      const targets = gateway.targets(name) || [];
+      if (targets.length === 0) {
+        return res.status(404).json({
+          error: `no deployment serves "${name}"`,
+          known: gateway.names(),
+        });
+      }
+      const healthy = targets.filter((t) => t.healthy);
+      const pool = healthy.length ? healthy : targets; // warm targets still route
+      const idx = (rr.get(name) || 0) % pool.length;
+      rr.set(name, idx + 1);
+      const target = pool[idx];
+      sparkId = target.sparkId;
+      port = target.port;
+      // Slice the prefix from the RAW url (params are percent-decoded; the
+      // url segment may still be encoded) so the remainder stays exact.
+      const seg = req.url.split("?")[0].split("/")[2] || "";
+      urlPrefix = `/cluster/${seg}`;
+    } else {
+      sparkId = req.params.sparkId;
+      port = Number(req.params.port);
+      urlPrefix = `/${sparkId}/${port}`;
+      const s = registry.getSpark(sparkId);
+      if (!s) {
+        return res.status(404).json({ error: `Unknown spark: ${sparkId}` });
+      }
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        return res.status(400).json({ error: "port must be an integer 1–65535" });
+      }
+    }
     const spark = registry.getSpark(sparkId);
     if (!spark) {
       return res.status(404).json({ error: `Unknown spark: ${sparkId}` });
-    }
-    const port = Number(req.params.port);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      return res.status(400).json({ error: "port must be an integer 1–65535" });
     }
     const host = llmProbeHost(spark);
     if (!host) {
@@ -147,8 +197,7 @@ export function createLlmProxy({ registry, secrets, settings, traceStore, inflig
     }
 
     // ─── Upstream request ─────────────────────────────────
-    const prefix = `/${sparkId}/${port}`;
-    const suffix = req.url.startsWith(prefix) ? req.url.slice(prefix.length) : req.url;
+    const suffix = req.url.startsWith(urlPrefix) ? req.url.slice(urlPrefix.length) : req.url;
     const upstreamPath = suffix || "/";
     const qIdx = upstreamPath.indexOf("?");
     const upstreamPathOnly = qIdx >= 0 ? upstreamPath.slice(0, qIdx) : upstreamPath;
@@ -485,6 +534,7 @@ export function createLlmProxy({ registry, secrets, settings, traceStore, inflig
         traceStore.record({
           ts: start,
           sparkId,
+          port,
           source: "proxy",
           method: req.method,
           path: upstreamPathOnly,

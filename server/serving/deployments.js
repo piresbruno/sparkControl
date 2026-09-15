@@ -972,6 +972,45 @@ export class ServeEngine {
     return { deployments: this._.deployStore.list().filter((d) => d.desired === "running").length };
   }
 
+  /**
+   * P4 gateway pool: every RUNNING-desired deployment whose served name
+   * (SERVED_MODEL_NAME, else the model basename) matches `servedName`.
+   * Health is the cheap WS llm row (no exec) — selection-time only.
+   * @returns {Array<{sparkId: string, port: number, healthy: boolean, recipeId: string}>}
+   */
+  gatewayTargets(servedName) {
+    const want = String(servedName || "").trim().toLowerCase();
+    if (!want) return [];
+    const out = [];
+    for (const rec of this._.recipeStore.list()) {
+      const dep = this._.deployStore.byRecipe(rec.id);
+      if (!dep || dep.desired !== "running" || rec.orphaned) continue;
+      const names = [
+        rec.meta?.servedName,
+        rec.meta?.model ? String(rec.meta.model).split("/").pop() : null,
+      ].filter(Boolean);
+      if (!names.some((n) => String(n).toLowerCase() === want)) continue;
+      const port = rec.meta?.port ?? dep.port;
+      if (!Number.isInteger(port)) continue;
+      const rows = this._.llmSnapshot ? this._.llmSnapshot(rec.sparkId) || [] : [];
+      const row = rows.find((r) => r.port === port);
+      out.push({ sparkId: rec.sparkId, port, healthy: Boolean(row?.available), recipeId: rec.id });
+    }
+    return out;
+  }
+
+  /** Served names currently in the gateway pool (for 404 discovery). */
+  gatewayNames() {
+    const set = new Set();
+    for (const rec of this._.recipeStore.list()) {
+      const dep = this._.deployStore.byRecipe(rec.id);
+      if (!dep || dep.desired !== "running" || rec.orphaned) continue;
+      if (rec.meta?.servedName) set.add(rec.meta.servedName);
+      if (rec.meta?.model) set.add(String(rec.meta.model).split("/").pop());
+    }
+    return [...set];
+  }
+
   /** GC helpers: orphan everything referencing a removed spark. */
   orphanSpark(sparkId) {
     const n1 = this._.recipeStore.setOrphanedBySpark(sparkId, true);

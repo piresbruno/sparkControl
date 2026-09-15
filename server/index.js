@@ -289,6 +289,11 @@ app.use("/llm", createLlmProxy({
   settings: getSettings,
   traceStore,
   inflight,
+  // P4 gateway: lazy — serveEngine boots below; called per request only.
+  gateway: {
+    targets: (name) => serveEngine.gatewayTargets(name),
+    names: () => serveEngine.gatewayNames(),
+  },
 }));
 
 app.use(express.json());

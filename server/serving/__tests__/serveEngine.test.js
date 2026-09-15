@@ -607,3 +607,41 @@ test("placementCheck: parallel peer inventories all queried once each", async ()
   assert.ok(seen.includes("spark-a"));
   fs.rmSync(f.dir, { recursive: true, force: true });
 });
+
+// ─── P4 gateway pool ───────────────────────────────────────
+
+test("gatewayTargets: servedName + model-basename matching, healthy flag from llmSnapshot, desired/orphan filters", async () => {
+  const f = mkFakes();
+  const eng = mkEngine(f, { llmSnapshot: (id) => (id === "spark-a" ? [{ port: 8081, available: true }] : []) });
+  // no deployment yet
+  assert.deepEqual(eng.gatewayTargets("GLM-EXL3"), []);
+  await eng.start(f.recipe.id);
+  const t = eng.gatewayTargets("GLM-EXL3");
+  assert.equal(t.length, 1);
+  assert.deepEqual(t[0], { sparkId: "spark-a", port: 8081, healthy: true, recipeId: f.recipe.id });
+  // model basename matches too
+  assert.equal(eng.gatewayTargets("GLM").length, 1); // meta.model "org/GLM"
+  assert.equal(eng.gatewayTargets("glm").length, 1, "case-insensitive");
+  // unknown name
+  assert.deepEqual(eng.gatewayTargets("nope"), []);
+  // stopped deployment drops out of the pool
+  await eng.stop(f.recipe.id);
+  assert.deepEqual(eng.gatewayTargets("GLM-EXL3"), []);
+  // unhealthy deployment still pools (warm)
+  await eng.start(f.recipe.id, { force: true });
+  const eng2 = new (await import("../deployments.js")).ServeEngine({ ...f.__deps || {}, recipeStore: f.recipeStore, deployStore: f.deployStore, remoteJobs: f.remoteJobs, exec: f.exec, registry: f.registry, getSettings: () => ({}), modelctl: f.modelctl, llmSnapshot: () => [{ port: 8081, available: false }], ensureLlmPort: async () => true });
+  const warm = eng2.gatewayTargets("GLM-EXL3");
+  assert.equal(warm[0].healthy, false);
+  fs.rmSync(f.dir, { recursive: true, force: true });
+});
+
+test("gatewayNames: only running desired, deduped", async () => {
+  const f = mkFakes();
+  const eng = mkEngine(f);
+  assert.deepEqual(eng.gatewayNames(), []);
+  await eng.start(f.recipe.id);
+  assert.deepEqual(eng.gatewayNames().sort(), ["GLM", "GLM-EXL3"]); // servedName + model basename
+  await eng.stop(f.recipe.id);
+  assert.deepEqual(eng.gatewayNames(), []);
+  fs.rmSync(f.dir, { recursive: true, force: true });
+});

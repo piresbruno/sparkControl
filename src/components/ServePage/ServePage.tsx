@@ -354,6 +354,9 @@ function DeploymentsTable({
                   <>
                     <EndpointCell spark={spark} port={port} kind="direct" />
                     <EndpointCell spark={spark} port={port} kind="proxy" onTraces={() => { window.location.href = `/analysis?spark=${encodeURIComponent(r.sparkId)}&port=${port}`; }} />
+                    {st?.servedName && (
+                      <EndpointCell spark={spark} port={port} kind="cluster" servedName={st.servedName} />
+                    )}
                     <KeyChip spark={spark} port={port} onClick={() => onKey(r.sparkId, port)} engineHasKey={Boolean(r.meta?.secretPresence?.VLLM_API_KEY)} />
                   </>
                 )}
@@ -486,21 +489,27 @@ function EndpointCell({
   spark,
   port,
   kind,
+  servedName,
   onTraces,
 }: {
   spark?: SparkSnapshot;
   port: number;
-  kind: "direct" | "proxy";
+  kind: "direct" | "proxy" | "cluster";
+  servedName?: string | null;
   onTraces?: () => void;
 }) {
   const direct = spark?.lanIp ? `http://${spark.lanIp}:${port}/v1` : null;
   const proxy = `${window.location.origin}/llm/${spark?.id}/${port}/v1`;
-  const url = kind === "direct" ? direct : proxy;
+  const cluster =
+    servedName && spark?.id
+      ? `${window.location.origin}/llm/cluster/${encodeURIComponent(servedName)}/v1`
+      : null;
+  const url = kind === "direct" ? direct : kind === "proxy" ? proxy : cluster;
   if (!url) return null;
   return (
     <div className="st-endpoint">
       <span className="mlabel" style={{ flexShrink: 0 }}>
-        {kind === "direct" ? "direct" : "proxy"}
+        {kind === "direct" ? "direct" : kind === "proxy" ? "proxy" : "cluster"}
         {kind === "proxy" && onTraces && (
           <button
             type="button"

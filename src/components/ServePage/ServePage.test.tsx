@@ -139,8 +139,9 @@ describe("ServePage — cluster deployments table", () => {
     expect(screen.getByText("GLM-5.3-Flash-EXL3")).toBeTruthy();
     // healthy join from state poll
     expect(screen.getAllByText("healthy").length).toBeGreaterThan(0);
-    // endpoints: direct + proxy rows
+    // endpoints: direct + proxy + cluster (P4 gateway) rows
     expect(screen.getByText("http://10.0.0.1:8081/v1")).toBeTruthy();
+    expect(screen.getByText(new RegExp("/llm/cluster/GLM-5.3-Flash-EXL3/v1$"))).toBeTruthy();
     expect(screen.getAllByText(/\/llm\/spark-1\/8081\/v1/).length).toBeGreaterThan(0);
     // live row: stop + restart present, start hidden
     expect(screen.getByText("■ stop")).toBeTruthy();
