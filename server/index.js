@@ -204,6 +204,7 @@ import { getAgentRegistry } from "./agent/agentRegistry.js";
 import { buildInstallAgentScript, buildUpdateAgentScript } from "./agent/agentBootstrap.js";
 import { shellQuote } from "./util/shellQuote.js";
 import * as clockControl from "./clocks/clockControl.js";
+import { parseClockApplyRequest, validateClockBounds } from "../src/shared/clockTarget.js";
 import { getTraceStore, closeTraceStore } from "./collectors/TraceStore.js";
 import { getInflightRegistry, closeInflightRegistry } from "./proxy/inflightRegistry.js";
 import {
@@ -2853,27 +2854,6 @@ function clocksTargetOrError(req, res) {
   return spark;
 }
 
-/** Request body → apply parts; null when the shape is invalid. */
-function clockPartsFromRequest(body) {
-  if (!body || typeof body !== "object") return null;
-  const parts = {};
-  if (body.gpu !== undefined) {
-    const g = body.gpu;
-    if (!g || typeof g !== "object") return null;
-    if (g.reset === true) parts.gpu = { mode: "reset" };
-    else if (Number.isInteger(g.mhz) && g.mhz >= 200) parts.gpu = { mode: "lock", mhz: g.mhz };
-    else return null;
-  }
-  if (body.cpu !== undefined) {
-    const c = body.cpu;
-    if (!c || typeof c !== "object") return null;
-    if (c.reset === true) parts.cpu = { mode: "reset" };
-    else if (Number.isInteger(c.maxPerfKhz) && c.maxPerfKhz > 0) parts.cpu = { mode: "cap", khz: c.maxPerfKhz };
-    else return null;
-  }
-  return Object.keys(parts).length > 0 ? parts : null;
-}
-
 app.get("/api/sparks/:id/clocks", async (req, res) => {
   const spark = clocksTargetOrError(req, res);
   if (!spark) return;
@@ -2889,10 +2869,16 @@ app.get("/api/sparks/:id/clocks", async (req, res) => {
 app.post("/api/sparks/:id/clocks", async (req, res) => {
   const spark = clocksTargetOrError(req, res);
   if (!spark) return;
-  const parts = clockPartsFromRequest(req.body);
+  const parts = parseClockApplyRequest(req.body);
   if (!parts) {
+    const got =
+      req.body != null && typeof req.body === "object"
+        ? JSON.stringify(req.body).slice(0, 200)
+        : String(req.body);
+    console.log(`[clocks] rejected apply body for ${req.params.id}: ${got}`);
     return res.status(400).json({
       error: "body must include gpu {mhz}|{reset:true} and/or cpu {maxPerfKhz}|{reset:true}",
+      got,
     });
   }
   let status;
@@ -2903,18 +2889,9 @@ app.post("/api/sparks/:id/clocks", async (req, res) => {
     return res.status(shutdownErrorStatus(msg)).json({ error: msg });
   }
   // Validate against live hardware/driver bounds before touching the node.
-  if (parts.gpu?.mode === "lock" && status.gpu?.maxSmMHz != null && parts.gpu.mhz > status.gpu.maxSmMHz) {
-    return res.status(400).json({ error: `gpu.mhz ${parts.gpu.mhz} exceeds clocks.max.sm ${status.gpu.maxSmMHz}` });
-  }
-  if (parts.cpu?.mode === "cap") {
-    const hwMin = status.cpu?.hwMinKhz ?? null;
-    const hwMax = status.cpu?.hwMaxKhz ?? null;
-    if (hwMax != null && parts.cpu.khz > hwMax) {
-      return res.status(400).json({ error: `cpu.maxPerfKhz ${parts.cpu.khz} exceeds hw max ${hwMax}` });
-    }
-    if (hwMin != null && parts.cpu.khz < hwMin) {
-      return res.status(400).json({ error: `cpu.maxPerfKhz ${parts.cpu.khz} below hw min ${hwMin}` });
-    }
+  const boundsError = validateClockBounds(status, parts);
+  if (boundsError) {
+    return res.status(400).json({ error: boundsError });
   }
   try {
     await execForSpark(spark, clockControl.buildApplyCommand(parts), { timeoutMs: 20000 });

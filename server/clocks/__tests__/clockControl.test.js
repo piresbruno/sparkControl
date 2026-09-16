@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { parseClockApplyRequest, validateClockBounds } from "../../../src/shared/clockTarget.js";
 import {
   CLOCK_HELPER_SCRIPT,
   buildApplyCommand,
@@ -362,4 +363,67 @@ test("helper script: shell-valid shape and covers all subcommands", () => {
   assert.match(CLOCK_HELPER_SCRIPT, /cat "\$d\/cpuinfo_max_freq" > "\$d\/scaling_max_freq"/);
   // max_perf is NOT written: on GB10 its write reverts scaling_max_freq.
   assert.ok(!/echo "\$2" > "\$d\/max_perf/.test(CLOCK_HELPER_SCRIPT));
+});
+
+// ─── Apply-request contract (src/shared/clockTarget.js — shared with the UI) ──
+
+test("parseClockApplyRequest: accepts every shape the panel sends", () => {
+  const ok = (body, expected) => assert.deepEqual(parseClockApplyRequest(body), expected);
+  ok({ gpu: { mhz: 1500 } }, { gpu: { mode: "lock", mhz: 1500 } });
+  ok({ gpu: { mhz: 2000 } }, { gpu: { mode: "lock", mhz: 2000 } });
+  ok({ cpu: { maxPerfKhz: 2000000 } }, { cpu: { mode: "cap", khz: 2000000 } });
+  ok({ gpu: { reset: true } }, { gpu: { mode: "reset" } });
+  ok({ cpu: { reset: true } }, { cpu: { mode: "reset" } });
+  ok(
+    { gpu: { mhz: 2400 }, cpu: { reset: true } },
+    { gpu: { mode: "lock", mhz: 2400 }, cpu: { mode: "reset" } }
+  );
+});
+
+test("parseClockApplyRequest: rejects the 400 matrix (route answers 400)", () => {
+  const bad = [
+    undefined,
+    null,
+    {},
+    42,
+    "x",
+    { gpu: {} },
+    { gpu: null },
+    { gpu: "lock" },
+    { gpu: { mhz: "1500" } }, // string from a stale client — the reported bug
+    { gpu: { mhz: 1500.5 } },
+    { gpu: { mhz: 199 } },
+    { gpu: { mhz: -1500 } },
+    { gpu: { mhz: NaN } },
+    { gpu: { reset: 1 } }, // truthy but not exactly true
+    { gpu: { reset: "yes" } },
+    { cpu: {} },
+    { cpu: { maxPerfKhz: "2000000" } },
+    { cpu: { maxPerfKhz: 0 } },
+    { cpu: { maxPerfKhz: -1 } },
+    { cpu: { maxPerfKhz: NaN } },
+    { cpu: { reset: "yes" } },
+    { mhz: 1500 }, // domain key missing entirely
+  ];
+  for (const body of bad) {
+    assert.equal(parseClockApplyRequest(body), null, `must reject ${JSON.stringify(body) ?? String(body)}`);
+  }
+});
+
+test("validateClockBounds: live hardware envelope (skip-when-unknown)", () => {
+  const status = { gpu: { maxSmMHz: 3003 }, cpu: { hwMaxKhz: 2808000, hwMinKhz: 338000 } };
+  assert.equal(validateClockBounds(status, { gpu: { mode: "lock", mhz: 2400 } }), null);
+  assert.equal(validateClockBounds(status, { cpu: { mode: "cap", khz: 2000000 } }), null);
+  assert.match(validateClockBounds(status, { gpu: { mode: "lock", mhz: 3004 } }), /exceeds clocks\.max\.sm 3003/);
+  assert.match(validateClockBounds(status, { cpu: { mode: "cap", khz: 2808001 } }), /exceeds hw max 2808000/);
+  assert.match(validateClockBounds(status, { cpu: { mode: "cap", khz: 337999 } }), /below hw min 338000/);
+  // Reset targets bypass bounds entirely.
+  assert.equal(validateClockBounds(status, { gpu: { mode: "reset" } }), null);
+  assert.equal(validateClockBounds(status, { cpu: { mode: "reset" } }), null);
+  // Hosts that do not report a limit: bound checks are skipped.
+  assert.equal(validateClockBounds({}, { gpu: { mode: "lock", mhz: 99999 } }), null);
+  assert.equal(
+    validateClockBounds({ cpu: { hwMinKhz: null, hwMaxKhz: null } }, { cpu: { mode: "cap", khz: 5 } }),
+    null
+  );
 });

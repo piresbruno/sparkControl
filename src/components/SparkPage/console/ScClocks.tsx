@@ -15,8 +15,9 @@ import { fetchSparkClocks, installClockControl, setSparkClocks } from "../../../
 import { ScChip, ScModule, ScSubpanel } from "./ScKit";
 
 const POLL_MS = 5000;
-const GPU_PRESETS_MHZ = [1000, 1500, 2000, 2500];
-const CPU_PRESETS_GHZ = [1, 1.5, 2, 2.5];
+/** Dropdown presets (GHz); MAX maps to the domain reset. */
+const GPU_PRESETS_MHZ = [2000, 2200, 2400];
+const CPU_PRESETS_GHZ = [2, 2.2, 2.4];
 
 /** kHz → "2.00 GHz". */
 function fmtGhz(khz: number | null | undefined): string {
@@ -41,8 +42,8 @@ export function ScClocks({ spark }: { spark: SparkSnapshot }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [installOutput, setInstallOutput] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [gpuMhz, setGpuMhz] = useState("1500");
-  const [cpuGhz, setCpuGhz] = useState("1.5");
+  const [gpuPreset, setGpuPreset] = useState("");
+  const [cpuPreset, setCpuPreset] = useState("");
 
   const refresh = useCallback(async () => {
     try {
@@ -107,11 +108,6 @@ export function ScClocks({ spark }: { spark: SparkSnapshot }) {
     hints.push(`CPU cap ${fmtGhz(desired.cpu.khz)} will be re-applied on next boot`);
   }
 
-  const parsedMhz = parseInt(gpuMhz, 10);
-  const gpuValid = Number.isFinite(parsedMhz) && parsedMhz >= 200;
-  const parsedKhz = Math.round(parseFloat(cpuGhz) * 1e6);
-  const cpuValid = Number.isFinite(parsedKhz) && parsedKhz > 0;
-
   return (
     <ScModule label="Clocks">
       {spark.online && clocks && !clocks.helperInstalled ? (
@@ -171,50 +167,30 @@ export function ScClocks({ spark }: { spark: SparkSnapshot }) {
               }
             >
               <div className="row" style={{ gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                {GPU_PRESETS_MHZ.map((mhz) => (
-                  <button
-                    key={mhz}
-                    type="button"
-                    className="key"
-                    style={{ padding: "1px 8px", fontSize: "var(--fs-10)" }}
-                    disabled={busy}
-                    onClick={() => {
-                      setGpuMhz(String(mhz));
+                <select
+                  aria-label="GPU preset"
+                  style={{ width: 150 }}
+                  value={gpuPreset}
+                  disabled={busy}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setGpuPreset(v);
+                    if (v === "max") void apply({ gpu: { reset: true } });
+                    else if (v) {
+                      const mhz = parseInt(v, 10);
                       void apply({ gpu: { mhz } });
-                    }}
-                  >
-                    {mhz}
-                  </button>
-                ))}
-                <input
-                  type="number"
-                  min={200}
-                  max={gpu.maxSmMHz ?? undefined}
-                  step={50}
-                  inputMode="numeric"
-                  style={{ width: 88 }}
-                  value={gpuMhz}
-                  disabled={busy}
-                  onChange={(e) => setGpuMhz(e.target.value)}
-                  title={`Lock the GPU graphics clock (≤ ${gpu.maxSmMHz ?? "?"} MHz)`}
-                />
-                <button
-                  type="button"
-                  className="key key--primary"
-                  disabled={busy || !gpuValid}
-                  onClick={() => void apply({ gpu: { mhz: parsedMhz } })}
+                    }
+                  }}
+                  title="Lock the GPU graphics clock — MAX removes the cap (default clocks)"
                 >
-                  Lock
-                </button>
-                <button
-                  type="button"
-                  className="key"
-                  disabled={busy}
-                  title="Unlock: nvidia-smi -rgc"
-                  onClick={() => void apply({ gpu: { reset: true } })}
-                >
-                  Reset
-                </button>
+                  <option value="">GPU preset…</option>
+                  {GPU_PRESETS_MHZ.map((mhz) => (
+                    <option key={mhz} value={mhz}>
+                      {(mhz / 1000).toFixed(1)} GHz
+                    </option>
+                  ))}
+                  <option value="max">MAX (default clocks)</option>
+                </select>
                 {desired?.gpu ? (
                   <ScChip title={lastAt ? `last apply ${lastAt}` : "dashboard-managed"}>
                     managed {desired.gpu.mode === "lock" ? `lock ${desired.gpu.mhz} MHz` : "reset"}
@@ -241,50 +217,30 @@ export function ScClocks({ spark }: { spark: SparkSnapshot }) {
               }
             >
               <div className="row" style={{ gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                {CPU_PRESETS_GHZ.map((ghz) => (
-                  <button
-                    key={ghz}
-                    type="button"
-                    className="key"
-                    style={{ padding: "1px 8px", fontSize: "var(--fs-10)" }}
-                    disabled={busy}
-                    onClick={() => {
-                      setCpuGhz(ghz.toFixed(ghz % 1 ? 1 : 0));
-                      void apply({ cpu: { maxPerfKhz: Math.round(ghz * 1e6) } });
-                    }}
-                  >
-                    {ghz.toFixed(ghz % 1 ? 1 : 0)} GHz
-                  </button>
-                ))}
-                <input
-                  type="number"
-                  min={0.1}
-                  max={cpu.hwMaxKhz != null ? cpu.hwMaxKhz / 1e6 : undefined}
-                  step={0.1}
-                  inputMode="decimal"
-                  style={{ width: 88 }}
-                  value={cpuGhz}
+                <select
+                  aria-label="CPU preset"
+                  style={{ width: 150 }}
+                  value={cpuPreset}
                   disabled={busy}
-                  onChange={(e) => setCpuGhz(e.target.value)}
-                  title={`Cap every core's max_perf (≤ ${fmtGhz(cpu.hwMaxKhz)})`}
-                />
-                <button
-                  type="button"
-                  className="key key--primary"
-                  disabled={busy || !cpuValid}
-                  onClick={() => void apply({ cpu: { maxPerfKhz: parsedKhz } })}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setCpuPreset(v);
+                    if (v === "max") void apply({ cpu: { reset: true } });
+                    else if (v) {
+                      const khz = parseInt(v, 10);
+                      void apply({ cpu: { maxPerfKhz: khz } });
+                    }
+                  }}
+                  title="Cap every core — MAX restores full speed (cpuinfo_max_freq)"
                 >
-                  Cap
-                </button>
-                <button
-                  type="button"
-                  className="key"
-                  disabled={busy}
-                  title="Write cpuinfo_max_freq back to every core"
-                  onClick={() => void apply({ cpu: { reset: true } })}
-                >
-                  Reset (full speed)
-                </button>
+                  <option value="">CPU preset…</option>
+                  {CPU_PRESETS_GHZ.map((ghz) => (
+                    <option key={ghz} value={Math.round(ghz * 1e6)}>
+                      {ghz.toFixed(1)} GHz
+                    </option>
+                  ))}
+                  <option value="max">MAX (full speed)</option>
+                </select>
                 {desired?.cpu ? (
                   <ScChip title={lastAt ? `last apply ${lastAt}` : "dashboard-managed"}>
                     managed {desired.cpu.mode === "cap" ? `cap ${fmtGhz(desired.cpu.khz)}` : "reset"}

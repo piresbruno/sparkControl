@@ -1,6 +1,9 @@
 /**
- * ScClocks render tests — jsdom fallback for the console panel (no arm64
- * Chromium available for browser verification on this host).
+ * ScClocks panel tests — jsdom (no arm64 Chromium for browser verification
+ * on this host). The contract assertions run every dropdown option through
+ * the REAL shared route validator (src/shared/clockTarget.js) — the same
+ * function the POST route uses — so a UI request that would answer 400
+ * fails here first.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
@@ -13,6 +16,7 @@ vi.mock("../../../api/client", () => ({
 }));
 
 import { fetchSparkClocks, setSparkClocks } from "../../../api/client";
+import { parseClockApplyRequest } from "../../../shared/clockTarget.js";
 import { ScClocks } from "./ScClocks";
 import type { SparkClocks, SparkSnapshot } from "../../../api/types";
 
@@ -29,6 +33,7 @@ function clocksFixture(over: Partial<SparkClocks> = {}): SparkClocks {
     ...over,
   } as SparkClocks;
 }
+
 function sparkFixture(): SparkSnapshot {
   return {
     id: "spark-1",
@@ -44,10 +49,8 @@ afterEach(() => {
 });
 
 describe("ScClocks", () => {
-  it("renders GPU/CPU rows + install banner from live state; Cap posts preset", async () => {
+  it("renders GPU/CPU dropdowns + install banner from live state; no manual inputs", async () => {
     vi.mocked(fetchSparkClocks).mockResolvedValue(clocksFixture());
-    vi.mocked(setSparkClocks).mockResolvedValue(clocksFixture());
-    const user = userEvent.setup();
     const { container } = render(<ScClocks spark={sparkFixture()} />);
 
     expect(await screen.findByText("Default app clock 2418")).toBeTruthy();
@@ -55,17 +58,55 @@ describe("ScClocks", () => {
     expect(screen.getByText(/cap 1.98 GHz/)).toBeTruthy();
     expect(screen.getByText(/hw 0.34 GHz–2.81 GHz/)).toBeTruthy();
     expect(screen.getByText("Install clock control")).toBeTruthy();
+    // Dropdown-only: manual number inputs are gone.
+    expect(container.querySelector('input[type="number"]')).toBeNull();
+  });
 
-    await user.click(screen.getByRole("button", { name: "1.5 GHz" }));
-    await vi.waitFor(() => {
-      expect(setSparkClocks).toHaveBeenCalledWith("spark-1", { cpu: { maxPerfKhz: 1500000 } });
-    });
-    // NAS renders nothing
-    const { container: nasContainer } = render(
-      <ScClocks spark={{ ...sparkFixture(), kind: "nas" } as SparkSnapshot} />
-    );
-    expect(nasContainer.childElementCount).toBe(0);
-    expect(container).toBeTruthy();
+  it("every CPU dropdown option posts a body the route validator accepts", async () => {
+    vi.mocked(fetchSparkClocks).mockResolvedValue(clocksFixture());
+    vi.mocked(setSparkClocks).mockResolvedValue(clocksFixture());
+    const user = userEvent.setup();
+    render(<ScClocks spark={sparkFixture()} />);
+    await screen.findByText("Default app clock 2418");
+
+    const select = screen.getByLabelText("CPU preset");
+    const cases: Array<[string, object]> = [
+      ["2000000", { cpu: { mode: "cap", khz: 2000000 } }],
+      ["2200000", { cpu: { mode: "cap", khz: 2200000 } }],
+      ["2400000", { cpu: { mode: "cap", khz: 2400000 } }],
+      ["max", { cpu: { mode: "reset" } }],
+    ];
+    for (const [value, expectedParts] of cases) {
+      vi.mocked(setSparkClocks).mockClear();
+      await user.selectOptions(select, value);
+      await vi.waitFor(() => expect(setSparkClocks).toHaveBeenCalledTimes(1));
+      const body = vi.mocked(setSparkClocks).mock.calls[0][1];
+      // Contract: the exact body the panel sends must pass the route validator.
+      expect(parseClockApplyRequest(body)).toEqual(expectedParts);
+    }
+  });
+
+  it("every GPU dropdown option posts a body the route validator accepts", async () => {
+    vi.mocked(fetchSparkClocks).mockResolvedValue(clocksFixture());
+    vi.mocked(setSparkClocks).mockResolvedValue(clocksFixture());
+    const user = userEvent.setup();
+    render(<ScClocks spark={sparkFixture()} />);
+    await screen.findByText("Default app clock 2418");
+
+    const select = screen.getByLabelText("GPU preset");
+    const cases: Array<[string, object]> = [
+      ["2000", { gpu: { mode: "lock", mhz: 2000 } }],
+      ["2200", { gpu: { mode: "lock", mhz: 2200 } }],
+      ["2400", { gpu: { mode: "lock", mhz: 2400 } }],
+      ["max", { gpu: { mode: "reset" } }],
+    ];
+    for (const [value, expectedParts] of cases) {
+      vi.mocked(setSparkClocks).mockClear();
+      await user.selectOptions(select, value);
+      await vi.waitFor(() => expect(setSparkClocks).toHaveBeenCalledTimes(1));
+      const body = vi.mocked(setSparkClocks).mock.calls[0][1];
+      expect(parseClockApplyRequest(body)).toEqual(expectedParts);
+    }
   });
 
   it("shows Locked chip + re-apply hint when desired diverges from node state", async () => {
