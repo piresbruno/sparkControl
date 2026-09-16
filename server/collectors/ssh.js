@@ -188,7 +188,7 @@ export async function sshExec(spark, cmd, options = {}) {
   }
 
   return new Promise((resolve, reject) => {
-    execFileImpl(file, args, { timeout: timeoutMs, env, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+    const child = execFileImpl(file, args, { timeout: timeoutMs, env, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
         const msg = stderr?.trim() || err.message;
         reject(new Error(`SSH to ${targetHost} failed: ${msg}`));
@@ -196,6 +196,15 @@ export async function sshExec(spark, cmd, options = {}) {
         resolve(String(stdout).trim());
       }
     });
+    // stdin payload (e.g. one sudo password line for the clock installer);
+    // always close stdin so remote readers see immediate EOF otherwise.
+    // ssh forwards our stdin to the remote command's stdin.
+    try {
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(options.stdin ?? "");
+    } catch {
+      /* stdin already destroyed (e.g. timed out) — nothing to feed */
+    }
   });
 }
 

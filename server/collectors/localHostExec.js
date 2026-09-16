@@ -46,7 +46,7 @@ export function execOnLocalHost(spark, cmd, opts = {}) {
     cmd,
   });
   return new Promise((resolve, reject) => {
-    execFile(
+    const child = execFile(
       inv.file,
       inv.args,
       { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 },
@@ -59,5 +59,13 @@ export function execOnLocalHost(spark, cmd, opts = {}) {
         resolve(String(stdout).trim());
       }
     );
+    // stdin payload (e.g. one sudo password line for the clock installer);
+    // always close stdin so remote readers see immediate EOF otherwise.
+    try {
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(opts.stdin ?? "");
+    } catch {
+      /* stdin already destroyed (e.g. timed out) — nothing to feed */
+    }
   });
 }

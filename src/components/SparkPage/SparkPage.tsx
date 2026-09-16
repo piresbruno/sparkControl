@@ -11,6 +11,7 @@ import {
 import { SparkActions } from "./SparkActions";
 import { ScChHead, ScModule } from "./console/ScKit";
 import { ScResources } from "./console/ScResources";
+import { ScClocks } from "./console/ScClocks";
 import { ScServing } from "./console/ScServing";
 import { ScTests } from "./console/ScTests";
 import { fmtUptimeShort } from "./console/consoleUtils";
@@ -283,6 +284,7 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
             workerHeadId={spark.workerHeadId ?? null}
             onNavigate={onNavigate}
           />
+          <ScClocks spark={spark} />
 
           {/* ── CH·02 Serving ───────────────────────────────────────── */}
           <div id="sec-serving" />

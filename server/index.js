@@ -120,6 +120,12 @@ function startMonitor(spark) {
     },
     // Hermes check / update results must not wait for the next broadcast tick.
     onHermesChange: () => forceBroadcast(),
+    // Desired clocks are re-applied on every false→true online transition
+    // (SSH liveness flip or agent connect — both funnel through this hook).
+    onOnlineChange: (sparkId) => {
+      const sp = registry.getSpark(sparkId);
+      if (sp) void clockControl.reconcileSpark(sparkId, { exec: execForSpark, getSpark: (id) => registry.getSpark(id) });
+    },
   });
   monitors.set(spark.id, monitor);
   monitor.start();
@@ -197,6 +203,7 @@ import { seedServingScripts } from "./serving/serving.js";
 import { getAgentRegistry } from "./agent/agentRegistry.js";
 import { buildInstallAgentScript, buildUpdateAgentScript } from "./agent/agentBootstrap.js";
 import { shellQuote } from "./util/shellQuote.js";
+import * as clockControl from "./clocks/clockControl.js";
 import { getTraceStore, closeTraceStore } from "./collectors/TraceStore.js";
 import { getInflightRegistry, closeInflightRegistry } from "./proxy/inflightRegistry.js";
 import {
@@ -2806,6 +2813,152 @@ function initiateSparkShutdown(spark) {
       throw err;
     });
 }
+
+// ─── Clock control (GPU -lgc / CPU max_perf) ─────────────
+// Status reads are unprivileged; apply/install run through the sudo -n
+// /usr/local/bin/spark-clock helper (the install route sets up helper +
+// sudoers once per node, visudo-gated). Unauthenticated like the rest of
+// the LAN dashboard — do not expose port 5555 beyond a trusted network.
+
+/** Merged clocks payload: live status + dashboard desired/lastApplied state. */
+function clocksPayload(spark, status, state) {
+  return {
+    sparkId: spark.id,
+    online: monitors.get(spark.id)?.online ?? false,
+    helperInstalled: status.helperInstalled,
+    supported: { gpu: status.gpu != null, cpu: status.cpu != null },
+    gpu: status.gpu,
+    cpu: status.cpu,
+    desired: state.desired,
+    lastApplied: state.lastApplied,
+  };
+}
+
+async function fetchClockStatus(spark) {
+  const out = await execForSpark(spark, clockControl.buildClockStatusCommand(), { timeoutMs: 10000 });
+  return clockControl.parseClockStatus(out);
+}
+
+/** Shared guards; responds and returns null on failure. */
+function clocksTargetOrError(req, res) {
+  const spark = registry.getSpark(req.params.id);
+  if (!spark) {
+    res.status(404).json({ error: "Spark not found" });
+    return null;
+  }
+  if (spark.kind === "nas") {
+    res.status(409).json({ error: "not supported on NAS nodes" });
+    return null;
+  }
+  return spark;
+}
+
+/** Request body → apply parts; null when the shape is invalid. */
+function clockPartsFromRequest(body) {
+  if (!body || typeof body !== "object") return null;
+  const parts = {};
+  if (body.gpu !== undefined) {
+    const g = body.gpu;
+    if (!g || typeof g !== "object") return null;
+    if (g.reset === true) parts.gpu = { mode: "reset" };
+    else if (Number.isInteger(g.mhz) && g.mhz >= 200) parts.gpu = { mode: "lock", mhz: g.mhz };
+    else return null;
+  }
+  if (body.cpu !== undefined) {
+    const c = body.cpu;
+    if (!c || typeof c !== "object") return null;
+    if (c.reset === true) parts.cpu = { mode: "reset" };
+    else if (Number.isInteger(c.maxPerfKhz) && c.maxPerfKhz > 0) parts.cpu = { mode: "cap", khz: c.maxPerfKhz };
+    else return null;
+  }
+  return Object.keys(parts).length > 0 ? parts : null;
+}
+
+app.get("/api/sparks/:id/clocks", async (req, res) => {
+  const spark = clocksTargetOrError(req, res);
+  if (!spark) return;
+  try {
+    const status = await fetchClockStatus(spark);
+    res.json(clocksPayload(spark, status, clockControl.getClocksState(spark.id)));
+  } catch (err) {
+    const msg = err.message || String(err);
+    res.status(shutdownErrorStatus(msg)).json({ error: msg });
+  }
+});
+
+app.post("/api/sparks/:id/clocks", async (req, res) => {
+  const spark = clocksTargetOrError(req, res);
+  if (!spark) return;
+  const parts = clockPartsFromRequest(req.body);
+  if (!parts) {
+    return res.status(400).json({
+      error: "body must include gpu {mhz}|{reset:true} and/or cpu {maxPerfKhz}|{reset:true}",
+    });
+  }
+  let status;
+  try {
+    status = await fetchClockStatus(spark);
+  } catch (err) {
+    const msg = err.message || String(err);
+    return res.status(shutdownErrorStatus(msg)).json({ error: msg });
+  }
+  // Validate against live hardware/driver bounds before touching the node.
+  if (parts.gpu?.mode === "lock" && status.gpu?.maxSmMHz != null && parts.gpu.mhz > status.gpu.maxSmMHz) {
+    return res.status(400).json({ error: `gpu.mhz ${parts.gpu.mhz} exceeds clocks.max.sm ${status.gpu.maxSmMHz}` });
+  }
+  if (parts.cpu?.mode === "cap") {
+    const hwMin = status.cpu?.hwMinKhz ?? null;
+    const hwMax = status.cpu?.hwMaxKhz ?? null;
+    if (hwMax != null && parts.cpu.khz > hwMax) {
+      return res.status(400).json({ error: `cpu.maxPerfKhz ${parts.cpu.khz} exceeds hw max ${hwMax}` });
+    }
+    if (hwMin != null && parts.cpu.khz < hwMin) {
+      return res.status(400).json({ error: `cpu.maxPerfKhz ${parts.cpu.khz} below hw min ${hwMin}` });
+    }
+  }
+  try {
+    await execForSpark(spark, clockControl.buildApplyCommand(parts), { timeoutMs: 20000 });
+  } catch (err) {
+    return res.status(502).json({ error: err.message || String(err) });
+  }
+  clockControl.recordApply(spark.id, parts);
+  // Re-read status so the response reflects the just-applied clocks.
+  try {
+    status = await fetchClockStatus(spark);
+  } catch {
+    /* keep pre-apply status; recorded state below is still correct */
+  }
+  res.json(clocksPayload(spark, status, clockControl.getClocksState(spark.id)));
+});
+
+app.post("/api/sparks/:id/clocks/install", async (req, res) => {
+  const spark = clocksTargetOrError(req, res);
+  if (!spark) return;
+  let script;
+  try {
+    script = clockControl.buildInstallClockScript(spark.ssh?.user);
+  } catch (err) {
+    return res.status(400).json({ ok: false, error: err.message });
+  }
+  try {
+    // Install is a one-time op — use the SSH/local transport directly (the
+    // agent has no stdin channel). The stored SSH login password — the same
+    // value sshpass auth uses — is piped to the script's stdin for its single
+    // `sudo -S` call; it never appears in the script text, argv or output.
+    const sudoStdin =
+      spark.ssh?.auth === "pass" && spark.ssh?.password ? `${spark.ssh.password}\n` : "";
+    const out = await execOnSpark(spark, script, { timeoutMs: 60000, stdin: sudoStdin });
+    const parsed = clockControl.parseInstallMarker(out);
+    if (parsed.ok) return res.json({ ok: true, output: parsed.output });
+    return res.status(502).json({ ok: false, error: parsed.reason, output: parsed.output });
+  } catch (err) {
+    // Non-zero exit (e.g. 126 = no passwordless sudo): the script's stderr
+    // carries the fail marker + manual instructions — surface it as 502.
+    const msg = err.message || String(err);
+    const parsed = clockControl.parseInstallMarker(msg);
+    return res.status(502).json({ ok: false, error: parsed.reason || msg, output: msg });
+  }
+});
 
 /** Batch routes first so they never collide with /:id/* if routing changes. */
 app.post("/api/sparks/shutdown-all", async (_req, res) => {

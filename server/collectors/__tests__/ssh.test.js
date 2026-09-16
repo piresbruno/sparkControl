@@ -100,6 +100,57 @@ test("sshExec validates target + user before spawning", async () => {
   );
 });
 
+test("sshExec pipes options.stdin to the child and ends it", async () => {
+  _setSshpassAvailable(true);
+  const writes = [];
+  const fakeStdin = {
+    on() {},
+    end(v) {
+      writes.push(v);
+    },
+  };
+  let file;
+  let args;
+  _setExecFile((f, a, opts, cb) => {
+    file = f;
+    args = a;
+    setImmediate(() => cb(null, "ok", ""));
+    return { stdin: fakeStdin };
+  });
+  const spark = { id: "s9", ssh: { host: "10.0.0.5", user: "root", auth: "pass", password: "secret" } };
+  const r = await sshExec(spark, "cat", { stdin: "secret\n" });
+  assert.equal(r, "ok");
+  assert.deepEqual(writes, ["secret\n"]);
+  assert.equal(file, "sshpass");
+  assert.ok(args.includes("-e"), "password auth uses sshpass -e");
+});
+
+test("sshExec ends stdin empty when no payload is given (remote EOF)", async () => {
+  const writes = [];
+  const fakeStdin = {
+    on() {},
+    end(v) {
+      writes.push(v);
+    },
+  };
+  _setExecFile((f, a, opts, cb) => {
+    setImmediate(() => cb(null, "ok", ""));
+    return { stdin: fakeStdin };
+  });
+  const r = await sshExec({ id: "s10", ssh: { host: "10.0.0.5", user: "root", auth: "key" } }, "true");
+  assert.equal(r, "ok");
+  assert.deepEqual(writes, [""]);
+});
+
+test("sshExec tolerates a child without stdin (legacy fakes)", async () => {
+  _setExecFile((f, a, opts, cb) => {
+    setImmediate(() => cb(null, "ok", ""));
+    return undefined;
+  });
+  const r = await sshExec({ id: "s11", ssh: { host: "10.0.0.5", user: "root", auth: "key" } }, "true");
+  assert.equal(r, "ok");
+});
+
 test("sshTest maps ok/fail", async () => {
   _setExecFile((f, a, o, cb) => cb(null, "ok", ""));
   const t1 = await sshTest({ id: "s7", ssh: { host: "10.0.0.5", user: "root", auth: "key" } });

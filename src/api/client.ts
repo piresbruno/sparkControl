@@ -41,6 +41,7 @@ import type {
   NasCatalogResponse,
   NasModelDetail,
   NasDeletePlan,
+  SparkClocks,
 } from "./types";
 
 const BASE = "";
@@ -446,6 +447,29 @@ export function shutdownAllSparks(): Promise<BatchPowerResult> {
 /** Send WoL to all registered Sparks that have a MAC configured. */
 export function wakeAllSparks(): Promise<BatchPowerResult> {
   return apiFetch("/api/sparks/wake-all", { method: "POST" });
+}
+
+// ─── Clock control (GPU -lgc / CPU max_perf) ─────────────
+/** Live clock status + dashboard desired/lastApplied state for one Spark. */
+export function fetchSparkClocks(id: string): Promise<SparkClocks> {
+  return apiFetch(`/api/sparks/${id}/clocks`);
+}
+
+/** Apply GPU lock/reset and/or CPU cap/reset. Returns refreshed merged payload. */
+export function setSparkClocks(
+  id: string,
+  body: { gpu?: { mhz?: number; reset?: boolean }; cpu?: { maxPerfKhz?: number; reset?: boolean } }
+): Promise<SparkClocks> {
+  return apiFetch(`/api/sparks/${id}/clocks`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** One-click install of the privileged spark-clock helper + sudoers entry. */
+export function installClockControl(id: string): Promise<{ ok: boolean; output: string }> {
+  return apiFetch(`/api/sparks/${id}/clocks/install`, { method: "POST" });
 }
 
 // ─── Hermes update preview ───────────────────────────────

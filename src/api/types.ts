@@ -633,6 +633,35 @@ export interface ApiError {
   error: string;
 }
 
+// ─── Clock control (GPU -lgc / CPU max_perf) ─────────────
+/** One domain's enforced clock target (mirrors server/clocks state). */
+export type SparkClockTarget =
+  | { mode: "lock"; mhz: number } // gpu
+  | { mode: "cap"; khz: number } // cpu
+  | { mode: "reset" };
+
+/** GET/POST /api/sparks/:id/clocks payload — live status + dashboard state. */
+export interface SparkClocks {
+  sparkId: string;
+  online: boolean;
+  helperInstalled: boolean;
+  supported: { gpu: boolean; cpu: boolean };
+  gpu: {
+    appClockMHz: number | null;
+    defaultAppClockMHz: number | null;
+    maxSmMHz: number | null;
+    currentSmMHz: number | null;
+    locked: boolean;
+  } | null;
+  cpu: {
+    maxPerfKhzList: number[];
+    hwMaxKhz: number | null;
+    hwMinKhz: number | null;
+  } | null;
+  desired: { gpu: SparkClockTarget | null; cpu: SparkClockTarget | null };
+  lastApplied: { gpu: SparkClockTarget | null; cpu: SparkClockTarget | null; at: string | null };
+}
+
 // ─── LLM decode benchmark ────────────────────────────────
 /** Output-shape label for decode bench prompts (not guided decoding). */
 export type DecodeBenchPromptType = "structured" | "prose" | "code" | "json";

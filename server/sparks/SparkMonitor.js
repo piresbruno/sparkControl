@@ -38,6 +38,8 @@ export class SparkMonitor {
   constructor(spark, options = {}) {
     this.spark = spark;
     this._onWolMac = typeof options.onWolMac === "function" ? options.onWolMac : null;
+    this._onOnlineChange =
+      typeof options.onOnlineChange === "function" ? options.onOnlineChange : null;
     this._onHermesChange =
       typeof options.onHermesChange === "function" ? options.onHermesChange : null;
     this.collector = new SystemCollector(spark);
@@ -443,11 +445,14 @@ export class SparkMonitor {
   /** Called on registry connect/disconnect events. */
   setAgentConnected(connected, agentVersion = null) {
     if (connected) {
+      const was = this.online;
       this.transport = "agent";
       this.agentVersion = agentVersion;
       this.online = true;
       // SSH poll intervals for pushed domains suspend: _pollDomain gates.
       this._agentSuspended = true;
+      // false→true transition only (clock reconcile re-applies desired clocks).
+      if (!was) this._onOnlineChange?.(this.spark.id);
     } else {
       this.transport = "ssh";
       this.agentVersion = null;
@@ -556,6 +561,7 @@ export class SparkMonitor {
   // ─── Liveness ─────────────────────────────────────────────
   async _checkOnline() {
     if (!this._running || this._inflight.online) return;
+    const was = this.online;
     // Token + generation: a check that straddles stop()/updateConfig() must
     // neither flip state nor clear the new lifecycle's in-flight guard.
     const checkToken = Symbol("online");
@@ -577,6 +583,8 @@ export class SparkMonitor {
       this.online = true;
       this.lastOnlineOk = Date.now();
       this._uptimeSeconds = uptime;
+      // false→true transition only (clock reconcile re-applies desired clocks).
+      if (!was) this._onOnlineChange?.(this.spark.id);
     } catch {
       if (!isCurrentRun()) return;
       if (!this.lastOnlineOk || Date.now() - this.lastOnlineOk > ONLINE_GRACE_MS) {
