@@ -60,6 +60,10 @@ describe("ScClocks", () => {
     expect(screen.getByText("Install clock control")).toBeTruthy();
     // Dropdown-only: manual number inputs are gone.
     expect(container.querySelector('input[type="number"]')).toBeNull();
+    // Regression: mounting/polling must NEVER POST an apply (a bodyless
+    // apply produced "body must include gpu|cpu" 400s in the field).
+    await vi.waitFor(() => expect(fetchSparkClocks).toHaveBeenCalled());
+    expect(setSparkClocks).not.toHaveBeenCalled();
   });
 
   it("every CPU dropdown option posts a body the route validator accepts", async () => {
