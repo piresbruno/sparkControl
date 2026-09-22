@@ -150,6 +150,34 @@ describe("NasPage — store + models", () => {
     expect(screen.getByText(/9 checks · 9 ok/)).toBeTruthy();
   });
 
+  it("model filter narrows the table by name or repository with a no-match state", async () => {
+    const user = userEvent.setup();
+    vi.mocked(listNasModels).mockResolvedValue({
+      models: [
+        { name: "qwen3-32b", runtime: "vllm", repository: "Qwen/Qwen3-32B", bytes: 148_700_000_000 },
+        {
+          name: "mimo-flash-rl",
+          runtime: "vllm",
+          repository: "XiaomiMiMo/MiMo-V2.6-Flash-RL",
+          bytes: 90_000_000_000,
+        },
+      ],
+      sparkId: "nas1",
+    } as never);
+    renderPage();
+
+    expect(await screen.findByText("qwen3-32b")).toBeTruthy();
+    expect(screen.getByText("mimo-flash-rl")).toBeTruthy();
+    const box = screen.getByLabelText("Filter models");
+    await user.type(box, "xiaomimimo"); // repository match, lowercase input
+    expect(screen.queryByText("qwen3-32b")).toBeNull();
+    expect(screen.getByText("mimo-flash-rl")).toBeTruthy();
+    await user.type(box, "-zzz");
+    expect(screen.getByText(/No model matches/)).toBeTruthy();
+    await user.clear(box);
+    await waitFor(() => expect(screen.getByText("qwen3-32b")).toBeTruthy());
+  });
+
   it("delete is two-click: first click fetches the dry-run plan, second posts the nas-delete job", async () => {
     const user = userEvent.setup();
     renderPage();

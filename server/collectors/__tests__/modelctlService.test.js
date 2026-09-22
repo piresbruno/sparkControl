@@ -60,7 +60,7 @@ test("command builders quote every caller-supplied value", () => {
   const nasDel = buildNasDeleteScript({ name: "m1", nasRoot: "/nas" });
   assert.match(nasDel, /delete m1 --root \/nas --apply --yes/);
   const nasDelQ = buildNasDeleteScript({ name: "a b", nasRoot: "/n x", remoteBin: "/opt/mc" });
-  assert.match(nasDelQ, /^\/opt\/mc delete 'a b' --root '\/n x' --apply --yes$/);
+  assert.match(nasDelQ, /^\/opt\/mc delete 'a b' --root '\/n x' --apply --yes$/m);
   // Injection attempts get single-quoted.
   const evil = buildSyncScript({ name: "a; rm -rf /", nasRoot: "/nas" });
   assert.match(evil, /'a; rm -rf \/'/);
@@ -302,6 +302,32 @@ test("buildQueueScript: temp file, base64 body, flags, root quoting, injection n
   // The injection attempt only exists inside the quoted YAML scalar (b64 has
   // no spaces): the shell never sees `rm -rf /` as argv.
   assert.ok(!s.includes("rm -rf /"));
+});
+
+test("store-mutating jobs chain catalog refresh on success only", () => {
+  const cases = [
+    ["download", buildDownloadScript({ repo: "org/m", nasRoot: "/nas" })],
+    ["queue", buildQueueScript({ entries: [{ source: "org/m" }], nasRoot: "/nas" })],
+    ["nas-delete", buildNasDeleteScript({ name: "m", nasRoot: "/nas" })],
+  ];
+  for (const [label, script] of cases) {
+    assert.match(
+      script,
+      /code=\$\?\n(?:rm -f "\$f"\n)?if \[ "\$code" -eq 0 \]; then\n  .+catalog refresh --root \/nas/,
+      `${label} must refresh catalog.json only when the mutation succeeded`
+    );
+    // The refresh failure never overrides the mutation's exit code, and the
+    // wrapper's trailer stays reachable as the final command.
+    assert.match(script, /catalog refresh failed — store change is complete/);
+    assert.match(script, /\(exit \$code\)\n?$/, `${label} must end with the exit-code preservation`);
+    // The guarded refresh sits between the mutation and the trailer.
+    const refreshAt = script.indexOf("catalog refresh --root");
+    const trailerAt = script.indexOf("(exit $code)");
+    assert.ok(refreshAt > 0 && trailerAt > refreshAt, `${label} orders mutation → refresh → trailer`);
+  }
+  // Node-local ops never touch the NAS catalog.
+  assert.doesNotMatch(buildSyncScript({ name: "m1", nasRoot: "/nas" }), /catalog refresh/);
+  assert.doesNotMatch(buildDeleteLocalScript({ name: "m1" }), /catalog refresh/);
 });
 
 test("validateQueueRequest: accepts clean entries; rejects unknown keys, bad names, bad jobs", () => {

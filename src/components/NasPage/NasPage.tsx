@@ -9,7 +9,7 @@
  * scoped additions in src/styles/nas.css (.nas-page). GPU/serving/benchmarks
  * are intentionally absent — this node has none.
  */
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type {
   InventoryResponse,
   MctlJob,
@@ -382,10 +382,22 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
     doctorStatsData != null && doctorStatsData.findings === 0 && doctorStatsData.repairable === 0;
 
   // Pagination — the detail card renders outside the slice (selection persists).
+  // Filter matches against the FULL list; selection lookups below also use the
+  // full list so a selected row's detail survives a narrowing filter.
+  const [modelFilter, setModelFilter] = useState("");
+  const filteredModels = useMemo(() => {
+    const q = modelFilter.trim().toLowerCase();
+    if (!q) return models;
+    return models.filter(
+      (m) =>
+        (m.name ?? "").toLowerCase().includes(q) ||
+        (m.repository ?? "").toLowerCase().includes(q)
+    );
+  }, [models, modelFilter]);
   const [page, setPage] = useState(0);
-  const pageCount = Math.max(1, Math.ceil(models.length / PAGE_SIZE));
+  const pageCount = Math.max(1, Math.ceil(filteredModels.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
-  const pagedModels = models.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
+  const pagedModels = filteredModels.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
 
   const cmdSinglePreview = ["modelctl download", dlRepo.trim() || "org/model"]
     .concat(dlName.trim() ? ["--name", dlName.trim()] : [])
@@ -660,6 +672,19 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
         note="the NAS catalog — click a row for its paths and actions"
       />
       <ScModule label="Models" id="sec-models">
+        <div className="mb-2">
+          <input
+            type="search"
+            value={modelFilter}
+            onChange={(e) => {
+              setModelFilter(e.target.value);
+              setPage(0);
+            }}
+            placeholder="Filter by name or repository…"
+            aria-label="Filter models"
+            className="text-xs rounded border border-border bg-surface px-2 py-1 w-64"
+          />
+        </div>
         <div className="bench-results">
           <div className="nas-table__head" aria-hidden="true">
             <span>Name</span>
@@ -672,6 +697,8 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
             <div className="nas-table__empty">
               {inv?.error ? `Inventory failed: ${inv.error}` : "The store is empty — queue a download below."}
             </div>
+          ) : filteredModels.length === 0 ? (
+            <div className="nas-table__empty">No model matches “{modelFilter.trim()}”.</div>
           ) : (
             pagedModels.map((m) => {
               const state = modelDownloadState(m.name, jobs);
@@ -717,7 +744,7 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
         <Pager
           page={safePage}
           pageCount={pageCount}
-          total={models.length}
+          total={filteredModels.length}
           onPage={setPage}
         />
         <p className="cmd-cap">

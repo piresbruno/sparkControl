@@ -209,6 +209,18 @@ export function ModelsPage() {
   const models = nas?.models ?? [];
   const error = nas?.error;
   const stale = nas?.stale;
+  // Client-side filter over the already-fetched inventory (name or repository
+  // substring) — 125+ model stores make a paged, searchless table unscannable.
+  const [query, setQuery] = useState("");
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return models;
+    return models.filter(
+      (m) =>
+        (m.name ?? "").toLowerCase().includes(q) ||
+        (m.repository ?? "").toLowerCase().includes(q)
+    );
+  }, [models, query]);
   const totalBytes = useMemo(() => models.reduce((a, m) => a + (m.bytes ?? 0), 0), [models]);
   const storeChip = `nas · ${models.length} model${models.length === 1 ? "" : "s"}${
     totalBytes > 0 ? ` · ${(totalBytes / 1024 ** 3).toFixed(1)} GB store` : ""
@@ -216,9 +228,9 @@ export function ModelsPage() {
 
   // Pagination — shared with the node page's Models channel.
   const [page, setPage] = useState(0);
-  const pageCount = Math.max(1, Math.ceil(models.length / PAGE_SIZE));
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
-  const pagedModels = models.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
+  const pagedModels = filtered.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
 
   const activeJob = jobs.find((j) => j.status === "running");
 
@@ -327,6 +339,20 @@ export function ModelsPage() {
           </div>
         )}
 
+        <div className="mt-3">
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setPage(0);
+            }}
+            placeholder="Filter by name or repository…"
+            aria-label="Filter models"
+            className="text-xs rounded border border-border bg-surface px-2 py-1 w-64"
+          />
+        </div>
+
         <div className="bench-results mt-3">
           <div className="nas-table__head" aria-hidden="true">
             <span>Name</span>
@@ -339,6 +365,8 @@ export function ModelsPage() {
             <div className="nas-table__empty">
               {error ? error : "NAS catalog empty — download a model from Hugging Face."}
             </div>
+          ) : filtered.length === 0 ? (
+            <div className="nas-table__empty">No model matches “{query.trim()}”.</div>
           ) : (
             pagedModels.map((m) => (
               <div key={m.name ?? m.repository} className="nas-table__row">
@@ -375,7 +403,7 @@ export function ModelsPage() {
         <Pager
           page={safePage}
           pageCount={pageCount}
-          total={models.length}
+          total={filtered.length}
           onPage={setPage}
         />
         <p className="empty-note" style={{ margin: "10px 2px 0" }}>

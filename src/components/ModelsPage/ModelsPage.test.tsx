@@ -59,6 +59,24 @@ describe("ModelsPage — NAS catalog only", () => {
     expect(screen.getByText(/2 models/)).toBeTruthy();
   });
 
+  it("filter box narrows by name or repository, case-insensitively, with a no-match state", async () => {
+    const user = userEvent.setup();
+    render(<ModelsPage />);
+    await waitFor(() => expect(screen.getByText("qwen3-32b-q4")).toBeTruthy());
+    const box = screen.getByLabelText("Filter models");
+    await user.type(box, "ZAI-ORG"); // repository match, uppercase input
+    expect(screen.queryByText("qwen3-32b-q4")).toBeNull();
+    expect(screen.getByText("glm-4.5-air")).toBeTruthy();
+    await user.clear(box);
+    await user.type(box, "qwen"); // name match
+    expect(screen.getByText("qwen3-32b-q4")).toBeTruthy();
+    expect(screen.queryByText("glm-4.5-air")).toBeNull();
+    await user.type(box, "-nope");
+    expect(screen.getByText(/No model matches/)).toBeTruthy();
+    await user.clear(box);
+    await waitFor(() => expect(screen.getByText("glm-4.5-air")).toBeTruthy());
+  });
+
   it("download form posts a download job with repo/name/quant/revision", async () => {
     const user = userEvent.setup();
     render(<ModelsPage />);

@@ -72,7 +72,12 @@ export function buildDownloadScript({ repo, nasRoot, name, quantization, revisio
   if (name) parts.push("--name", shellQuote(name));
   if (quantization) parts.push("--quantization", shellQuote(quantization));
   if (revision) parts.push("--revision", shellQuote(revision));
-  return mctl(remoteBin, parts.join(" "));
+  return [
+    mctl(remoteBin, parts.join(" ")),
+    "code=$?",
+    ...catalogRefreshOnSuccess({ nasRoot, remoteBin }),
+    "(exit $code)",
+  ].join("\n");
 }
 
 /** `modelctl sync-local <name> --source-root <nasRoot>` (job script body). */
@@ -97,10 +102,33 @@ export function buildDeleteLocalScript({ name, remoteBin = "modelctl" }) {
  * Non-interactive runs need --yes; dry-run (no --apply) never deletes.
  */
 export function buildNasDeleteScript({ name, nasRoot, remoteBin = "modelctl" }) {
-  return mctl(remoteBin, `delete ${shellQuote(name)} --root ${shellQuote(nasRoot)} --apply --yes`);
+  return [
+    mctl(remoteBin, `delete ${shellQuote(name)} --root ${shellQuote(nasRoot)} --apply --yes`),
+    "code=$?",
+    ...catalogRefreshOnSuccess({ nasRoot, remoteBin }),
+    "(exit $code)",
+  ].join("\n");
 }
 
 // ─── NAS-host job kinds (builders, pure) ───────────────────
+
+/**
+ * Guarded `catalog refresh` lines appended to store-mutating job bodies
+ * (download / queue / nas-delete): when the mutation succeeded, regenerate
+ * catalog.json so it tracks the published set without a manual ⟳ refresh.
+ * The refresh's own failure is logged but must not flip the job's exit code —
+ * the store change the user asked for is complete either way. Callers keep
+ * `(exit $code)` as the final command so the job wrapper's __SPARKDASH_EXIT
+ * trailer stays reachable; `$code` must hold the mutation's exit status.
+ */
+function catalogRefreshOnSuccess({ nasRoot, remoteBin = "modelctl" }) {
+  return [
+    'if [ "$code" -eq 0 ]; then',
+    `  ${mctl(remoteBin, `catalog refresh --root ${shellQuote(nasRoot)}`)}` +
+      ' || echo "catalog refresh failed — store change is complete; run Refresh catalog" >&2',
+    "fi",
+  ];
+}
 
 /** `modelctl catalog refresh --root <nasRoot>` (job script body). */
 export function buildCatalogRefreshScript({ nasRoot, remoteBin = "modelctl" }) {
@@ -146,6 +174,7 @@ export function buildQueueScript({ entries, jobs = 1, nasRoot, remoteBin = "mode
     q,
     "code=$?",
     'rm -f "$f"',
+    ...catalogRefreshOnSuccess({ nasRoot, remoteBin }),
     // `(exit $code)` — NOT `exit $code`: the job wrapper's
     // __SPARKDASH_EXIT trailer must stay reachable, so the body's final
     // command has to *be* the preserved exit code without quitting the shell.
