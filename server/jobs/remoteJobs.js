@@ -289,6 +289,9 @@ export class RemoteJobManager {
     try {
       const exec = job.transport === "ssh" ? sshExec : this._exec;
       out = await exec(spark, buildPollCommand(jobId), { timeoutMs: 10_000 });
+      // Node reachable again — a transient poll failure no longer describes
+      // this job; don't let it haunt the terminal status in the UI.
+      delete job.lastError;
     } catch (err) {
       // Node offline / SSH failure: leave status untouched (still running,
       // resolved on a later poll). Surface via error field only.

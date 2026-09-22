@@ -84,6 +84,33 @@ test("sshExec rejects on nonzero exit with stderr message", async () => {
   );
 });
 
+test("sshExec empty stderr + killed reports the exec timeout, not the argv", async () => {
+  // The wedged-ControlMaster case: ssh hangs silently, execFile kills it at
+  // the timeout with nothing on stderr — err.message would dump the whole argv.
+  const err = Object.assign(new Error("Command failed: sshpass -e ssh -o ConnectTimeout=5"), {
+    killed: true,
+    code: null,
+  });
+  _setExecFile((file, args, opts, cb) => cb(err, "", ""));
+  await assert.rejects(
+    sshExec({ id: "s3b", ssh: { host: "10.0.0.5", user: "root", auth: "key" } }, "true"),
+    (e) => {
+      assert.match(e.message, /timed out after 10000ms/);
+      assert.ok(!e.message.includes("sshpass"), "must not dump the command line");
+      return true;
+    }
+  );
+});
+
+test("sshExec empty stderr + bare nonzero exit reports the exit code", async () => {
+  const err = Object.assign(new Error("Command failed: ssh false"), { killed: false, code: 255 });
+  _setExecFile((file, args, opts, cb) => cb(err, "", ""));
+  await assert.rejects(
+    sshExec({ id: "s3c", ssh: { host: "10.0.0.5", user: "root", auth: "key" } }, "false"),
+    /exit code 255/
+  );
+});
+
 test("sshExec validates target + user before spawning", async () => {
   _setExecFile(() => assert.fail("must not spawn"));
   await assert.rejects(

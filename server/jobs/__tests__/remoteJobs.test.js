@@ -129,6 +129,7 @@ test("poll with node offline leaves status running (resolved later)", async () =
   assert.ok(job.lastError);
   job = await mgr.pollRemoteJob(spark, jobId);
   assert.equal(job.status, "completed");
+  assert.equal(job.lastError, undefined, "recovered poll must clear the transient SSH error");
 });
 
 test("single-flight: concurrent polls share one node poll", async () => {

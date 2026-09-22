@@ -190,7 +190,14 @@ export async function sshExec(spark, cmd, options = {}) {
   return new Promise((resolve, reject) => {
     const child = execFileImpl(file, args, { timeout: timeoutMs, env, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
-        const msg = stderr?.trim() || err.message;
+        // stderr normally carries ssh's own diagnostic. Empty stderr means the
+        // child died without saying anything — the exec timeout killed it
+        // (wedged ControlMaster / half-open TCP hang silently) or a bare
+        // nonzero exit. Both beat dumping the whole argv via err.message.
+        const stderrMsg = stderr?.trim();
+        const msg =
+          stderrMsg ||
+          (err.killed ? `timed out after ${timeoutMs}ms` : `exit code ${err.code ?? "unknown"}`);
         reject(new Error(`SSH to ${targetHost} failed: ${msg}`));
       } else {
         resolve(String(stdout).trim());
