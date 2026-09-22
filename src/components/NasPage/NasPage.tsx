@@ -53,6 +53,8 @@ import {
   fmtStore,
   isModelBusyDownloading,
   jobPct,
+  jobSpeed,
+  lastLogLine,
   matchStoreMount,
   modelDownloadState,
   versionIsNewer,
@@ -375,8 +377,8 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
   const selectedState = selected ? modelDownloadState(selected, jobs) : null;
   const selectedBusyJob = selected ? busyDownloadJob(selected, jobs) : null;
   const selectedBusyPct = selectedBusyJob ? jobPct(selectedBusyJob) : null;
-  const selectedBusyLastLine =
-    selectedBusyJob?.logTail.trim().split("\n").slice(-1)[0]?.slice(0, 90) ?? "";
+  const selectedBusySpeed = selectedBusyJob ? jobSpeed(selectedBusyJob) : null;
+  const selectedBusyLastLine = selectedBusyJob ? lastLogLine(selectedBusyJob.logTail) : "";
   const doctorStatsData = doctorStats(doctor?.report ?? null);
   const doctorClean =
     doctorStatsData != null && doctorStatsData.findings === 0 && doctorStatsData.repairable === 0;
@@ -704,6 +706,7 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
               const state = modelDownloadState(m.name, jobs);
               const busyJob = state ? busyDownloadJob(m.name, jobs) : null;
               const pct = busyJob ? jobPct(busyJob) : null;
+              const speed = busyJob ? jobSpeed(busyJob) : null;
               return (
                 <button
                   key={m.name}
@@ -731,6 +734,7 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
                         <ScLed state="accent" />
                         {state === "queue" ? "queue · staging" : "downloading"}
                         {pct != null ? ` · ${pct}%` : ""}
+                        {speed != null ? ` · ${speed}` : ""}
                       </span>
                     ) : (
                       <span className="xref">detail ↓</span>
@@ -795,6 +799,7 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
                   <p className="cmd-cap">
                     {selectedBusyLastLine ? `${selectedBusyLastLine} · ` : ""}
                     {selectedBusyPct}%
+                    {selectedBusySpeed ? ` · ${selectedBusySpeed}` : ""}
                   </p>
                 </div>
               ) : null
@@ -1196,7 +1201,8 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
           <div className="job-card">
             {jobs.slice(0, 12).map((j) => {
               const pct = j.status === "running" ? jobPct(j) : null;
-              const lastLine = j.logTail.trim().split("\n").slice(-1)[0]?.slice(0, 90) ?? "";
+              const speed = j.status === "running" ? jobSpeed(j) : null;
+              const lastLine = lastLogLine(j.logTail);
               return (
                 <div className="job-row" key={j.jobId}>
                   <span className={jobStatusClass(j.status)}>{j.status}</span>
@@ -1213,6 +1219,7 @@ export function NasPage({ spark, defaultNasRoot, onEdit, onNavigate }: NasPagePr
                       {lastLine ? (
                         <span className="cmd-cap">
                           {lastLine} · {pct}%
+                          {speed != null && !lastLine.includes(speed) ? ` · ${speed}` : ""}
                         </span>
                       ) : null}
                     </>

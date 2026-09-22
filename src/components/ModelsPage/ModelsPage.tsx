@@ -22,6 +22,7 @@ const PAGE_SIZE = 10;
 
 import { ToastStack, useToasts } from "../../ui/Toasts";
 import { Pager } from "../../ui/Pager";
+import { jobPct, jobSpeed } from "../NasPage/nasUtils";
 
 function gb(bytes: number | null | undefined): string {
   if (bytes == null || !Number.isFinite(bytes)) return "-";
@@ -44,7 +45,7 @@ function jobStatusClass(status: MctlJobStatus): string {
 }
 
 /** Active job row in the catalog (subset of MctlJob the bar renders). */
-type MctlJobLite = Pick<MctlJob, "jobId" | "kind" | "status" | "name">;
+type MctlJobLite = Pick<MctlJob, "jobId" | "kind" | "status" | "name" | "logTail">;
 
 /** Database-cylinder icon for the catalog title. */
 function DatabaseIcon({ className = "" }: { className?: string }) {
@@ -233,6 +234,8 @@ export function ModelsPage() {
   const pagedModels = filtered.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
 
   const activeJob = jobs.find((j) => j.status === "running");
+  const activePct = activeJob ? jobPct(activeJob) : null;
+  const activeSpeed = activeJob ? jobSpeed(activeJob) : null;
 
   return (
     <div className="models-page">
@@ -336,6 +339,8 @@ export function ModelsPage() {
             <span className={jobStatusClass(activeJob.status)}>running</span>
             <span className="font-medium">{activeJob.kind}</span>
             {activeJob.name && <span className="text-muted">{activeJob.name}</span>}
+            {activePct != null && <span className="tnum">{activePct}%</span>}
+            {activeSpeed != null && <span className="tnum">{activeSpeed}</span>}
           </div>
         )}
 

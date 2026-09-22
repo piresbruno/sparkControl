@@ -1,5 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { doctorSummary, versionIsNewer } from "./nasUtils";
+import { doctorSummary, jobPct, jobSpeed, lastLogLine, versionIsNewer } from "./nasUtils";
+
+describe("jobPct / jobSpeed / lastLogLine — download log parsing", () => {
+  const bar = (pct: number | string, rate: string) =>
+    `model-00001-of-000002.safetensors:  ${pct}%|████▌     | 12.3GB/27.5GB [02:10<02:35, ${rate}]`;
+
+  it("jobPct takes the newest frame's percentage", () => {
+    const logTail = `${bar(21, "88MB/s")}\r${bar(67, "97.4MB/s")}`;
+    expect(jobPct({ logTail })).toBe(67);
+    expect(jobPct({ logTail: "staging into .modelctl-staging" })).toBeNull();
+  });
+
+  it("jobSpeed takes the newest rate token across tqdm formats", () => {
+    expect(jobSpeed({ logTail: bar(45, "97.4MB/s") })).toBe("97.4MB/s");
+    expect(jobSpeed({ logTail: bar(45, "937kB/s") })).toBe("937kB/s");
+    expect(jobSpeed({ logTail: bar(45, "1.23GiB/s") })).toBe("1.23GiB/s");
+    expect(jobSpeed({ logTail: bar(45, "110 MB/s") })).toBe("110MB/s");
+    const twoFrames = `${bar(21, "88MB/s")}\r${bar(67, "97.4MB/s")}`;
+    expect(jobSpeed({ logTail: twoFrames })).toBe("97.4MB/s");
+    expect(jobSpeed({ logTail: "staging into .modelctl-staging" })).toBeNull();
+  });
+
+  it("lastLogLine returns the freshest \\r frame, capped at 90 chars", () => {
+    const logTail = `${bar(21, "88MB/s")}\r${bar(67, "97.4MB/s")}`;
+    expect(lastLogLine(logTail)).toContain("67%");
+    expect(lastLogLine("x".repeat(200)).length).toBe(90);
+    expect(lastLogLine("done\n\n")).toBe("done");
+    expect(lastLogLine("")).toBe("");
+  });
+});
 
 describe("doctorSummary — real modelctl array contract", () => {
   it("summarizes a clean audit as all-refs-valid", () => {

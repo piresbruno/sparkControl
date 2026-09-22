@@ -88,6 +88,34 @@ export function jobPct(job: Pick<MctlJob, "logTail">): number | null {
   return Math.min(100, Math.max(0, Number(matches[matches.length - 1][1])));
 }
 
+/**
+ * Transfer rate — the newest `NNuB/s` token in logTail. huggingface_hub's
+ * download bars land in the job log per frame:
+ * "model.safetensors:  45%|…| 12.3GB/27.5GB [02:10<02:35, 97.4MB/s]".
+ * Null for logs without a rate (queue staging lines, validation phases).
+ */
+export function jobSpeed(job: Pick<MctlJob, "logTail">): string | null {
+  const matches = [...job.logTail.matchAll(/[\d.]+\s*[kKMGT]?i?B\/s/g)];
+  const last = matches[matches.length - 1];
+  return last ? last[0].replace(/\s+/, "") : null;
+}
+
+/**
+ * Freshest log frame for one-line job display. tqdm-style bars (huggingface
+ * downloads) overwrite ONE line with \r-separated frames, so the last
+ * \n-line's START is the OLDEST frame — split on both and take the last
+ * non-empty, capped for display.
+ */
+export function lastLogLine(logTail: string, max = 90): string {
+  return (
+    logTail
+      .split(/[\r\n]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(-1)[0]?.slice(0, max) ?? ""
+  );
+}
+
 /** True while `model` is named in a running download/queue job. */
 export function isModelBusyDownloading(
   model: string,
