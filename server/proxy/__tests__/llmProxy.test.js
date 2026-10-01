@@ -23,6 +23,9 @@ let upstreamDelayMs = 30;
 let upstreamSawClose = false;
 /** Set when the fake upstream fully consumed a json-mode request body. */
 let upstreamSawBody = false;
+/** Request framing the upstream saw on its last request. */
+let upstreamContentLength = null;
+let upstreamTransferEncoding = null;
 /** Upstream request counter (429-cap test). */
 let upstreamHits = 0;
 /** Live registry wired into the app under test. */
@@ -35,6 +38,8 @@ function startUpstream() {
     const done = () => {
       upstream = http.createServer((req, res) => {
         lastAuth = req.headers.authorization || null;
+        upstreamContentLength = req.headers["content-length"] ?? null;
+        upstreamTransferEncoding = req.headers["transfer-encoding"] ?? null;
         upstreamHits += 1;
         if (mode === "error") {
           res.destroy();
@@ -145,6 +150,8 @@ beforeEach(async () => {
   upstreamDelayMs = 30;
   upstreamSawClose = false;
   upstreamSawBody = false;
+  upstreamContentLength = null;
+  upstreamTransferEncoding = null;
   upstreamHits = 0;
   inflight = createInflightRegistry();
   app = express();
@@ -396,6 +403,29 @@ test("captureBodies off → entry recorded but bodies null", async () => {
     const full = traceStore.get(t.id);
     assert.equal(full.reqBody, null);
     assert.equal(full.resText, null);
+  });
+});
+
+test("request framing is preserved: Content-Length stays, a chunked client stays chunked", async () => {
+  mode = "json";
+  await withServer(async (base) => {
+    const body = JSON.stringify({ model: "m1", stream: false, messages: [{ role: "user", content: "hi" }] });
+    const url = `${base}/llm/sp1/${upstreamPort}/v1/chat/completions`;
+    // Client sends Content-Length (every normal SDK): the upstream must see the
+    // same framing, not a re-chunked body — engines that read Content-Length
+    // only would otherwise parse an empty body.
+    await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) },
+      body,
+    });
+    assert.equal(upstreamSawBody, true);
+    assert.equal(upstreamContentLength, String(Buffer.byteLength(body)));
+    assert.equal(upstreamTransferEncoding, null);
+    // Chunked client: stays chunked, and no Content-Length is fabricated.
+    await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body });
+    assert.equal(upstreamTransferEncoding, "chunked");
+    assert.equal(upstreamContentLength, null);
   });
 });
 

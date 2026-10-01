@@ -17,7 +17,8 @@
  *  - Auth injection: client Authorization header always wins; else the stored
  *    per-port LLM key is injected as `Authorization: Bearer <key>`.
  *  - Forward via http.request: same method/path/query; hop-by-hop headers
- *    stripped; host set to the target.
+ *    stripped (the client's Content-Length is kept as request framing, so a
+ *    body is never re-chunked on the way out); host set to the target.
  *  - Streaming (text/event-stream) and non-streaming pass through uncapped;
  *    stored resText is capped (TRACE_MAX_RES_BODY). ttftMs = first upstream
  *    byte (SSE) or time-to-response-headers (non-SSE). usage/finish_reason
@@ -250,7 +251,13 @@ export function createLlmProxy({ registry, secrets, settings, traceStore, inflig
     const headers = { ...req.headers };
     delete headers.host;
     delete headers.connection;
-    delete headers["content-length"];
+    // Keep the client's framing: dropping Content-Length makes Node re-chunk the
+    // piped body, and engines that read the body by Content-Length alone — the
+    // TensorFold CUDA server among them — then see an empty `{}` body
+    // ("messages must be a list"). Chunked clients still forward chunked.
+    if (headers["transfer-encoding"]) {
+      delete headers["content-length"];
+    }
     delete headers["transfer-encoding"];
     if (!headers.authorization) {
       let apiKey = null;
