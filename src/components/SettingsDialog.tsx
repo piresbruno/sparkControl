@@ -187,6 +187,177 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
                 </label>
               </div>
 
+              {/* Hide worker nodes */}
+              <div>
+                <label className="flex items-start gap-3 text-xs text-muted">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={Boolean(settings.hideWorkers)}
+                    onClick={() => update({ hideWorkers: !settings.hideWorkers })}
+                    className={`toggle-track relative mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                      settings.hideWorkers ? "is-on" : ""
+                    }`}
+                  >
+                    <span
+                      className={`toggle-dot inline-block h-4 w-4 transform rounded-full shadow transition-transform ${
+                        settings.hideWorkers ? "translate-x-4" : "translate-x-0"
+                      }`}
+                    />
+                  </button>
+                  <span>
+                    <span className="block text-text">Hide worker nodes</span>
+                    <span className="mt-0.5 block text-[10px] leading-snug text-muted">
+                      Removes Worker-role Sparks from Overview and the tab bar. Direct
+                      URLs and batch power / Hermes actions still include them.
+                    </span>
+                  </span>
+                </label>
+              </div>
+
+              {/* Overview search + status */}
+              <div>
+                <label className="flex items-start gap-3 text-xs text-muted">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={Boolean(settings.showOverviewSearch)}
+                    onClick={() =>
+                      update({ showOverviewSearch: !settings.showOverviewSearch })
+                    }
+                    className={`toggle-track relative mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                      settings.showOverviewSearch ? "is-on" : ""
+                    }`}
+                  >
+                    <span
+                      className={`toggle-dot inline-block h-4 w-4 transform rounded-full shadow transition-transform ${
+                        settings.showOverviewSearch ? "translate-x-4" : "translate-x-0"
+                      }`}
+                    />
+                  </button>
+                  <span>
+                    <span className="block text-text">Show search and status filters</span>
+                    <span className="mt-0.5 block text-[10px] leading-snug text-muted">
+                      Overview “Search up to 12 units” field and status dropdown
+                      (All / Online / Offline / Issues). One switch for both. Off by default.
+                    </span>
+                  </span>
+                </label>
+              </div>
+
+              {/* Benchmark share image */}
+              <div>
+                <label className="flex items-start gap-3 text-xs text-muted">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={Boolean(settings.benchShareImage)}
+                    onClick={() => update({ benchShareImage: !settings.benchShareImage })}
+                    className={`toggle-track relative mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                      settings.benchShareImage ? "is-on" : ""
+                    }`}
+                  >
+                    <span
+                      className={`toggle-dot inline-block h-4 w-4 transform rounded-full shadow transition-transform ${
+                        settings.benchShareImage ? "translate-x-4" : "translate-x-0"
+                      }`}
+                    />
+                  </button>
+                  <span>
+                    <span className="block text-text">Benchmark share image</span>
+                    <span className="mt-0.5 block text-[10px] leading-snug text-muted">
+                      On by default. The decode/prefill <em>Copy results</em> button gains a caret with
+                      <em> Copy as text</em> / <em>Copy as image</em> (a share card). Turn it off to keep
+                      the plain text button.
+                    </span>
+                  </span>
+                </label>
+              </div>
+
+              {/* Fleet Energy */}
+              <div>
+                <label className="flex items-start gap-3 text-xs text-muted">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={Boolean(settings.showFleetEnergy)}
+                    onClick={() => update({ showFleetEnergy: !settings.showFleetEnergy })}
+                    className={`toggle-track relative mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                      settings.showFleetEnergy ? "is-on" : ""
+                    }`}
+                  >
+                    <span
+                      className={`toggle-dot inline-block h-4 w-4 transform rounded-full shadow transition-transform ${
+                        settings.showFleetEnergy ? "translate-x-4" : "translate-x-0"
+                      }`}
+                    />
+                  </button>
+                  <span>
+                    <span className="block text-text">Show Fleet Energy</span>
+                    <span className="mt-0.5 block text-[10px] leading-snug text-muted">
+                      Overview card with rolling fleet power estimates. Off by default.
+                    </span>
+                  </span>
+                </label>
+              </div>
+
+              {/* LLM Token Totals */}
+              <div>
+                <label className="flex items-start gap-3 text-xs text-muted">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={Boolean(settings.showLlmTokenTotals)}
+                    onClick={() => update({ showLlmTokenTotals: !settings.showLlmTokenTotals })}
+                    className={`toggle-track relative mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                      settings.showLlmTokenTotals ? "is-on" : ""
+                    }`}
+                  >
+                    <span
+                      className={`toggle-dot inline-block h-4 w-4 transform rounded-full shadow transition-transform ${
+                        settings.showLlmTokenTotals ? "translate-x-4" : "translate-x-0"
+                      }`}
+                    />
+                  </button>
+                  <span>
+                    <span className="block text-text">Show LLM Token Totals</span>
+                    <span className="mt-0.5 block text-[10px] leading-snug text-muted">
+                      Overview card with cumulative prompt/generated tokens per model. Off by default.
+                    </span>
+                  </span>
+                </label>
+              </div>
+
+              {/* Fleet exceptions */}
+              <div>
+                <label className="flex items-start gap-3 text-xs text-muted">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={Boolean(settings.showFleetExceptions)}
+                    onClick={() =>
+                      update({ showFleetExceptions: !settings.showFleetExceptions })
+                    }
+                    className={`toggle-track relative mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                      settings.showFleetExceptions ? "is-on" : ""
+                    }`}
+                  >
+                    <span
+                      className={`toggle-dot inline-block h-4 w-4 transform rounded-full shadow transition-transform ${
+                        settings.showFleetExceptions ? "translate-x-4" : "translate-x-0"
+                      }`}
+                    />
+                  </button>
+                  <span>
+                    <span className="block text-text">Show active fleet exceptions</span>
+                    <span className="mt-0.5 block text-[10px] leading-snug text-muted">
+                      Overview strip for offline hosts, GPU throttle, disk, LLM, and
+                      Tailnet alerts. Off by default.
+                    </span>
+                  </span>
+                </label>
+              </div>
+
               {/* Benchmark debug traces */}
               <div>
                 <label className="flex items-start gap-3 text-xs text-muted">
@@ -448,7 +619,6 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
               GitHub MiaAI-Lab
             </a>
           </div>
-
         </div>
 
         {error && (

@@ -41,6 +41,8 @@ test("a failed sparks.json write surfaces as 500 and leaves no phantom spark", (
   const reg = new SparkRegistry();
   reg.addSpark(cfg("keep-me"));
   assert.deepEqual(reg.sparkIds, ["keep-me"]);
+  const events = [];
+  reg.onChange((action) => events.push(action));
 
   // Make sparks.json unwritable and try to add another spark.
   fs.rmSync(tmp, { recursive: true, force: true });
@@ -52,6 +54,7 @@ test("a failed sparks.json write surfaces as 500 and leaves no phantom spark", (
       "persistence failure must be reported as a server error"
     );
     assert.deepEqual(reg.sparkIds, ["keep-me"], "failed add must not commit in memory");
+    assert.deepEqual(events, [], "failed add must not notify listeners");
   } finally {
     fs.rmSync(tmp, { force: true });
     fs.mkdirSync(tmp, { recursive: true });
@@ -63,6 +66,8 @@ test("a failed secrets write rolls sparks.json back to the pre-update state", ()
   reg.addSpark(cfg("durable"));
   assert.deepEqual(reg.sparkIds, ["durable"]);
   const before = fs.readFileSync(sparksPath, "utf8");
+  const events = [];
+  reg.onChange((action) => events.push(action));
 
   assert.throws(
     () => reg.updateSpark("durable", { name: "Renamed", ssh: { password: "pw" } }),
@@ -74,6 +79,7 @@ test("a failed secrets write rolls sparks.json back to the pre-update state", ()
   assert.equal(reg.getSpark("durable").name, "durable", "memory stays pre-update");
   assert.equal(reg.hasPassword("durable"), false, "no half-applied credential");
   assert.equal(fs.existsSync(process.env.SPARKS_SECRETS_PATH), false);
+  assert.deepEqual(events, [], "failed update must not notify listeners");
 });
 
 test("a failed secrets write on remove re-adds the spark on disk", () => {
@@ -86,6 +92,8 @@ test("a failed secrets write on remove re-adds the spark on disk", () => {
   reg.setPassword("with-pw", "pw");
   reg.setPassword("other", "pw2");
   const before = fs.readFileSync(sparksPath, "utf8");
+  const events = [];
+  reg.onChange((action) => events.push(action));
 
   // Block secrets again. Removing one spark still requires rewriting the
   // secrets file (the other credential remains), and that write now fails.
@@ -100,4 +108,5 @@ test("a failed secrets write on remove re-adds the spark on disk", () => {
   assert.equal(fs.readFileSync(sparksPath, "utf8"), before, "sparks.json keeps the spark");
   assert.deepEqual(reg.sparkIds, ["with-pw", "other"], "memory keeps the spark");
   assert.equal(reg.hasPassword("with-pw"), true, "credential untouched");
+  assert.deepEqual(events, [], "failed remove must not notify listeners");
 });

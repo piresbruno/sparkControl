@@ -185,6 +185,8 @@ export interface HardwareInfo {
   cpuCores: number | null;
   totalMemoryGB: number | null;
   gpuChip: string | null;
+  /** Number of physical GPUs behind `gpuChip` (absent on DGX Spark units). */
+  gpuCount?: number;
   cudaDriver: string | null;
   storageModel: string | null;
 }
@@ -230,6 +232,26 @@ export interface GpuMetrics {
   throttle?: GpuThrottle | null;
   /** Kernel NVRM NV_ERR_NO_MEMORY count since boot (cached ~60s). */
   nvErrNoMemory?: number;
+  /**
+   * Per-physical-GPU breakdown for multi-card hosts. The fields above stay the
+   * fleet-wide aggregate (hottest / busiest card, summed power and VRAM), so a
+   * one-GPU DGX Spark has exactly one entry here mirroring them.
+   */
+  gpus?: GpuDevice[];
+}
+
+/** One physical GPU as reported by nvidia-smi (`index,name,uuid`). */
+export interface GpuDevice {
+  index: number;
+  name: string | null;
+  uuid: string | null;
+  temperature: number;
+  usage: number;
+  power: { draw: number; limit: number };
+  vram: { used: number; total: number; percentage: number; available: number };
+  throttle?: GpuThrottle | null;
+  /** Processes holding memory on this card only. */
+  processes?: Array<{ pid: number; name: string; vramMB: number }>;
 }
 
 // ─── CPU metrics ─────────────────────────────────────────
@@ -302,7 +324,7 @@ export interface UnifiedMemoryMetrics {
 // ─── LLM metrics ─────────────────────────────────────────
 export interface LlmMetrics {
   available: boolean;
-  backend: "vllm" | "llama.cpp" | "sglang" | "ds4" | "exl3" | null;
+  backend: "vllm" | "llama.cpp" | "sglang" | "ds4" | "exl3" | "q27" | "tensorfold" | null;
   modelId: string | null;
   modelPath: string | null;
   contextLength: number | null;
@@ -318,6 +340,10 @@ export interface LlmMetrics {
   uncachedPrefillTps?: number | null;
   /** Cumulative total output (generation) tokens as reported by the LLM server */
   totalOutputTokens: number;
+  /** Cumulative cached (prefix-cache served) prompt tokens. null when the backend does not expose the split. */
+  totalCachedTokens: number | null;
+  /** Cumulative total prompt (prefill) tokens as reported by the LLM server. null when the backend does not expose it. */
+  totalPromptTokens: number | null;
   /**
    * Epoch ms when the output counter last grew. null until an increase has been
    * observed (per process) — the only liveness evidence while a long prefill
@@ -334,6 +360,8 @@ export interface LlmMetrics {
   requestsWaiting?: number | null;
   /** vLLM time-to-first-token p95 in seconds. null when unavailable. */
   ttftP95Seconds?: number | null;
+  /** Live recent-window mean TTFT (seconds) from vLLM histogram sum/count deltas. null when unavailable. */
+  ttftSeconds?: number | null;
   /** vLLM cumulative preemption count. null when unavailable. */
   preemptionsTotal?: number | null;
   /** vLLM prefix-cache hit rate (hits/queries, 0–1). null when unavailable. */
@@ -522,6 +550,12 @@ export interface SparkSnapshot {
   workerNode?: boolean;
   /** Optional cluster/model label when role is worker */
   workerLabel?: string | null;
+  /**
+   * Derived worker label: live mirror of the head's served model id.
+   * Display-only (never written to config). A non-empty manual workerLabel
+   * takes priority over this in the UI.
+   */
+  workerDerivedLabel?: string | null;
   /** Optional head Spark id when role is worker */
   workerHeadId?: string | null;
   /** Standalone: whether LLM is probed (head always true, worker always false) */
@@ -547,10 +581,10 @@ export interface SparkSnapshot {
 // ─── WebSocket envelope ───────────────────────────────────
 export interface WsSnapshot {
   type: "snapshot";
+  /** Server generation time (wall-clock epoch ms); optional while clients and servers roll independently. */
+  generatedAt?: number;
   sparks: SparkSnapshot[];
   refreshInterval: number;
-  /** Server wall-clock epoch ms when this snapshot was generated (telemetry health). */
-  generatedAt?: number;
 }
 
 // ─── API responses ────────────────────────────────────────
@@ -558,6 +592,8 @@ export interface Settings {
   pollIntervalMs: number;
   defaultLlmPort: number;
   autoHideOffline: boolean;
+  /** Hide worker-role Sparks from Overview cards and the tab bar. */
+  hideWorkers: boolean;
   temperatureUnit: "celsius" | "fahrenheit";
   /** Persist prompts / HTTP traces / GPU samples on decode benchmark runs. */
   benchDebugTraces: boolean;
@@ -580,6 +616,15 @@ export interface Settings {
   agent: { tokenConfigured: boolean };
   /** A4: display labels for proxied client ids (key = 12-hex clientId). */
   clientLabels: Record<string, string>;
+  /** Overview Fleet Energy card. Off by default. */
+  showFleetEnergy: boolean;
+  /** Overview active fleet exceptions strip. Off by default. */
+  showFleetExceptions: boolean;
+  /** Overview search field + status filter. Off by default. */
+  showOverviewSearch: boolean;
+  showLlmTokenTotals: boolean;
+  /** Benchmark dialogs offer "Copy image" — a PNG share card of the results. */
+  benchShareImage: boolean;
 }
 
 export interface SparksListResponse {
@@ -600,11 +645,14 @@ export interface FleetEnergy {
   whPerOutputToken24h: number | null;
   outputTokens24h: number;
   coverage24hMs: number;
+  /** Window coverage24hMs is measured over (server-owned; fleet-size independent). */
+  coverage24hWindowMs?: number;
   coverage31dMs: number;
+  coverage31dWindowMs?: number;
   nodeCoverage24hMs: Record<string, number>;
   /** rev3: per-node kWh estimates; null when the node has no coverage or the fleet membership changed. */
-  nodeEnergy24hKwh: Record<string, number | null>;
-  nodeEnergy31dKwh: Record<string, number | null>;
+  nodeEnergy24hKwh?: Record<string, number | null>;
+  nodeEnergy31dKwh?: Record<string, number | null>;
   nodeCoverage31dMs: Record<string, number>;
   hourlyWatts24h: Array<number | null>;
 }
@@ -622,7 +670,7 @@ export interface SparkCapability {
 export interface SparkTestResponse {
   id: string;
   ssh: { ok: boolean; message: string };
-  llm: { ok: boolean; message: string };
+  llm: { ok: boolean; message: string; skipped?: boolean };
   comfy?: { ok: boolean; message: string; skipped?: boolean };
   ok: boolean;
   /** Present when the route answers via summarizeConnectivity; legacy ad-hoc routes omit it. */
@@ -666,6 +714,13 @@ export interface SparkClocks {
 /** Output-shape label for decode bench prompts (not guided decoding). */
 export type DecodeBenchPromptType = "structured" | "prose" | "code" | "json";
 
+/** On-demand remote LLM endpoint for decode/prefill benches. */
+export interface LlmBenchTarget {
+  host: string;
+  port: number;
+  tls: boolean;
+}
+
 export interface DecodeBenchConfig {
   port: number;
   modelId: string | null;
@@ -673,6 +728,9 @@ export interface DecodeBenchConfig {
   maxTokens: number;
   /** Output-shape label only — not guided decoding / JSON schema. */
   promptType?: DecodeBenchPromptType;
+  /** On-demand remote host (Tailscale HTTPS, etc.). */
+  host?: string;
+  tls?: boolean;
 }
 
 export interface DecodeBenchStreamResult {
@@ -804,6 +862,9 @@ export interface StartDecodeBenchRequest {
   modelId?: string | null;
   /** Output type: structured (default), prose, code, json. Prompt only. */
   promptType?: DecodeBenchPromptType;
+  /** On-demand remote LLM host (hostname or URL). Skips this Spark's LAN/SSH path. */
+  host?: string;
+  tls?: boolean;
 }
 
 // ─── LLM prefill benchmark ───────────────────────────────
@@ -811,6 +872,8 @@ export interface PrefillBenchConfig {
   port: number;
   modelId: string | null;
   contextSizes: number[];
+  host?: string;
+  tls?: boolean;
 }
 
 export interface PrefillBenchSizeResult {
@@ -853,6 +916,8 @@ export interface PrefillBenchJob {
 export interface PrefillBenchDefaults {
   allowedContextSizes: number[];
   defaultContextSizes: number[];
+  minContextSize?: number;
+  maxContextSize?: number;
 }
 
 export interface PrefillBenchListResponse {
@@ -866,6 +931,8 @@ export interface StartPrefillBenchRequest {
   port?: number;
   contextSizes: number[];
   modelId?: string | null;
+  host?: string;
+  tls?: boolean;
 }
 
 // ─── LLM Prompt Showcase ─────────────────────────────────

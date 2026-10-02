@@ -178,22 +178,23 @@ test("power + hermes + refresh routes with stubbed SSH", async () => {
 });
 
 test("llm bench + prefill + showcase routes registered (validation paths)", async () => {
-  // Invalid bodies → 400 before any SSH/engine contact.
+  // Invalid bodies → rejected before any SSH/engine contact (429 when the
+  // normalized work budget is empty).
   const b1 = await j(await fetch(`${BASE}/api/sparks/cov-remote/llm/bench`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({}),
   }));
-  assert.ok([400, 404, 409, 503].includes(b1.status));
+  assert.ok([400, 404, 409, 429, 503].includes(b1.status), `bench ${b1.status}`);
   const b2 = await j(await fetch(`${BASE}/api/sparks/cov-remote/llm/prefill-bench`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({}),
   }));
-  assert.ok([400, 404, 409, 503].includes(b2.status));
+  assert.ok([400, 404, 409, 429, 503].includes(b2.status), `prefill ${b2.status}`);
   const b3 = await j(await fetch(`${BASE}/api/sparks/cov-remote/llm/showcase`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({}),
   }));
-  assert.ok([400, 404, 409, 503].includes(b3.status));
+  assert.ok([400, 404, 409, 429, 503].includes(b3.status), `showcase ${b3.status}`);
   // GET bench state
   const g = await j(await fetch(`${BASE}/api/sparks/cov-remote/llm/bench`));
   assert.ok([200, 404].includes(g.status));

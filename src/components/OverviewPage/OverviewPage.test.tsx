@@ -221,7 +221,7 @@ describe("OverviewPage Fleet Energy card", () => {
     vi.mocked(fetchFleetEnergy).mockResolvedValue(fleetEnergy);
     const head = snap("h1", { name: "HeadSpark", role: "head" });
     const worker = snap("w1", { name: "WorkerOne", role: "worker" });
-    render(<OverviewPage sparks={[head, worker]} temperatureUnit="celsius" />);
+    render(<OverviewPage sparks={[head, worker]} temperatureUnit="celsius" showFleetEnergy />);
 
     await waitFor(() => expect(screen.getByText("Last 24h by node")).toBeTruthy());
     // Bars map node ids to spark display names, highest kWh first.

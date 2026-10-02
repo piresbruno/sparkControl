@@ -6,9 +6,14 @@
  * Markup mirrors mockups/node-detail-v3.html (.hero / .dials / .bay /
  * .readouts) and src/styles/console.css.
  */
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { LlmMetrics, ServingStatus, SparkSnapshot } from "../../../api/types";
-import { useMetricsHistoryTail } from "../../../hooks/metricsStore";
+import {
+  avgPositive,
+  useMetricsHistory,
+  useMetricsHistoryTail,
+} from "../../../hooks/metricsStore";
+import { backendLabel } from "../../../shared/llmBackends.js";
 import { SERVE_ID } from "../../../constants";
 import {
   ScChip,
@@ -31,6 +36,8 @@ import {
   VLLM_METRIC_INFO,
 } from "./consoleUtils";
 import { LlmDailyChart } from "../LlmDailyChart";
+import { LlmTrendChart } from "../LlmTrendChart";
+import { LlmTokenTotals } from "../LlmTokenTotals";
 import { useEngineActivity } from "./useEngineActivity";
 import { servingSince, useServingLifecycle } from "./useServingLifecycle";
 
@@ -58,20 +65,16 @@ interface ScServingProps {
   onNavigate?: (id: string | null) => void;
 }
 
-/** Backend label map — copied from LlmPanel.tsx BackendBadge. */
-const BACKEND_LABELS: Record<string, string> = {
-  vllm: "vLLM",
-  "llama.cpp": "llama.cpp",
-  sglang: "sgLang",
-  ds4: "ds4",
-  exl3: "EXL3",
-};
+/** Running-average label: whole numbers once the mean reaches 100 (LlmPanel parity). */
+function fmtAvg(v: number | null): string | null {
+  return v == null ? null : `avg ${v >= 100 ? v.toFixed(0) : v.toFixed(1)}`;
+}
 
 const ENGINE_TIP =
   "Active = processing or ready for requests. Sleeping = idle, GPU memory freed until next request.";
 
 const PREFILL_TIP =
-  "Tokens/sec while the engine is reading the prompt and building KV cache — before the first output token. Prefix-cache hits do little compute, so this can stay ~0.";
+  "Prompt tokens/sec taken in during the last poll window — cache-served + computed; the split below separates the two parts. Cached prefill does little GPU work; uncached prefill is what builds KV cache.";
 
 /** "loaded 12 min ago" from the supervised server's startedAt; null when unknown. */
 function loadedAgo(status: ServingStatus | null): string | null {
@@ -170,6 +173,16 @@ function ServingHero({
   const genHistory = useMetricsHistoryTail(spark.id, `llm:${port}.tps`);
   const prefillHistory = useMetricsHistoryTail(spark.id, `llm:${port}.prefill`);
 
+  // Full series (~retention) for running averages over busy (>0) samples only.
+  const genFull = useMetricsHistory(spark.id, `llm:${port}.tps`);
+  const prefillFull = useMetricsHistory(spark.id, `llm:${port}.prefill`);
+  const cachedFull = useMetricsHistory(spark.id, `llm:${port}.prefillCached`);
+  const uncachedFull = useMetricsHistory(spark.id, `llm:${port}.prefillUncached`);
+  const genAvg = useMemo(() => avgPositive(genFull), [genFull]);
+  const prefillAvg = useMemo(() => avgPositive(prefillFull), [prefillFull]);
+  const cachedPrefillAvg = useMemo(() => avgPositive(cachedFull), [cachedFull]);
+  const uncachedPrefillAvg = useMemo(() => avgPositive(uncachedFull), [uncachedFull]);
+
   // Two-click armed stop (per bay).
   const [armed, setArmed] = useState(false);
   const [stopResult, setStopResult] = useState<string | null>(null);
@@ -183,9 +196,7 @@ function ServingHero({
   const running = llm?.requestsRunning ?? llm?.slotsActive ?? 0;
   const showPrefillSplit = llm?.cachedPrefillTps != null || llm?.uncachedPrefillTps != null;
 
-  const backendLabel = llm?.backend
-    ? BACKEND_LABELS[llm.backend] ?? llm.backend
-    : null;
+  const backendText = backendLabel(llm?.backend);
   const title = llm?.modelId ? shortModelName(llm.modelId) : "No engine detected";
   // The node-level serving status describes the *supervised* script, which
   // serves the primary bay — extra bays must not show its loaded/stop state.
@@ -285,6 +296,7 @@ function ServingHero({
         </div>
         <span className="dial__split">
           total {fmtInt(llm?.totalOutputTokens ?? 0)} out tok
+          {genAvg != null ? ` · ${fmtAvg(genAvg)}` : ""}
           {running > 0 && genVal === 0 && silentForMs != null
             ? ` · no output ${fmtElapsedMs(silentForMs)}`
             : ""}
@@ -300,10 +312,14 @@ function ServingHero({
         </div>
         <span className="dial__split">
           {showPrefillSplit
-            ? `uncached ${fmtTps(llm?.uncachedPrefillTps ?? 0)} · cached ${fmtTps(llm?.cachedPrefillTps ?? 0)}`
+            ? `uncached ${fmtTps(llm?.uncachedPrefillTps ?? 0)}${
+                uncachedPrefillAvg != null ? ` (${fmtAvg(uncachedPrefillAvg)})` : ""
+              } · cached ${fmtTps(llm?.cachedPrefillTps ?? 0)}${
+                cachedPrefillAvg != null ? ` (${fmtAvg(cachedPrefillAvg)})` : ""
+              }${prefillAvg != null ? ` · ${fmtAvg(prefillAvg)}` : ""}`
             : llm?.contextLength
-              ? `ctx ${fmtInt(llm.contextLength)}`
-              : "no split reported"}
+              ? `ctx ${fmtInt(llm.contextLength)}${prefillAvg != null ? ` · ${fmtAvg(prefillAvg)}` : ""}`
+              : `no split reported${prefillAvg != null ? ` · ${fmtAvg(prefillAvg)}` : ""}`}
         </span>
         <ScSeg pct={available ? Math.min(100, (preVal / preScale) * 100) : 0} tone="neutral" />
         <ScHist values={Array.from(prefillHistory)} w={196} h={26} tone="neutral" />
@@ -355,8 +371,12 @@ function ServingHero({
     {
       label: "Requests",
       value:
-        llm?.requestsRunning != null && llm?.requestsWaiting != null
-          ? `${Math.round(llm.requestsRunning)} run / ${Math.round(llm.requestsWaiting)} wait`
+        llm?.requestsRunning != null
+          ? `${Math.round(llm.requestsRunning)} run${
+              llm.requestsWaiting != null
+                ? ` / ${Math.round(llm.requestsWaiting)} wait`
+                : ""
+            }`
           : "—",
       tip: VLLM_METRIC_INFO.requests,
     },
@@ -401,11 +421,11 @@ function ServingHero({
           </h3>
           <div className="detail-head__repo">
             Served by modelctl
-            {backendLabel ? ` · ${backendLabel}` : ""}
+            {backendText ? ` · ${backendText}` : ""}
             {index === 0 && spark.llmPort === port ? " · primary" : ""}
           </div>
           <div className="hero__meta">
-            {backendLabel ? <ScChip>{backendLabel}</ScChip> : null}
+            {backendText ? <ScChip>{backendText}</ScChip> : null}
             {llm?.modelPath && llm.modelPath !== llm.modelId && !llm.modelPath.includes("models--") ? (
               <ScChip>
                 <span style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={llm.modelPath}>
@@ -577,6 +597,9 @@ function ServingHero({
           </div>
         ))}
       </div>
+
+      <LlmTrendChart sparkId={spark.id} llmPort={port} />
+      <LlmTokenTotals sparkId={spark.id} llmPort={port} />
     </ScModule>
   );
 }

@@ -13,9 +13,10 @@ function number(value: number | null, digits = 2): string {
 /**
  * Fleet-wide estimated power draw, sourced from the tracker's rolling windows.
  *
- * Renders nothing until the tracker answers: when /api/fleet-energy is absent
- * (404) or failing, the card stays hidden instead of leaving an empty shell on
- * the Overview, and the next poll retries.
+ * Polls continuously: while the tracker is unreachable (/api/fleet-energy
+ * absent or failing) it shows a warning instead of an empty shell, and recovers
+ * on the next poll. The per-node 24h kWh list and the last-non-empty hourly bar
+ * highlight are sparkControl additions.
  */
 export function FleetEnergyCard({
   nodeCount,
@@ -25,17 +26,20 @@ export function FleetEnergyCard({
   nodeNames?: Record<string, string>;
 }) {
   const [data, setData] = useState<FleetEnergy | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     const load = () =>
       fetchFleetEnergy()
         .then((next) => {
-          if (!cancelled) setData(next);
+          if (!cancelled) {
+            setData(next);
+            setError(null);
+          }
         })
-        .catch(() => {
-          // Endpoint missing/unreachable — degrade to hidden, keep polling.
-          if (!cancelled) setData(null);
+        .catch((err) => {
+          if (!cancelled) setError(err instanceof Error ? err.message : String(err));
         });
     void load();
     const timer = window.setInterval(load, REFRESH_MS);
@@ -45,24 +49,31 @@ export function FleetEnergyCard({
     };
   }, []);
 
-  if (!data) return null;
-
+  // Fleet coverage is wall-clock time during which every node was fresh, so
+  // it is capped by its measurement window — not window × nodeCount. Use the
+  // server-provided window; DAY_MS is only a fallback for older servers.
+  const coverageWindowMs = data?.coverage24hWindowMs ?? DAY_MS;
   const coverage =
-    nodeCount > 0 ? Math.min(100, (data.coverage24hMs / (DAY_MS * nodeCount)) * 100) : 0;
-  const state = data.membershipChanged
-    ? "Fleet membership changed. Restart sparkControl to establish a truthful new accounting scope."
-    : data.freshNodeCount < nodeCount
-      ? `Partial coverage: ${data.freshNodeCount}/${nodeCount} nodes currently fresh.`
-      : data.energy24hKwh == null
-        ? "Warming up — no complete energy interval recorded yet."
-        : null;
-  const nodeRows = Object.entries(data.nodeEnergy24hKwh ?? {})
+    data && nodeCount > 0 ? Math.min(100, (data.coverage24hMs / coverageWindowMs) * 100) : 0;
+  const state = error
+    ? `Energy telemetry unavailable: ${error}`
+    : data?.membershipChanged
+      ? "Fleet membership changed. Restart sparkControl to establish a truthful new accounting scope."
+      : !data
+        ? "Loading fleet energy…"
+        : data.freshNodeCount < nodeCount
+          ? `Partial coverage: ${data.freshNodeCount}/${nodeCount} nodes currently fresh.`
+          : data.energy24hKwh == null
+            ? "Warming up — no complete energy interval recorded yet."
+            : null;
+  const nodeRows = Object.entries(data?.nodeEnergy24hKwh ?? {})
     .filter((entry): entry is [string, number] => entry[1] != null)
     .sort((a, b) => b[1] - a[1]);
   const nodeMaxKwh = Math.max(1e-9, ...nodeRows.map(([, kwh]) => kwh));
   const lastNonNullBar = (() => {
-    for (let i = data.hourlyWatts24h.length - 1; i >= 0; i--) {
-      if (data.hourlyWatts24h[i] != null) return i;
+    const hourly = data?.hourlyWatts24h ?? [];
+    for (let i = hourly.length - 1; i >= 0; i--) {
+      if (hourly[i] != null) return i;
     }
     return -1;
   })();
@@ -79,7 +90,7 @@ export function FleetEnergyCard({
           </p>
         </div>
         <span className="text-xs text-muted">
-          {data.freshNodeCount}/{nodeCount} fresh
+          {data ? `${data.freshNodeCount}/${nodeCount} fresh` : "—"}
         </span>
       </div>
       {state && (
@@ -90,20 +101,20 @@ export function FleetEnergyCard({
       <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div>
           <div className="text-[10px] text-muted">Current</div>
-          <strong className="font-tabular text-sm">{number(data.currentWatts30s, 0)} W</strong>
+          <strong className="font-tabular text-sm">{number(data?.currentWatts30s ?? null, 0)} W</strong>
         </div>
         <div>
           <div className="text-[10px] text-muted">24 hours</div>
-          <strong className="font-tabular text-sm">{number(data.energy24hKwh)} kWh</strong>
+          <strong className="font-tabular text-sm">{number(data?.energy24hKwh ?? null)} kWh</strong>
         </div>
         <div>
           <div className="text-[10px] text-muted">31 days</div>
-          <strong className="font-tabular text-sm">{number(data.energy31dKwh)} kWh</strong>
+          <strong className="font-tabular text-sm">{number(data?.energy31dKwh ?? null)} kWh</strong>
         </div>
         <div title="Wh per output token over the last 24 hours">
           <div className="text-[10px] text-muted">Efficiency</div>
           <strong className="font-tabular text-sm">
-            {number(data.whPerOutputToken24h, 4)} Wh/token
+            {number(data?.whPerOutputToken24h ?? null, 4)} Wh/token
           </strong>
         </div>
       </div>
@@ -135,7 +146,7 @@ export function FleetEnergyCard({
           className="flex h-16 items-end gap-px"
           aria-label="Hourly estimated watts for the last 24 hours, with gaps shown empty"
         >
-          {data.hourlyWatts24h.map((watts, index, values) => {
+          {(data?.hourlyWatts24h ?? Array(24).fill(null)).map((watts, index, values) => {
             const max = Math.max(1, ...values.filter((value): value is number => value != null));
             return (
               <span

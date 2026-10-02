@@ -4,9 +4,15 @@ import { ingestSnapshots } from "./metricsStore";
 import { OVERVIEW_ID, ANALYSIS_ID, MODELS_ID, SERVE_ID } from "../constants";
 
 /** Sentinel tab ids (not real sparks) — never reset by snapshot guards. */
-const SENTINEL_IDS = new Set([OVERVIEW_ID, ANALYSIS_ID, MODELS_ID, SERVE_ID]);
+const SENTINEL_IDS: Record<string, true> = {
+  [OVERVIEW_ID]: true,
+  [ANALYSIS_ID]: true,
+  [MODELS_ID]: true,
+  [SERVE_ID]: true,
+};
 
-const WS_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws`;
+const TOKEN = (typeof localStorage !== "undefined" && localStorage.getItem("sparkdashToken")) || "";
+const WS_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws${TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : ""}`;
 const RECONNECT_DELAY = 2000;
 
 /**
@@ -62,17 +68,18 @@ export function useSnapshot() {
         setSnapshotError("The server sent invalid telemetry data.");
         return;
       }
+      const receivedAt = Date.now();
       setSnapshotError(null);
-      setLastValidSnapshotAt(Date.now());
-      setSnapshotGeneratedAt(typeof msg.generatedAt === "number" ? msg.generatedAt : null);
-      setRefreshInterval(typeof msg.refreshInterval === "number" ? msg.refreshInterval : null);
+      setLastValidSnapshotAt(receivedAt);
+      setSnapshotGeneratedAt(Number.isFinite(msg.generatedAt) ? Number(msg.generatedAt) : null);
+      setRefreshInterval(Number.isFinite(msg.refreshInterval) ? Number(msg.refreshInterval) : null);
       // Feed the central history store (8b) before notifying React state.
-      ingestSnapshots(msg.sparks);
+      ingestSnapshots(msg.sparks, msg.generatedAt ?? receivedAt);
       setSparks(msg.sparks);
       // Default to the Overview tab; keep the current selection if it
       // is still valid (Overview is always valid).
       setActiveId((prev) => {
-        if (prev != null && SENTINEL_IDS.has(prev)) return prev;
+        if (prev != null && SENTINEL_IDS[prev] === true) return prev;
         if (prev && msg.sparks.some((s) => s.id === prev)) return prev;
         return OVERVIEW_ID;
       });
@@ -120,8 +127,8 @@ export function useSnapshot() {
     setActiveId,
     activeSpark,
     lastValidSnapshotAt,
-    snapshotError,
     snapshotGeneratedAt,
+    snapshotError,
     refreshInterval,
   };
 }

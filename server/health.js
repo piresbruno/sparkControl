@@ -7,6 +7,7 @@
 import fs from "fs";
 import path from "path";
 import { SPARKS_JSON_PATH, SECRETS_KEY_PATH } from "./config.js";
+import { allowOpenRemote, configuredToken, requireRemoteAuth } from "./auth.js";
 
 export function evaluateHealth({
   bindHost,
@@ -15,8 +16,13 @@ export function evaluateHealth({
   secretsKeyReadable = true,
   sshIdentityPresent,
 }) {
+  const remote = requireRemoteAuth(bindHost);
+  const token = Boolean(configuredToken());
   const errors = [];
   const warnings = [];
+  if (remote && !token && !allowOpenRemote()) {
+    errors.push("Remote bind requires SPARKDASH_TOKEN");
+  }
   if (!configWritable) errors.push("Config directory is not writable");
   if (!secretsKeyPresent) warnings.push("Secrets key is not present yet");
   else if (!secretsKeyReadable) {
@@ -28,6 +34,7 @@ export function evaluateHealth({
   return {
     ok: errors.length === 0,
     bindHost,
+    authMode: token ? "bearer" : remote ? "required-missing" : "loopback-open",
     errors,
     warnings,
   };
@@ -44,7 +51,7 @@ export function secretsKeyReadable() {
   }
 }
 
-export function inspectHealth(host = process.env.BIND_HOST || "127.0.0.1") {
+export function inspectHealth(bindHost = process.env.BIND_HOST || "127.0.0.1") {
   const configDir = path.dirname(SPARKS_JSON_PATH);
   let writable = true;
   try {
@@ -54,7 +61,7 @@ export function inspectHealth(host = process.env.BIND_HOST || "127.0.0.1") {
   }
   const identity = process.env.SSH_IDENTITY_FILE || path.join(process.env.HOME || "/root", ".ssh", "id_ed25519");
   return evaluateHealth({
-    bindHost: host,
+    bindHost,
     configWritable: writable,
     secretsKeyPresent: Boolean(process.env.SPARKDASH_SECRETS_KEY) || fs.existsSync(SECRETS_KEY_PATH),
     secretsKeyReadable: secretsKeyReadable(),

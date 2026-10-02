@@ -1,6 +1,6 @@
 {
   "name": "sparkcontrol",
-  "version": "1.8.6",
+  "version": "1.8.9",
   "description": "sparkControl — LocalAI Command Center (fork of sparkDash; upstream: MiaAI-Lab/sparkDash)",
   "type": "module",
   "scripts": {

@@ -1,7 +1,6 @@
 import express from "express";
 import { createServer } from "http";
 import { WebSocketServer } from "ws";
-import { spawn } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -9,35 +8,56 @@ import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import { SparkRegistry } from "./sparks/SparkRegistry.js";
 import { SparkMonitor } from "./sparks/SparkMonitor.js";
-import { sshExec, sshTest, llmTest, comfyTest } from "./collectors/ssh.js";
+import { sshExec } from "./collectors/ssh.js";
 import { comfyCancelJob } from "./collectors/comfyActions.js";
-import { validateSparkTarget, createRateLimiter } from "./validate.js";
+import {
+  validateSparkTarget,
+  createRateLimiter,
+  assertAllowedTarget,
+  validateDecodeBudget,
+  validatePrefillBudget,
+} from "./validate.js";
+import { authorizeUpgrade, configuredToken, createAuthMiddleware, requireRemoteAuth } from "./auth.js";
+import { inspectHealth } from "./health.js";
 import { getSettings, updateSettings, loadSettings, ensureAgentToken, rotateAgentToken, markAgentTokenConfigured } from "./settings.js";
 
 /** Current agent token (read fresh — rotation replaces the stored value). */
 function getAgentToken() {
   return ensureAgentToken();
 }
-
 import { broadcastForLanIp, effectiveMac, normalizeMac, sendWol } from "./wol.js";
+import { remoteShutdownCommand, spawnLocalShutdown } from "./shutdown.js";
 import {
   decodeBenchManager,
   DECODE_BENCH_DEFAULTS,
+  normalizeConcurrencies,
 } from "./collectors/DecodeBench.js";
 import {
   prefillBenchManager,
   PREFILL_BENCH_DEFAULTS,
+  normalizeContextSizes,
 } from "./collectors/PrefillBench.js";
 import { showcaseManager } from "./collectors/ShowcaseManager.js";
 import { llmProbeHost } from "./collectors/llmHost.js";
+import { onceClose, resolveLlmHttpTarget } from "./collectors/llmTunnel.js";
+import { formatLlmBaseUrl, parseLlmTargetInput } from "../src/shared/llmTarget.js";
 import { llmDaily } from "./collectors/LlmDaily.js";
+import {
+  createLlmTokenRuntime,
+  registerLlmTokenTotalsRoute,
+  llmTokenLedger,
+} from "./llmtokens/LlmTokenRuntime.js";
+import { closeLlmStreamAgent } from "./collectors/LlmStreaming.js";
 import { compareSemver, getLatestRelease } from "./collectors/HermesReleases.js";
+import { FLEET_ENERGY_JSON_PATH } from "./config.js";
 import { FleetEnergyTracker } from "./energy/FleetEnergyTracker.js";
 import {
   createFleetEnergyRuntime,
   registerFleetEnergyRoute,
 } from "./energy/FleetEnergyRuntime.js";
 import { resolveHostname } from "./proxy/clientHost.js";
+import { testSparkConnectivity } from "./connectivity.js";
+import { inspectStartupPreflight, logStartupPreflight } from "./startupPreflight.js";
 
 dotenv.config();
 
@@ -47,9 +67,9 @@ const ROOT = path.resolve(__dirname, "..");
 
 /** Bundled agent artifact uploaded by install-agent (npm run build:agent). */
 const AGENT_BUNDLE_PATH = process.env.SPARK_COMMAND_AGENT_BUNDLE || path.join(ROOT, "agent", "dist", "spark-command-agent.mjs");
-// Default to loopback: the dashboard exposes SSH and remote power controls, so it
-// should not be reachable on the LAN unless explicitly opted in. Set BIND_HOST to the
-// host's LAN IP (or 0.0.0.0) to expose it; docker-compose.yml already sets 0.0.0.0.
+// Default to loopback. Direct non-loopback binds fail closed unless remote auth is
+// configured. Use an SSH tunnel, authenticated reverse proxy, or Tailscale Serve
+// (docs/REMOTE-ACCESS.md); set BIND_HOST to expose it.
 const BIND_HOST = process.env.BIND_HOST || "127.0.0.1";
 const PORT = parseInt(process.env.PORT || "5555", 10);
 const LLM_PORT = parseInt(process.env.LLM_PORT || "8888", 10);
@@ -98,11 +118,153 @@ function resolveLlmApiKey(spark, port) {
   return key || null;
 }
 
-// Rate-limit ephemeral + registered connectivity tests (per client IP)
+/**
+ * Local Spark LLM port, or an on-demand remote host (HTTPS Tailscale, etc.).
+ * Custom `host` skips the configured-port allowlist and SSH tunnel.
+ *
+ * @param {object} spark
+ * @param {number[]} configuredPorts
+ * @param {object} body
+ */
+async function benchHttpTarget(spark, configuredPorts, body) {
+  const hostRaw = body?.host != null ? String(body.host).trim() : "";
+  if (hostRaw) {
+    const parsed = parseLlmTargetInput(hostRaw, body?.port, body?.tls);
+    const extra = extraBenchmarkHosts();
+    if (!extra.has(parsed.host)) {
+      const err = new Error(
+        `Remote benchmark host ${parsed.host} is not allowlisted. Add it to SPARKDASH_BENCH_HOSTS or use a saved Spark LLM target.`
+      );
+      err.status = 403;
+      throw err;
+    }
+    await assertAllowedTarget(parsed.host, extra);
+    return {
+      port: parsed.port,
+      host: parsed.host,
+      tls: parsed.tls,
+      custom: true,
+      apiKey: null,
+      resolveTarget: async ({ onStatus }) => {
+        onStatus?.(`Reaching ${formatLlmBaseUrl(parsed)}…`);
+        return {
+          host: parsed.host,
+          port: parsed.port,
+          tls: parsed.tls,
+          via: "direct",
+          close: onceClose(() => {}),
+        };
+      },
+    };
+  }
+
+  let port = body?.port != null ? Number(body.port) : configuredPorts[0];
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    const err = new Error("Invalid port");
+    err.status = 400;
+    throw err;
+  }
+  if (!configuredPorts.includes(port)) {
+    const err = new Error("port is not configured for this Spark");
+    err.status = 400;
+    throw err;
+  }
+  return {
+    port,
+    host: null,
+    tls: false,
+    custom: false,
+    apiKey: resolveLlmApiKey(spark, port),
+    resolveTarget: ({ onStatus, signal }) =>
+      resolveLlmHttpTarget(spark, port, {
+        apiKey: resolveLlmApiKey(spark, port),
+        onStatus,
+        signal,
+      }),
+  };
+}
+
+function extraBenchmarkHosts() {
+  return new Set(
+    String(process.env.SPARKDASH_BENCH_HOSTS || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+  );
+}
+
+function fleetTargetHosts() {
+  const hosts = new Set();
+  for (const spark of registry.sparks) {
+    if (spark.lanIp) hosts.add(spark.lanIp);
+    if (spark.ssh?.host) hosts.add(spark.ssh.host);
+  }
+  return hosts;
+}
+
+async function assertFleetTarget(body) {
+  const validationError = validateSparkTarget(body);
+  if (validationError) {
+    const err = new Error(validationError);
+    err.status = 400;
+    throw err;
+  }
+  const sshHost = body?.ssh?.host || "";
+  const lanIp = body?.lanIp || "";
+  const target = sshHost || lanIp;
+  const allowed = fleetTargetHosts();
+  if (target) allowed.add(target);
+  if (lanIp) allowed.add(lanIp);
+  if (target) await assertAllowedTarget(target, allowed);
+  if (lanIp && lanIp !== target) await assertAllowedTarget(lanIp, allowed);
+}
+
+function principalKey(req) {
+  return req.principal?.id || clientKey(req);
+}
+
+function rejectLimited(res, message) {
+  return res.status(429).json({ error: message });
+}
+
 const allowTest = createRateLimiter(20, 60_000);
+const allowDestructive = createRateLimiter(10, 60_000);
+/** Decode + prefill starts per principal (retries that 400/409 do not count). */
+const allowBench = createRateLimiter(20, 60_000);
+const allowGlobalDestructive = createRateLimiter(30, 60_000);
+/** Anti double-submit only; per-Spark mutex + MAX_ACTIVE_BENCH_JOBS cap load. */
+const benchCooldown = createRateLimiter(1, 3_000);
+const MAX_ACTIVE_BENCH_JOBS = 2;
+
+/** Consume bench-start quota only when every limiter would allow it. */
+function consumeBenchStartQuota(req, res) {
+  const key = principalKey(req);
+  const ip = clientKey(req);
+  if (!allowBench(key, true)) {
+    rejectLimited(res, "Too many benchmark requests; try again shortly");
+    return false;
+  }
+  if (!benchCooldown(key, true)) {
+    rejectLimited(res, "Benchmark cooldown is active; wait before starting another job");
+    return false;
+  }
+  if (!allowGlobalDestructive(ip, true)) {
+    rejectLimited(res, "Too many requests; try again shortly");
+    return false;
+  }
+  allowBench(key);
+  benchCooldown(key);
+  allowGlobalDestructive(ip);
+  return true;
+}
 
 // ─── Spark registry ──────────────────────────────────────
 const registry = new SparkRegistry();
+
+const fleetEnergyTracker = new FleetEnergyTracker({
+  nodeIds: registry.sparkIds,
+  filePath: FLEET_ENERGY_JSON_PATH,
+});
 
 // ─── Monitor map ─────────────────────────────────────────
 const monitors = new Map();
@@ -126,6 +288,10 @@ function startMonitor(spark) {
       const sp = registry.getSpark(sparkId);
       if (sp) void clockControl.reconcileSpark(sparkId, { exec: execForSpark, getSpark: (id) => registry.getSpark(id) });
     },
+    // Worker derived label: resolve a head id to its live LLM model id.
+    // Returns null when the head is unknown/offline/model-less so workers
+    // never display a stale model. Display-only; never writes to config.
+    resolveHeadModelId: (headId) => monitors.get(headId)?.headLlmModelId() ?? null,
   });
   monitors.set(spark.id, monitor);
   monitor.start();
@@ -155,16 +321,17 @@ function orderedSnapshots() {
     .map((m) => m.snapshot());
 }
 
+// Cumulative prompt/generated token totals per model (per-UTC-day buckets for range queries).
+const llmTokenRuntime = createLlmTokenRuntime({ ledger: llmTokenLedger, orderedSnapshots });
+
 // ─── Express app ─────────────────────────────────────────
 const app = express();
 
 // ─── Fleet energy ────────────────────────────────────────
 // Scope is captured at construction; setFleetEnergyTracker re-checks it on
 // every registry add/update/remove (FleetEnergyMembership contract).
-const fleetEnergyTracker = new FleetEnergyTracker({ nodeIds: registry.sparkIds });
 registry.setFleetEnergyTracker(fleetEnergyTracker);
-registerFleetEnergyRoute(app, fleetEnergyTracker);
-const energyRuntime = createFleetEnergyRuntime({
+const fleetEnergyRuntime = createFleetEnergyRuntime({
   tracker: fleetEnergyTracker,
   orderedSnapshots,
   monitors,
@@ -305,12 +472,20 @@ app.use("/llm", createLlmProxy({
 }));
 
 app.use(express.json());
+app.use(createAuthMiddleware());
+
+app.get("/api/health", (_req, res) => {
+  res.json(inspectHealth(process.env.BIND_HOST || "127.0.0.1"));
+});
 
 function clientKey(req) {
   return req.ip || req.socket?.remoteAddress || "unknown";
 }
 
 // ─── REST API ────────────────────────────────────────────
+registerFleetEnergyRoute(app, fleetEnergyTracker);
+registerLlmTokenTotalsRoute(app, llmTokenLedger);
+
 // Never return SSH passwords in any response
 app.get("/api/sparks", (_req, res) => {
   res.json({ sparks: registry.publicSparks });
@@ -319,8 +494,8 @@ app.get("/api/sparks", (_req, res) => {
 // Ephemeral connectivity test — does not persist or start a monitor
 app.post("/api/sparks/test", async (req, res) => {
   try {
-    if (!allowTest(clientKey(req))) {
-      return res.status(429).json({ error: "Too many test requests; try again shortly" });
+    if (!allowTest(principalKey(req)) || !allowGlobalDestructive(clientKey(req))) {
+      return rejectLimited(res, "Too many test requests; try again shortly");
     }
     const body = req.body || {};
     const validationError = validateSparkTarget(body);
@@ -333,9 +508,14 @@ app.post("/api/sparks/test", async (req, res) => {
       lanIp: body.lanIp || "",
       cx7Ip: body.cx7Ip || null,
       isLocal: Boolean(body.isLocal),
+      role: body.role,
+      workerNode: Boolean(body.workerNode),
+      llmMonitoring: body.llmMonitoring,
       llmPort: resolveLlmPort(body),
       comfyPort: resolveComfyPort(body),
       comfyMonitoring: Boolean(body.comfyMonitoring),
+      hermesMonitoring: Boolean(body.hermesMonitoring),
+      tailscaleMonitoring: Boolean(body.tailscaleMonitoring),
       ssh: {
         host: body.ssh?.host || body.lanIp || "",
         user: body.ssh?.user || "root",
@@ -343,31 +523,20 @@ app.post("/api/sparks/test", async (req, res) => {
         password: body.ssh?.password,
       },
     };
-    if (!spark.lanIp && !spark.ssh.host) {
+    if (!spark.isLocal && !spark.lanIp && !spark.ssh.host) {
       return res.status(400).json({ error: "lanIp or ssh.host required" });
     }
     const llmPort = resolveLlmPort(spark);
     const comfyPort = resolveComfyPort(spark);
-    // kind "nas" (from the add-node role picker): a store node serves nothing
-    // and never runs ComfyUI — both probes report as skipped.
-    const nasSkip = body.kind === "nas" ? "skipped (NAS node)" : null;
-    const [sshResult, llmResult, comfyResult] = await Promise.all([
-      spark.isLocal ? Promise.resolve({ ok: true, message: "local (skipped SSH)" }) : sshTest(spark),
-      nasSkip
-        ? Promise.resolve({ ok: true, message: nasSkip, skipped: true })
-        : llmTest(spark, llmPort),
-      nasSkip
-        ? Promise.resolve({ ok: true, message: nasSkip, skipped: true })
-        : spark.comfyMonitoring
-          ? comfyTest(spark, comfyPort)
-          : Promise.resolve({ ok: true, message: "disabled", skipped: true }),
-    ]);
+    const result = await testSparkConnectivity(spark, { llmPort, comfyPort });
+    const byId = Object.fromEntries(result.capabilities.map((capability) => [capability.id, capability]));
     res.json({
       id: spark.id,
-      ssh: sshResult,
-      llm: llmResult,
-      comfy: comfyResult,
-      ok: sshResult.ok || llmResult.ok || (comfyResult.ok && !comfyResult.skipped),
+      capabilities: result.capabilities,
+      ssh: { ok: byId.host.status === "pass", message: byId.host.message },
+      llm: { ok: byId.llm.status !== "fail", message: byId.llm.message, skipped: byId.llm.status === "skipped" },
+      comfy: { ok: byId.comfy.status !== "fail", message: byId.comfy.message, skipped: byId.comfy.status === "skipped" },
+      ok: result.ok,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -381,6 +550,7 @@ app.post("/api/sparks", (req, res) => {
       return res.status(400).json({ error: validationError });
     }
     const spark = registry.addSpark(req.body);
+    fleetEnergyTracker.invalidateMembership(registry.sparkIds);
     startMonitor(spark);
     res.json({ success: true, spark: registry.toPublic(spark) });
   } catch (err) {
@@ -420,7 +590,11 @@ app.patch("/api/sparks/:id", (req, res) => {
       return res.json({ success: true, spark, hasPassword: true });
     }
 
-    const spark = registry.updateSpark(req.params.id, body);
+    // LLM API keys: an llmPorts change is the second bypass besides out-of-band
+    // sparks.json writes. patchSpark() arms the reconcile on the llmPorts
+    // own-property (any shape — [] and the legacy scalar are applied by the
+    // normalizer too) and syncs against the post-normalize ports.
+    const { spark } = registry.patchSpark(req.params.id, body);
     // Restart monitor so collectors pick up host/auth/isLocal changes
     stopMonitor(req.params.id);
     startMonitor(spark);
@@ -438,6 +612,7 @@ app.delete("/api/sparks/:id", (req, res) => {
   try {
     const removed = registry.removeSpark(req.params.id);
     if (!removed) return res.status(404).json({ error: "Spark not found" });
+    fleetEnergyTracker.invalidateMembership(registry.sparkIds);
     stopMonitor(req.params.id);
     res.json({ success: true, removed });
   } catch (err) {
@@ -706,8 +881,8 @@ app.get("/api/sparks/:id/metrics", (req, res) => {
 // Test SSH + LLM connectivity for a registered Spark.
 // Optional body.ssh.password is ALWAYS saved (even if the host is down).
 app.post("/api/sparks/:id/test", async (req, res) => {
-  if (!allowTest(clientKey(req))) {
-    return res.status(429).json({ error: "Too many test requests; try again shortly" });
+  if (!allowTest(principalKey(req)) || !allowGlobalDestructive(clientKey(req))) {
+    return rejectLimited(res, "Too many test requests; try again shortly");
   }
   try {
     const body = req.body || {};
@@ -720,23 +895,18 @@ app.post("/api/sparks/:id/test", async (req, res) => {
     const spark = registry.getSpark(req.params.id);
     if (!spark) return res.status(404).json({ error: "Spark not found" });
 
-    // A NAS node serves nothing: the LLM/Comfy probes are meaningless there.
-    const isNas = spark.kind === "nas";
-    const [sshResult, llmResult, comfyResult] = await Promise.all([
-      spark.isLocal ? Promise.resolve({ ok: true, message: "local (skipped SSH)" }) : sshTest(spark),
-      isNas
-        ? Promise.resolve({ ok: true, message: "skipped (NAS node)", skipped: true })
-        : llmTest(spark, resolveLlmPort(spark)),
-      isNas || !spark.comfyMonitoring
-        ? Promise.resolve({ ok: true, message: isNas ? "skipped (NAS node)" : "disabled", skipped: true })
-        : comfyTest(spark, resolveComfyPort(spark)),
-    ]);
+    const result = await testSparkConnectivity(spark, {
+      llmPort: resolveLlmPort(spark),
+      comfyPort: resolveComfyPort(spark),
+    });
+    const byId = Object.fromEntries(result.capabilities.map((capability) => [capability.id, capability]));
     res.json({
       id: req.params.id,
-      ssh: sshResult,
-      llm: llmResult,
-      comfy: comfyResult,
-      ok: sshResult.ok || llmResult.ok || (comfyResult.ok && !comfyResult.skipped),
+      capabilities: result.capabilities,
+      ssh: { ok: byId.host.status === "pass", message: byId.host.message },
+      llm: { ok: byId.llm.status !== "fail", message: byId.llm.message, skipped: byId.llm.status === "skipped" },
+      comfy: { ok: byId.comfy.status !== "fail", message: byId.comfy.message, skipped: byId.comfy.status === "skipped" },
+      ok: result.ok,
       hasPassword: registry.hasPassword(req.params.id),
     });
   } catch (err) {
@@ -1891,8 +2061,8 @@ console.log(`[serve] ${serveEngine.reconcileOnBoot().deployments} deployment(s) 
 
 // Cancel a ComfyUI job (running interrupt and/or pending dequeue).
 app.post("/api/sparks/:id/comfy/cancel", async (req, res) => {
-  if (!allowTest(clientKey(req))) {
-    return res.status(429).json({ error: "Too many requests; try again shortly" });
+  if (!allowDestructive(principalKey(req)) || !allowGlobalDestructive(clientKey(req))) {
+    return rejectLimited(res, "Too many cancellation requests; try again shortly");
   }
   try {
     const spark = registry.getSpark(req.params.id);
@@ -2326,7 +2496,10 @@ app.get("/api/sparks/:id/llm/daily", (req, res) => {
  * promptType is structured | prose | code | json (default structured).
  * Returns immediately with a bench job; poll GET for progress/results.
  */
-app.post("/api/sparks/:id/llm/bench", (req, res) => {
+app.post("/api/sparks/:id/llm/bench", async (req, res) => {
+  if (decodeBenchManager.activeCount() + prefillBenchManager.activeCount() >= MAX_ACTIVE_BENCH_JOBS) {
+    return res.status(429).json({ error: "Global active benchmark cap reached; wait for a job to finish" });
+  }
   const spark = registry.getSpark(req.params.id);
   if (!spark) return res.status(404).json({ error: "Spark not found" });
   if (spark.workerNode) {
@@ -2347,17 +2520,22 @@ app.post("/api/sparks/:id/llm/bench", (req, res) => {
     ? spark.llmPorts
     : [resolveLlmPort(spark)];
 
-  let port = req.body?.port != null ? Number(req.body.port) : ports[0];
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    return res.status(400).json({ error: "Invalid port" });
+  let target;
+  try {
+    target = await benchHttpTarget(spark, ports, req.body || {});
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message });
   }
-  if (!ports.includes(port)) {
-    return res.status(400).json({ error: "port is not configured for this Spark" });
+  const port = target.port;
+  try {
+    validateDecodeBudget(normalizeConcurrencies(req.body?.concurrencies), req.body?.maxTokens ?? 400);
+  } catch (err) {
+    return res.status(err.status || 429).json({ error: err.message });
   }
 
   // Resolve model id for this port from live snapshot when possible
   let modelId = req.body?.modelId || null;
-  if (!modelId && monitor) {
+  if (!modelId && !target.custom && monitor) {
     const snap = monitor.snapshot();
     const llmList = Array.isArray(snap?.metrics?.llm) ? snap.metrics.llm : [];
     const portIndex = ports.indexOf(port);
@@ -2369,6 +2547,7 @@ app.post("/api/sparks/:id/llm/bench", (req, res) => {
   }
 
   try {
+    if (!consumeBenchStartQuota(req, res)) return;
     const benchDebug = Boolean(getSettings().benchDebugTraces);
     const job = decodeBenchManager.start({
       sparkId: spark.id,
@@ -2379,9 +2558,12 @@ app.post("/api/sparks/:id/llm/bench", (req, res) => {
       maxTokens: req.body?.maxTokens,
       promptType: req.body?.promptType,
       debug: benchDebug,
-      apiKey: resolveLlmApiKey(spark, port),
+      apiKey: target.apiKey,
+      host: target.host,
+      tls: target.tls,
+      resolveTarget: target.resolveTarget,
       sampleHardware:
-        benchDebug && monitor
+        benchDebug && monitor && !target.custom
           ? async () => {
               const fromGpu = (gpu, um) =>
                 gpu
@@ -2487,7 +2669,10 @@ app.delete("/api/sparks/:id/llm/bench/:benchId", (req, res) => {
  * POST body: { port?, contextSizes: number[] }
  * Returns 202 job; poll GET for progress/results.
  */
-app.post("/api/sparks/:id/llm/prefill-bench", (req, res) => {
+app.post("/api/sparks/:id/llm/prefill-bench", async (req, res) => {
+  if (decodeBenchManager.activeCount() + prefillBenchManager.activeCount() >= MAX_ACTIVE_BENCH_JOBS) {
+    return res.status(429).json({ error: "Global active benchmark cap reached; wait for a job to finish" });
+  }
   const spark = registry.getSpark(req.params.id);
   if (!spark) return res.status(404).json({ error: "Spark not found" });
   if (spark.workerNode) {
@@ -2508,16 +2693,21 @@ app.post("/api/sparks/:id/llm/prefill-bench", (req, res) => {
     ? spark.llmPorts
     : [resolveLlmPort(spark)];
 
-  let port = req.body?.port != null ? Number(req.body.port) : ports[0];
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    return res.status(400).json({ error: "Invalid port" });
+  let target;
+  try {
+    target = await benchHttpTarget(spark, ports, req.body || {});
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message });
   }
-  if (!ports.includes(port)) {
-    return res.status(400).json({ error: "port is not configured for this Spark" });
+  const port = target.port;
+  try {
+    validatePrefillBudget(normalizeContextSizes(req.body?.contextSizes));
+  } catch (err) {
+    return res.status(err.status || 429).json({ error: err.message });
   }
 
   let modelId = req.body?.modelId || null;
-  if (!modelId && monitor) {
+  if (!modelId && !target.custom && monitor) {
     const snap = monitor.snapshot();
     const llmList = Array.isArray(snap?.metrics?.llm) ? snap.metrics.llm : [];
     const portIndex = ports.indexOf(port);
@@ -2529,13 +2719,17 @@ app.post("/api/sparks/:id/llm/prefill-bench", (req, res) => {
   }
 
   try {
+    if (!consumeBenchStartQuota(req, res)) return;
     const job = prefillBenchManager.start({
       sparkId: spark.id,
       lanIp: llmProbeHost(spark),
       port,
       modelId,
       contextSizes: req.body?.contextSizes,
-      apiKey: resolveLlmApiKey(spark, port),
+      apiKey: target.apiKey,
+      host: target.host,
+      tls: target.tls,
+      resolveTarget: target.resolveTarget,
     });
     res.status(202).json(job);
   } catch (err) {
@@ -2741,22 +2935,14 @@ app.delete("/api/sparks/:id/llm/showcase/:sessionId", (req, res) => {
 });
 
 // ─── Power management ────────────────────────────────────
-// Shutdown uses host script: sudo -n /usr/local/bin/spark-shutdown (passwordless).
+// Shutdown uses the host script /usr/local/bin/spark-shutdown (see server/shutdown.js
+// for the local host-namespace drop and the remote command string).
 // These routes are unauthenticated like the rest of the LAN dashboard — do not
 // expose port 5555 beyond a trusted network.
 
-const SHUTDOWN_BIN = "/usr/local/bin/spark-shutdown";
-/**
- * Remote: verify script + passwordless sudo, then background shutdown so SSH
- * returns before the host dies. Failures before backgrounding surface to the UI.
- */
-const SHUTDOWN_REMOTE_CMD = [
-  `test -x ${SHUTDOWN_BIN} || { echo "missing ${SHUTDOWN_BIN}" >&2; exit 127; }`,
-  `sudo -n true || { echo "sudo -n required for ${SHUTDOWN_BIN}" >&2; exit 126; }`,
-  `nohup sudo -n ${SHUTDOWN_BIN} >/dev/null 2>&1 &`,
-  `sleep 0.3`,
-  `exit 0`,
-].join("; ");
+/** Remote: verify script + passwordless sudo, then background shutdown so SSH
+ * returns before the host dies. Failures before backgrounding surface to the UI. */
+const SHUTDOWN_REMOTE_CMD = remoteShutdownCommand();
 
 function shutdownErrorStatus(msg) {
   if (/timed out|connection refused|unreachable|no route|ECONNREFUSED|ETIMEDOUT/i.test(msg)) {
@@ -2782,26 +2968,7 @@ function isBenignShutdownSshError(msg) {
  */
 function initiateSparkShutdown(spark) {
   if (spark.isLocal) {
-    return new Promise((resolve, reject) => {
-      try {
-        const child = spawn("sudo", ["-n", SHUTDOWN_BIN], {
-          detached: true,
-          stdio: "ignore",
-        });
-        child.on("error", (err) => {
-          const msg = err.message || String(err);
-          if (/ENOENT|not found/i.test(msg)) {
-            reject(new Error(`${SHUTDOWN_BIN} not found on this host`));
-          } else {
-            reject(new Error(msg));
-          }
-        });
-        child.unref();
-        resolve("Shutdown initiated");
-      } catch (err) {
-        reject(err);
-      }
-    });
+    return spawnLocalShutdown();
   }
 
   return sshExec(spark, SHUTDOWN_REMOTE_CMD, { timeoutMs: 8000 })
@@ -3086,8 +3253,15 @@ const wss = new WebSocketServer({ noServer: true });
 const agentWss = new WebSocketServer({ noServer: true });
 server.on("upgrade", (req, socket, head) => {
   const { pathname } = new URL(req.url, "http://localhost");
-  if (pathname === "/ws") wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
-  else if (pathname === "/agent-ws") agentWss.handleUpgrade(req, socket, head, (ws) => agentWss.emit("connection", ws, req));
+  if (pathname === "/ws") {
+    // Same bearer-token gate as the HTTP routes; loopback-only binds stay open.
+    if (!authorizeUpgrade(req)) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+  } else if (pathname === "/agent-ws") agentWss.handleUpgrade(req, socket, head, (ws) => agentWss.emit("connection", ws, req));
   else socket.destroy();
 });
 agentWss.on("connection", (ws) => {
@@ -3196,6 +3370,7 @@ let _lastBroadcastPayload = null;
 function buildSnapshotPayload() {
   return JSON.stringify({
     type: "snapshot",
+    generatedAt: Date.now(),
     sparks: orderedSnapshots(),
     refreshInterval: getSettings().pollIntervalMs,
   });
@@ -3263,27 +3438,35 @@ loadSettings();
 seedServingScripts();
 ensureAgentToken();
 markAgentTokenConfigured();
-startBroadcast();
 
-server.listen(PORT, BIND_HOST, () => {
-  console.log(`[sparkControl] server listening on http://${BIND_HOST}:${PORT}`);
-  console.log(`[sparkControl] WebSocket endpoint ws://${BIND_HOST}:${PORT}/ws`);
-  const isLoopback =
-    BIND_HOST === "localhost" || BIND_HOST === "::1" || /^127\./.test(BIND_HOST);
-  if (isLoopback) {
-    console.log("[sparkControl] localhost-only; set BIND_HOST=0.0.0.0 (or a LAN IP) to allow remote access");
-  } else {
-    console.warn(
-      `[sparkControl] WARNING: bound to ${BIND_HOST} — reachable on the LAN. This dashboard is unauthenticated and can SSH into and power off your Sparks; restrict access at the network/firewall layer.`
+const startupPreflight = inspectStartupPreflight(BIND_HOST);
+logStartupPreflight(startupPreflight, BIND_HOST, PORT);
+if (startupPreflight.fatal) {
+  process.exitCode = 1;
+} else {
+  startBroadcast();
+  server.listen(PORT, BIND_HOST, () => {
+    console.log(`[sparkControl] server listening on http://${BIND_HOST}:${PORT}`);
+    console.log(`[sparkControl] WebSocket endpoint ws://${BIND_HOST}:${PORT}/ws`);
+    const remote = requireRemoteAuth(BIND_HOST);
+    const tokenConfigured = Boolean(configuredToken());
+    console.log(
+      `[sparkControl] bind=${BIND_HOST} auth=${tokenConfigured ? "bearer" : remote ? "required-missing" : "loopback-open"}`
     );
-  }
-  startAllMonitors();
-  energyRuntime.start(); // 2 s fleet-energy sampling once monitors are up
-});
+    if (remote && !tokenConfigured) {
+      console.warn(
+        "[sparkControl] WARNING: remote bind without SPARKDASH_TOKEN — mutations and telemetry will fail closed until a token is set."
+      );
+    }
+    startAllMonitors();
+    fleetEnergyRuntime.start(); // 2 s fleet-energy sampling once monitors are up
+    llmTokenRuntime.start();
+  });
+}
 
 // ─── Graceful shutdown ─────────────────────────────────
 let _shuttingDown = false;
-function shutdown(signal) {
+async function shutdown(signal) {
   if (_shuttingDown) return;
   _shuttingDown = true;
   console.log(`[sparkControl] ${signal} received, shutting down…`);
@@ -3304,6 +3487,12 @@ function shutdown(signal) {
   } catch (err) {
     console.error("[sparkControl] failed to flush LLM daily history:", err.message);
   }
+  llmTokenRuntime.stop();
+  const energyPersistenceSucceeded = fleetEnergyRuntime.stop();
+  const streamAgentClosedGracefully = await closeLlmStreamAgent();
+  if (!streamAgentClosedGracefully) {
+    console.warn("[sparkDash] LLM dispatcher close timed out; destroyed open sockets");
+  }
   try {
     if (broadcastTimer) {
       clearInterval(broadcastTimer);
@@ -3313,11 +3502,6 @@ function shutdown(signal) {
     monitors.clear();
   } catch (err) {
     console.error("[sparkControl] error during shutdown:", err.message);
-  }
-  try {
-    energyRuntime.stop(); // clears the sampler timer, closes + flushes the tracker
-  } catch (err) {
-    console.error("[sparkControl] failed to stop fleet energy runtime:", err.message);
   }
   try {
     closeTraceStore();
@@ -3336,7 +3520,7 @@ function shutdown(signal) {
     /* ignore */
   }
   wss.close();
-  server.close(() => process.exit(0));
+  server.close(() => process.exit(energyPersistenceSucceeded ? 0 : 1));
   // Safety net: if server.close hangs (lingering keep-alive), force-exit.
   setTimeout(() => process.exit(1), 3000).unref();
 }

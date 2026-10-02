@@ -1,6 +1,9 @@
 import fs from "fs";
 import path from "path";
-import { SystemCollector } from "../collectors/SystemCollector.js";
+import {
+  SystemCollector,
+  collectionWasSuccessful,
+} from "../collectors/SystemCollector.js";
 import { LlmProbe } from "../collectors/LlmProbe.js";
 import { ComfyProbe } from "../collectors/ComfyProbe.js";
 import { HermesProbe } from "../collectors/HermesProbe.js";
@@ -33,7 +36,7 @@ const ONLINE_GRACE_MS = 10000;
 export class SparkMonitor {
   /**
    * @param {object} spark
-   * @param {{ onWolMac?: (sparkId: string, mac: string) => void }} [options]
+   * @param {{ onWolMac?: (sparkId: string, mac: string) => void, onHermesChange?: () => void, resolveHeadModelId?: ((headId: string) => string | null) }} [options]
    */
   constructor(spark, options = {}) {
     this.spark = spark;
@@ -42,6 +45,11 @@ export class SparkMonitor {
       typeof options.onOnlineChange === "function" ? options.onOnlineChange : null;
     this._onHermesChange =
       typeof options.onHermesChange === "function" ? options.onHermesChange : null;
+    // Resolver for worker derived label: maps a head spark id to its live
+    // LLM model id (or null when unknown). Wired by index.js from the monitor
+    // map; never writes back to registry config (derived display only).
+    this._resolveHeadModelId =
+      typeof options.resolveHeadModelId === "function" ? options.resolveHeadModelId : null;
     this.collector = new SystemCollector(spark);
 
     // One LlmProbe per port — none when LLM monitoring is off
@@ -108,7 +116,7 @@ export class SparkMonitor {
     };
     this._lastUpdate = {};
     /** Per-domain last-collection success — fleet-energy freshness contract (FleetEnergyRuntime). */
-    this._metricCollectionSuccessful = {};
+    this._metricCollectionSuccessful = { gpu: false, cpu: false };
 
     // Hardware summary: kind "spark" uses the static DGX Spark specs; kind
     // "host" (dedicated GPU Linux box) detects real hardware once in the
@@ -155,6 +163,10 @@ export class SparkMonitor {
     const prevComfyPort = this._comfyPort(this.spark);
     const wasHermes = this._hermesMonitoringEnabled(this.spark);
     const wasTailscale = this._tailscaleMonitoringEnabled(this.spark);
+    this.collector.invalidatePendingCollections();
+    this._runGeneration += 1;
+    this._inflight = {};
+    this._metricCollectionSuccessful = { gpu: false, cpu: false };
     this.spark = spark;
     this.collector.spark = spark;
 
@@ -273,6 +285,50 @@ export class SparkMonitor {
     if (role === "worker") return false;
     if (role === "head") return true;
     return spark?.llmMonitoring !== false;
+  }
+
+  /**
+   * Live LLM model id from this monitor's own probes (first non-empty
+   * modelId on an AVAILABLE entry across ports), or null when unknown /
+   * offline / protected. Protected/auth-failure snapshots can retain a
+   * previous modelId with available:false — those entries are skipped so a
+   * dead or locked head never yields a stale model (fail-closed).
+   * @returns {string | null}
+   */
+  headLlmModelId() {
+    const llm = this._metrics?.llm;
+    if (!Array.isArray(llm)) return null;
+    for (const entry of llm) {
+      if (entry?.available !== true) continue;
+      const id = typeof entry?.modelId === "string" ? entry.modelId.trim() : "";
+      if (id) return id;
+    }
+    return null;
+  }
+
+  /**
+   * Derived worker label: mirror the head's live served model. Display-only —
+   * never written back to registry config. Non-null only when ALL hold:
+   * role is worker, workerHeadId points at another spark, and the resolver
+   * yields a non-empty model id. A hand-written workerLabel (non-empty) is a
+   * manual override and takes display priority in the frontend; it does not
+   * suppress this derived value.
+   * @returns {string | null}
+   */
+  workerDerivedLabel() {
+    const spark = this.spark || {};
+    const role = spark.role || (spark.workerNode ? "worker" : "standalone");
+    if (role !== "worker") return null;
+    const headId = typeof spark.workerHeadId === "string" ? spark.workerHeadId.trim() : "";
+    if (!headId || headId === spark.id) return null;
+    if (typeof this._resolveHeadModelId !== "function") return null;
+    let model = null;
+    try {
+      model = this._resolveHeadModelId(headId);
+    } catch {
+      return null;
+    }
+    return typeof model === "string" && model.trim() ? model.trim() : null;
   }
 
   /** Start or clear the LLM poll timer based on monitoring flag. */
@@ -464,6 +520,9 @@ export class SparkMonitor {
 
   /** Stop background polling. */
   stop() {
+    this.collector.invalidatePendingCollections();
+    this._runGeneration += 1;
+    this._metricCollectionSuccessful = { gpu: false, cpu: false };
     this._running = false;
     this._stopped = true;
     this._runGeneration += 1;
@@ -509,6 +568,9 @@ export class SparkMonitor {
       role: this.spark.role || (this.spark.workerNode ? "worker" : "standalone"),
       workerLabel: this.spark.workerLabel || null,
       workerHeadId: this.spark.workerHeadId || null,
+      // Derived display label (head model mirror). Raw workerLabel above is
+      // untouched — frontend prefers a non-empty manual label over this.
+      workerDerivedLabel: this.workerDerivedLabel(),
       llmMonitoring: this._llmMonitoringEnabled(),
       llmPort: ports[0] ?? LLM_PORT,
       llmPorts: ports,
@@ -564,25 +626,33 @@ export class SparkMonitor {
     const was = this.online;
     // Token + generation: a check that straddles stop()/updateConfig() must
     // neither flip state nor clear the new lifecycle's in-flight guard.
-    const checkToken = Symbol("online");
     const runGeneration = this._runGeneration;
-    const isCurrentRun = () => this._running && this._runGeneration === runGeneration;
+    const checkToken = Symbol("online");
     this._inflight.online = checkToken;
+    const isCurrentRun = () =>
+      this._running && this._runGeneration === runGeneration;
+    const local = this.spark.isLocal;
+    let uptimeSeconds = this._uptimeSeconds;
     try {
-      let uptime;
-      if (this.spark.isLocal) {
+      if (local) {
         await this.collector.pingHost();
         if (!isCurrentRun()) return;
-        uptime = await this._readUptime();
+        // Non-fatal — uptime stays at its previous value or null
+        try {
+          uptimeSeconds = await this._readUptime();
+        } catch {
+          /* ignore */
+        }
       } else {
         // Remote: the uptime read IS the liveness probe — its round-trip
         // proves the SSH session came up, so no separate sshTest login is paid.
-        uptime = await this._readUptime();
+        uptimeSeconds = await this._readUptime();
+        // The generation gate below (after the await) is the commit guard.
       }
       if (!isCurrentRun()) return;
       this.online = true;
       this.lastOnlineOk = Date.now();
-      this._uptimeSeconds = uptime;
+      this._uptimeSeconds = uptimeSeconds;
       // false→true transition only (clock reconcile re-applies desired clocks).
       if (!was) this._onOnlineChange?.(this.spark.id);
     } catch {
@@ -672,9 +742,11 @@ export class SparkMonitor {
       switch (domain) {
         case "gpu":
           this._metrics.gpu = result;
+          this._metricCollectionSuccessful.gpu = collectionWasSuccessful(result);
           break;
         case "cpu":
           this._metrics.cpu = result;
+          this._metricCollectionSuccessful.cpu = collectionWasSuccessful(result);
           break;
         case "ram":
           this._metrics.ram = result;
@@ -720,9 +792,15 @@ export class SparkMonitor {
           break;
       }
       this._lastUpdate[domain] = Date.now();
-      this._metricCollectionSuccessful[domain] = true;
+      // gpu/cpu provenance is set from the collector's success tag inside the
+      // switch; other domains are considered successful once committed.
+      if (domain !== "gpu" && domain !== "cpu") {
+        this._metricCollectionSuccessful[domain] = true;
+      }
     } catch (err) {
-      this._metricCollectionSuccessful[domain] = false;
+      if (this._running && this._runGeneration === runGeneration) {
+        this._metricCollectionSuccessful[domain] = false;
+      }
       console.error(`[SparkMonitor] ${this.spark.id} ${domain} poll error:`, err.message);
     } finally {
       if (this._inflight[domain] === pollToken) this._inflight[domain] = false;
@@ -731,21 +809,13 @@ export class SparkMonitor {
 
   /** Manually refresh a single domain, bypassing auto-poll guards. */
   async refreshDomain(domain) {
-    if (this._inflight[domain]) return;
-    const refreshToken = Symbol(domain);
+    if (domain !== "storage") return this._pollDomain(domain);
+    if (!this._running || this._inflight[domain]) return;
     const runGeneration = this._runGeneration;
+    const refreshToken = Symbol(domain);
     this._inflight[domain] = refreshToken;
     try {
-      let result;
-      switch (domain) {
-        case "storage":
-          result = await this.collector.collectStorage();
-          break;
-        default:
-          // Fall back to _pollDomain for other domains
-          this._inflight[domain] = false;
-          return this._pollDomain(domain);
-      }
+      const result = await this.collector.collectStorage();
       if (!this._running || this._runGeneration !== runGeneration) return;
       this._metrics.storage = result;
       this._lastUpdate[domain] = Date.now();
@@ -900,4 +970,3 @@ export class SparkMonitor {
     };
   }
 }
-

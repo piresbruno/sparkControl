@@ -7,9 +7,9 @@ import express from "express";
 import {
   FleetEnergyTracker as BaseFleetEnergyTracker,
   estimateNodeWatts,
-} from "../FleetEnergyTracker.js";
+} from "../../energy/FleetEnergyTracker.js";
 
-const fleetEnergyRuntime = await import("../FleetEnergyRuntime.js").catch(() => ({}));
+const fleetEnergyRuntime = await import("../../energy/FleetEnergyRuntime.js").catch(() => ({}));
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -180,11 +180,13 @@ const APPROVED_RESPONSE_FIELDS = [
   "whPerOutputToken24h",
   "outputTokens24h",
   "coverage24hMs",
+  "coverage24hWindowMs",
   "coverage31dMs",
-  "nodeCoverage24hMs",
-  "nodeCoverage31dMs",
+  "coverage31dWindowMs",
   "nodeEnergy24hKwh",
   "nodeEnergy31dKwh",
+  "nodeCoverage24hMs",
+  "nodeCoverage31dMs",
   "hourlyWatts24h",
 ];
 
@@ -203,7 +205,9 @@ function assertFleetEnergyResponseContract(response) {
     "freshNodeCount",
     "outputTokens24h",
     "coverage24hMs",
+    "coverage24hWindowMs",
     "coverage31dMs",
+    "coverage31dWindowMs",
   ]) {
     assert.equal(typeof response[field], "number", field);
     assert.equal(Number.isFinite(response[field]), true, field);
@@ -225,9 +229,12 @@ function assertFleetEnergyResponseContract(response) {
   }
   for (const field of ["nodeEnergy24hKwh", "nodeEnergy31dKwh"]) {
     assert.deepEqual(Object.keys(response[field]), CANONICAL_NODE_IDS);
-    for (const value of Object.values(response[field])) {
-      assertNullableFiniteNumber(value);
-    }
+    assert.equal(
+      Object.values(response[field]).every(
+        (value) => value === null || Number.isFinite(value)
+      ),
+      true
+    );
   }
   assert.equal(response.hourlyWatts24h.length, 24);
   response.hourlyWatts24h.forEach(assertNullableFiniteNumber);
@@ -635,6 +642,9 @@ test("integration splits energy and coverage at UTC minute boundaries", (t) => {
   const tracker = new FleetEnergyTracker({
     filePath,
     load: false,
+    // Pin the clock: `flush()` prunes buckets older than the retention window
+    // against _now(), so a real "today" would delete these fixtures.
+    now: () => minute + 61_000,
     setIntervalFn: () => 1,
     clearIntervalFn: () => {},
   });

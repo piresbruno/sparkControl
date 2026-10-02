@@ -18,6 +18,9 @@ config/spark-clocks.json
 config/serve-recipes.json
 config/serve-deployments.json
 config/serving/
+config/llm-token-totals.json
+config/llm-token-totals.json.*
+config/.fleet-energy.json.*.tmp
 config/gpu-memory.json
 config/gpu-memory.json.*
 config/bench-exports/

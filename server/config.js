@@ -21,18 +21,26 @@ const LLM_DAILY_JSON_PATH =
 /** Analysis trace store (A1). env override for dev checkouts with root-owned config/. */
 const TRACES_DB_PATH =
   process.env.TRACES_DB_PATH || path.join(ROOT, "config", "traces.sqlite");
+/** Cumulative LLM token totals per model (gitignored). */
+const LLM_TOKEN_JSON_PATH =
+  process.env.LLM_TOKEN_JSON_PATH || path.join(ROOT, "config", "llm-token-totals.json");
+/** Rolling fleet energy estimates (gitignored; written atomically at mode 0600). */
+const FLEET_ENERGY_JSON_PATH =
+  process.env.FLEET_ENERGY_JSON_PATH || path.join(ROOT, "config", "fleet-energy.json");
 
 // ─── LLM / Comfy probe timeouts ──────────────────────────
 const LLM_PROBE_TIMEOUT_MS = 3000;
 const COMFY_PROBE_TIMEOUT_MS = parseInt(process.env.COMFY_PROBE_TIMEOUT_MS || "3000", 10);
 const TAILSCALE_PROBE_TIMEOUT_MS = parseInt(process.env.TAILSCALE_PROBE_TIMEOUT_MS || "8000", 10);
 const SSH_CONNECT_TIMEOUT = 5; // seconds
-// SSH connection multiplexing (ControlMaster): one long-lived master socket per
-// host+user collapses the many short-lived logins each poll cycle pays into a
-// single TCP/auth handshake. SSH_MULTIPLEX=0 disables it (escape hatch for
-// sshd_config MaxSessions 1); SSH_CONTROL_PERSIST is the idle TTL in seconds.
+// Reuse one authenticated SSH connection per Spark instead of dialing a new one
+// for every collector tick. Set SSH_MULTIPLEX=0 to go back to one connection
+// per command (e.g. an sshd with `MaxSessions 1`). SSH_CONTROL_PERSIST_SECONDS
+// is the master's idle TTL; SSH_CONTROL_PERSIST remains as a legacy fallback.
 const SSH_MULTIPLEX = process.env.SSH_MULTIPLEX !== "0";
-const SSH_CONTROL_PERSIST = process.env.SSH_CONTROL_PERSIST || "300";
+const SSH_CONTROL_PERSIST_SECONDS =
+  process.env.SSH_CONTROL_PERSIST_SECONDS ?? process.env.SSH_CONTROL_PERSIST ?? "60";
+const SSH_CONTROL_PERSIST = SSH_CONTROL_PERSIST_SECONDS;
 
 // ─── Poll intervals (milliseconds) ───────────────────────
 const POLL_INTERVAL_GPU = parseInt(process.env.POLL_INTERVAL_GPU || "2000", 10);
@@ -114,11 +122,14 @@ export {
   SPARKS_SECRETS_PATH,
   SECRETS_KEY_PATH,
   LLM_DAILY_JSON_PATH,
+  LLM_TOKEN_JSON_PATH,
+  FLEET_ENERGY_JSON_PATH,
   LLM_PROBE_TIMEOUT_MS,
   COMFY_PROBE_TIMEOUT_MS,
   TAILSCALE_PROBE_TIMEOUT_MS,
   SSH_CONNECT_TIMEOUT,
   SSH_MULTIPLEX,
+  SSH_CONTROL_PERSIST_SECONDS,
   SSH_CONTROL_PERSIST,
   POLL_INTERVAL_GPU,
   POLL_INTERVAL_CPU,

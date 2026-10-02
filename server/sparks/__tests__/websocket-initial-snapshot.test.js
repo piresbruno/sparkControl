@@ -1,89 +1,84 @@
-/**
- * Regression: the initial snapshot on WS connect goes to the NEW client only.
- * Broadcasting it (old behavior) pushed a duplicate full snapshot at every
- * already-connected dashboard whenever another tab opened.
- */
-import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
+import { once } from "node:events";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
+import test from "node:test";
 import { WebSocket } from "ws";
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ws-snap-"));
-const fakeHome = path.join(tmp, "home");
-fs.mkdirSync(fakeHome, { recursive: true });
-process.env.HOME = fakeHome;
-for (const [k, v] of Object.entries({
-  SETTINGS_JSON_PATH: "settings.json",
-  SPARKS_SECRETS_PATH: "secrets.json",
-  SECRETS_KEY_PATH: "key",
-  SPARKS_JSON_PATH: "sparks.json",
-  LLM_DAILY_JSON_PATH: "llm-daily.json",
-  TRACES_DB_PATH: "traces.sqlite",
-  SPARKDASH_JOBS_STATE_PATH: "jobs.json",
-})) process.env[k] = path.join(tmp, v);
-process.env.PORT = "5834";
-
-const BASE = "http://127.0.0.1:5834";
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function waitMessage(client, timeoutMs = 3000) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("no WS message within timeout")), timeoutMs);
-    client.once("message", (data) => {
-      clearTimeout(timer);
-      resolve(data.toString());
-    });
-  });
+async function freePort() {
+  const server = createServer();
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return port;
 }
 
-let mod;
+function nextMessage(ws, timeoutMs = 1_000) {
+  return Promise.race([
+    once(ws, "message").then(([data]) => String(data)),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("timed out waiting for WebSocket message")), timeoutMs)
+    ),
+  ]);
+}
 
-before(async () => {
-  mod = await import("../../index.js");
-  await delay(400);
-  // Slow the periodic broadcast out of the way: only connection-triggered
-  // snapshots can appear during the test window.
-  await fetch(`${BASE}/api/settings`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ pollIntervalMs: 60000 }),
+function expectNoMessage(ws, timeoutMs = 150) {
+  return Promise.race([
+    once(ws, "message").then(() => assert.fail("existing client received another initial snapshot")),
+    new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+}
+
+test("a new WebSocket client receives its initial snapshot without rebroadcasting to existing clients", async (t) => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "sparkdash-ws-"));
+  const sparksPath = path.join(tmp, "sparks.json");
+  await writeFile(sparksPath, "[]\n");
+  const port = await freePort();
+  const child = spawn(process.execPath, ["server/index.js"], {
+    cwd: path.resolve(import.meta.dirname, "../../.."),
+    env: {
+      ...process.env,
+      BIND_HOST: "127.0.0.1",
+      PORT: String(port),
+      SPARKS_JSON_PATH: sparksPath,
+      SPARKS_SECRETS_PATH: path.join(tmp, "sparks-secrets.json"),
+      SECRETS_KEY_PATH: path.join(tmp, ".secrets-key"),
+      LLM_DAILY_JSON_PATH: path.join(tmp, "llm-daily.json"),
+      FLEET_ENERGY_JSON_PATH: path.join(tmp, "fleet-energy.json"),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
   });
-});
+  t.after(() => child.kill("SIGTERM"));
 
-after(async () => {
-  try {
-    mod.server.close();
-  } catch {
-    /* ignore */
-  }
-  fs.rmSync(tmp, { recursive: true, force: true });
-});
+  let output = "";
+  child.stdout.on("data", (chunk) => (output += chunk));
+  child.stderr.on("data", (chunk) => (output += chunk));
+  await Promise.race([
+    new Promise((resolve) => {
+      const check = () =>
+        output.includes("server listening") ? resolve() : setTimeout(check, 10);
+      check();
+    }),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`server did not start:\n${output}`)), 2_000)
+    ),
+  ]);
 
-test("opening a second dashboard sends a snapshot to it alone", async () => {
-  const clientA = new WebSocket("ws://127.0.0.1:5834/ws");
-  const aMessages = [];
-  clientA.on("message", (d) => aMessages.push(d.toString()));
-  clientA.on("error", () => {});
+  const a = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  t.after(() => a.close());
+  await once(a, "open");
+  const first = JSON.parse(await nextMessage(a));
+  assert.equal(first.type, "snapshot");
+  assert.equal(Number.isFinite(first.generatedAt), true);
 
-  const first = JSON.parse(await waitMessage(clientA));
-  assert.equal(first.type, "snapshot", "A gets its initial snapshot");
-  assert.equal(aMessages.length, 1);
-
-  const clientB = new WebSocket("ws://127.0.0.1:5834/ws");
-  const bMessages = [];
-  clientB.on("message", (d) => bMessages.push(d.toString()));
-  clientB.on("error", () => {});
-
-  const second = JSON.parse(await waitMessage(clientB));
-  assert.equal(second.type, "snapshot", "B gets its initial snapshot");
-
-  // Window in which the pre-fix broadcast handed A a second snapshot.
-  await delay(200);
-  assert.equal(aMessages.length, 1, "existing client must not receive the new client's snapshot");
-  assert.equal(bMessages.length, 1, "new client receives exactly one snapshot");
-
-  clientA.close();
-  clientB.close();
+  const noExtraForA = expectNoMessage(a);
+  const b = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  t.after(() => b.close());
+  await once(b, "open");
+  assert.equal(JSON.parse(await nextMessage(b)).type, "snapshot");
+  await noExtraForA;
 });

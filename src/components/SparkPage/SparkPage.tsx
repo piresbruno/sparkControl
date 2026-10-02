@@ -20,6 +20,8 @@ import "../../styles/console.css";
 interface SparkPageProps {
   spark: SparkSnapshot;
   temperatureUnit: "celsius" | "fahrenheit";
+  /** Show "Copy image" in the benchmark dialogs (Settings, off by default). */
+  benchShareImage?: boolean;
   onEdit?: () => void;
   /** Navigate app views: null → overview, string → another spark id. */
   onNavigate?: (id: string | null) => void;
@@ -86,7 +88,13 @@ function dataField(k: string, v: string | null) {
   );
 }
 
-export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkPageProps) {
+export function SparkPage({
+  spark,
+  temperatureUnit,
+  benchShareImage = false,
+  onEdit,
+  onNavigate,
+}: SparkPageProps) {
   const { metrics } = spark;
   const activeChannel = useChannelSpy();
   const [llmPorts, setLlmPorts] = useState<number[]>(spark.llmPorts ?? [spark.llmPort ?? 8888]);
@@ -218,8 +226,10 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
               />
               <span className="rack__name">{spark.name}</span>
               {role !== "standalone" ? <span className="chip chip--accent">{role}</span> : null}
-              {role === "worker" && spark.workerLabel ? (
-                <span className="chip">{spark.workerLabel}</span>
+              {role === "worker" && (spark.workerLabel?.trim() || spark.workerDerivedLabel?.trim()) ? (
+                <span className="chip">
+                  {spark.workerLabel?.trim() || spark.workerDerivedLabel?.trim()}
+                </span>
               ) : null}
             </div>
           </div>
@@ -332,10 +342,12 @@ export function SparkPage({ spark, temperatureUnit, onEdit, onNavigate }: SparkP
           />
           <ScTests
             sparkId={spark.id}
+            sparkName={spark.name}
             primaryPort={llmOn ? primaryPort : null}
             modelId={primaryLlm?.modelId ?? null}
             contextLength={primaryLlm?.contextLength ?? null}
             llmAvailable={Boolean(primaryLlm?.available)}
+            shareImage={benchShareImage}
           />
 
           {/* ── CH·04 Node — demoted identity plate ────────────────── */}

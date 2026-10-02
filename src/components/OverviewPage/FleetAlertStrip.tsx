@@ -49,7 +49,6 @@ export function FleetAlertStrip({
   const alerts = useMemo(() => derive(sparks), [sparks]);
   const firstSeen = useRef(new Map<string, number>());
   const [now, setNow] = useState(Date.now());
-
   useEffect(() => {
     const active = new Set(alerts.map((alert) => alert.key));
     for (const alert of alerts) if (!firstSeen.current.has(alert.key)) firstSeen.current.set(alert.key, Date.now());

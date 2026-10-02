@@ -13,15 +13,42 @@ import { ThemeSwitch } from "./components/ThemeSwitch";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { GearIcon, SparkIcon } from "./components/ui/icons";
 import { ConnectionBanner } from "./components/ui/ConnectionBanner";
+import { ErrorBanner } from "./components/ui/ErrorBanner";
 import { OVERVIEW_ID, ANALYSIS_ID, MODELS_ID, SERVE_ID } from "./constants";
 
 /** Sentinel tab ids — refreshFromApi must never bounce these back to a spark. */
-const SENTINEL_IDS = new Set([OVERVIEW_ID, ANALYSIS_ID, MODELS_ID, SERVE_ID]);
+const SENTINEL_IDS: Record<string, true> = {
+  [OVERVIEW_ID]: true,
+  [ANALYSIS_ID]: true,
+  [MODELS_ID]: true,
+  [SERVE_ID]: true,
+};
 import { AnalysisPage } from "./components/AnalysisPage/AnalysisPage";
 import { ModelsPage } from "./components/ModelsPage/ModelsPage";
 import { ServePage } from "./components/ServePage/ServePage";
 import { NasPage } from "./components/NasPage/NasPage";
 import type { Settings, SparkSnapshot } from "./api/types";
+import { isWorkerSpark } from "./api/sparkRole";
+
+/** Keep hidden worker ids in their original slots when the visible tabs are reordered. */
+function mergeTabOrderKeepingHidden(
+  allSparks: SparkSnapshot[],
+  visibleOrder: string[],
+  hiddenIds: Set<string>
+): string[] {
+  if (hiddenIds.size === 0) return visibleOrder;
+  const result: string[] = [];
+  let vi = 0;
+  for (const spark of allSparks) {
+    if (hiddenIds.has(spark.id)) {
+      result.push(spark.id);
+    } else if (vi < visibleOrder.length) {
+      result.push(visibleOrder[vi++]);
+    }
+  }
+  while (vi < visibleOrder.length) result.push(visibleOrder[vi++]);
+  return result;
+}
 
 function placeholderSnapshot(
   id: string,
@@ -111,15 +138,35 @@ function placeholderSnapshot(
 }
 
 function DashboardApp() {
-  const { sparks, activeId, setActiveId, activeSpark, connected, lastValidSnapshotAt, snapshotError, refreshInterval } =
-    useSnapshot();
+  const {
+    sparks,
+    activeId,
+    setActiveId,
+    activeSpark,
+    connected,
+    lastValidSnapshotAt,
+    snapshotError,
+    refreshInterval,
+  } = useSnapshot();
+  const [telemetryNow, setTelemetryNow] = useState(Date.now());
   const navigate = useRoute(setActiveId);
   const [showAdd, setShowAdd] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   /** Used when WS is down so add/delete still updates the tab bar */
   const [fallbackSparks, setFallbackSparks] = useState<SparkSnapshot[]>([]);
+  const staleAfterMs = Math.max(10_000, 3 * (refreshInterval ?? 2_000));
+  const telemetryStale =
+    lastValidSnapshotAt != null && telemetryNow - lastValidSnapshotAt > staleAfterMs;
+
+  useEffect(() => {
+    if (lastValidSnapshotAt == null) return;
+    setTelemetryNow(Date.now());
+    const timer = window.setInterval(() => setTelemetryNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [lastValidSnapshotAt]);
 
   // Prefer live WS data; fall back to API-fetched list when empty
   const liveSparks = sparks.length > 0 ? sparks : fallbackSparks;
@@ -153,6 +200,19 @@ function DashboardApp() {
   const isAnalysis = activeId === ANALYSIS_ID;
   const isModels = activeId === MODELS_ID;
   const isServe = activeId === SERVE_ID;
+  const hideWorkers = settings?.hideWorkers ?? false;
+  const hiddenWorkerIds = useMemo(() => {
+    if (!hideWorkers) return new Set<string>();
+    return new Set(
+      displaySparks
+        .filter((s) => isWorkerSpark(s) && s.id !== activeId)
+        .map((s) => s.id)
+    );
+  }, [displaySparks, hideWorkers, activeId]);
+  const tabSparks = useMemo(
+    () => (hideWorkers ? displaySparks.filter((s) => !hiddenWorkerIds.has(s.id)) : displaySparks),
+    [displaySparks, hideWorkers, hiddenWorkerIds]
+  );
   // Sentinel pages (Overview/Analysis/Models/Serve) never resolve to a spark —
   // the displaySparks[0] fallback here must not hijack them.
   const displayActive = isOverview || isAnalysis || isModels || isServe
@@ -167,7 +227,11 @@ function DashboardApp() {
   useEffect(() => {
     fetchSettings()
       .then(setSettings)
-      .catch((err) => console.error("Failed to fetch settings:", err));
+      .catch((err) =>
+        setActionError(
+          `Could not load settings: ${err instanceof Error ? err.message : String(err)}. Reload to retry.`
+        )
+      );
   }, []);
 
   const handleSettingsSaved = useCallback((s: Settings) => {
@@ -180,15 +244,6 @@ function DashboardApp() {
       document.documentElement.setAttribute("data-density", settings.density);
     }
   }, [settings?.density]);
-
-  // Telemetry-health banner clock: 1 s tick so data age and staleness re-render.
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const tick = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(tick);
-  }, []);
-  const stale =
-    lastValidSnapshotAt != null && now - lastValidSnapshotAt > 3 * (refreshInterval ?? 2000);
 
   const refreshFromApi = useCallback(async () => {
     try {
@@ -239,36 +294,39 @@ function DashboardApp() {
           );
         })
       );
-      const activeIsSentinel = SENTINEL_IDS.has(activeId ?? "");
+      const activeIsSentinel = SENTINEL_IDS[activeId ?? ""] === true;
       if (configs.length && !activeIsSentinel && activeId !== OVERVIEW_ID && !configs.some((c) => c.id === activeId)) {
         setActiveId(configs[0].id);
       }
       if (configs.length === 0 && !activeIsSentinel && activeId !== OVERVIEW_ID) setActiveId(null);
     } catch (err) {
       console.error("Failed to refresh sparks:", err);
+      setActionError(
+        `Could not refresh Sparks: ${err instanceof Error ? err.message : String(err)}. Previous data remains visible.`
+      );
     }
   }, [sparks, activeId, setActiveId]);
 
-  const handleReorder = useCallback(async (orderedIds: string[]) => {
-    setOrderOverride(orderedIds);
-    try {
-      await reorderSparks(orderedIds);
-    } catch (err) {
-      console.error("Failed to reorder Sparks:", err);
-      setOrderOverride(null);
-    }
-  }, []);
+  const handleReorder = useCallback(
+    async (orderedIds: string[]) => {
+      const next = mergeTabOrderKeepingHidden(displaySparks, orderedIds, hiddenWorkerIds);
+      setOrderOverride(next);
+      try {
+        await reorderSparks(next);
+      } catch (err) {
+        console.error("Failed to reorder Sparks:", err);
+        setOrderOverride(null);
+        setActionError(
+          `Could not save the Spark order: ${err instanceof Error ? err.message : String(err)}. The previous order was restored.`
+        );
+      }
+    },
+    [displaySparks, hiddenWorkerIds]
+  );
 
   return (
     <div className="min-h-screen p-0 text-text sm:p-8">
       <div className="dashboard-shell">
-        <ConnectionBanner
-          connected={connected}
-          lastValidSnapshotAt={lastValidSnapshotAt}
-          snapshotError={snapshotError}
-          now={now}
-          stale={stale}
-        />
         <header className="flex flex-wrap items-center gap-3" style={{ marginBottom: "var(--density-header-gap)" }}>
           <button
             type="button"
@@ -281,7 +339,7 @@ function DashboardApp() {
             </span>
           </button>
           <SparkTabs
-            sparks={displaySparks}
+            sparks={tabSparks}
             activeId={displayActive?.id ?? activeId}
             onSelect={navigate}
             onAdd={() => setShowAdd(true)}
@@ -301,11 +359,24 @@ function DashboardApp() {
             <ThemeSwitch />
           </div>
         </header>
-        <main>
+        <ConnectionBanner
+          connected={connected}
+          lastValidSnapshotAt={lastValidSnapshotAt}
+          snapshotError={snapshotError}
+          now={telemetryNow}
+          stale={telemetryStale}
+        />
+        <ErrorBanner message={actionError} onDismiss={() => setActionError(null)} />
+        <main className={telemetryStale || !connected ? "telemetry-stale" : undefined}>
           {isOverview ? (
             <OverviewPage
               sparks={displaySparks}
               hideOffline={settings?.autoHideOffline ?? false}
+              hideWorkers={hideWorkers}
+              showFleetEnergy={settings?.showFleetEnergy ?? false}
+              showFleetExceptions={settings?.showFleetExceptions ?? false}
+              showOverviewSearch={settings?.showOverviewSearch ?? false}
+              showLlmTokenTotals={settings?.showLlmTokenTotals ?? false}
               temperatureUnit={settings?.temperatureUnit ?? "celsius"}
               defaultNasRoot={settings?.modelctl?.nasRoot ?? ""}
               onSelectSpark={navigate}
@@ -332,6 +403,7 @@ function DashboardApp() {
               key={displayActive.id}
               spark={displayActive}
               temperatureUnit={settings?.temperatureUnit ?? "celsius"}
+              benchShareImage={settings?.benchShareImage ?? false}
               onEdit={() => setEditId(displayActive.id)}
               onNavigate={navigate}
             />

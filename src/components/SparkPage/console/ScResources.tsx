@@ -10,10 +10,12 @@
  * widen MB → bytes before the consoleUtils byte-based formatters.
  */
 import { type MouseEvent } from "react";
-import type { SparkSnapshot } from "../../../api/types";
+import type { GpuDevice, SparkSnapshot } from "../../../api/types";
 import { resolveSparkRole } from "../../../api/sparkRole";
 import { useMetricsHistoryTail } from "../../../hooks/metricsStore";
+import { formatBytesPerSec, formatMb } from "../../../shared/formatBytes";
 import {
+  ScChip,
   ScHist,
   ScLed,
   ScModule,
@@ -37,13 +39,95 @@ interface ScResourcesProps {
   onNavigate?: (id: string | null) => void;
 }
 
-/** Adaptive B/KB/MB/GB per second. */
-function fmtSpeed(bytesPerSec: number | null | undefined): string {
-  if (bytesPerSec == null || !Number.isFinite(bytesPerSec)) return "—";
-  if (bytesPerSec >= 1024 ** 3) return `${(bytesPerSec / 1024 ** 3).toFixed(1)} GB/s`;
-  if (bytesPerSec >= MB) return `${(bytesPerSec / MB).toFixed(1)} MB/s`;
-  if (bytesPerSec >= 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
-  return `${Math.round(bytesPerSec)} B/s`;
+/** "NVIDIA GeForce RTX 5080" → "RTX 5080" for the per-card rows. */
+function shortGpuName(name: string | null): string {
+  if (!name) return "";
+  return name.replace(/^NVIDIA\s+(GeForce\s+)?/i, "");
+}
+
+/** Throttle state → console chip (thermal = err, power/hw = warn, else OK). */
+function throttleChip(reason: string | undefined): { label: string; tone: "default" | "warn" | "err" } {
+  switch (reason) {
+    case "thermal":
+      return { label: "Thermal", tone: "err" };
+    case "power":
+      return { label: "Power", tone: "warn" };
+    case "hw":
+      return { label: "HW", tone: "warn" };
+    default:
+      return { label: "OK", tone: "default" };
+  }
+}
+
+/** One physical GPU on a multi-card host: name, throttle chip, usage/temp
+ *  trends (65/85 °C bands), power draw and VRAM. */
+function GpuDeviceRow({
+  device: d,
+  sparkId,
+  temperatureUnit,
+}: {
+  device: GpuDevice;
+  sparkId: string;
+  temperatureUnit: "celsius" | "fahrenheit";
+}) {
+  const usageHist = useMetricsHistoryTail(sparkId, `gpu.${d.index}.usage`);
+  const tempHist = useMetricsHistoryTail(sparkId, `gpu.${d.index}.temp`);
+  const displayTemp =
+    temperatureUnit === "fahrenheit" ? Math.round((d.temperature * 9) / 5 + 32) : Math.round(d.temperature);
+  const tempUnit = temperatureUnit === "fahrenheit" ? "°F" : "°C";
+  const tempTone: GaugeTone = d.temperature > 85 ? "danger" : d.temperature > 65 ? "warning" : "accent";
+  const usageTone: GaugeTone = d.usage > 85 ? "danger" : d.usage > 60 ? "warning" : "accent";
+  const tone = worstTone(tempTone, usageTone);
+  const chip = throttleChip(d.throttle?.reason);
+  const throttled = Boolean(d.throttle?.detail);
+  const short = shortGpuName(d.name);
+  return (
+    <div className={`gauge${gaugeCell(tone)}`} title={throttled ? d.throttle?.detail : undefined}>
+      <div className="gauge__top">
+        <span className="mlabel" title={d.name ?? undefined}>
+          GPU {d.index}
+          {short ? ` · ${short}` : ""}
+        </span>
+        <ScChip tone={chip.tone} title={throttled ? d.throttle?.detail : undefined}>
+          {chip.label}
+        </ScChip>
+      </div>
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <span className="row" style={{ gap: 6 }}>
+          <span className="mlabel">Use</span>
+          <ScHist values={Array.from(usageHist)} w={56} h={14} tone={histTone(usageTone)} />
+          <span className="bus-line font-tabular">{d.usage}%</span>
+        </span>
+        <span className="row" style={{ gap: 6 }}>
+          <span className="mlabel">Temp</span>
+          <ScHist values={Array.from(tempHist)} w={56} h={14} tone={histTone(tempTone)} />
+          <span className="bus-line font-tabular">
+            {displayTemp}
+            {tempUnit}
+          </span>
+        </span>
+      </div>
+      <div className="gauge__foot">
+        <span>
+          {d.power.draw}W / {d.power.limit}W
+        </span>
+        <span>
+          VRAM{" "}
+          {d.vram.total > 0
+            ? `${formatMb(d.vram.used).replace(/ (GB|MB)$/, "")} / ${formatMb(d.vram.total)}`
+            : d.vram.used > 0
+              ? `${formatMb(d.vram.used)} used`
+              : "—"}
+        </span>
+      </div>
+      {d.vram.total > 0 ? (
+        <ScSeg
+          pct={d.vram.percentage}
+          tone={d.vram.percentage > 85 ? "danger" : d.vram.percentage > 60 ? "warning" : "accent"}
+        />
+      ) : null}
+    </div>
+  );
 }
 
 /** "/mnt/nvme-data" → "nvme-data"; falls back to the device name. */
@@ -106,7 +190,10 @@ export function ScResources({
   const gpuTemp = metrics.gpu?.temperature ?? null;
   const usage = metrics.gpu?.usage ?? null;
   const power = metrics.gpu?.power ?? null;
-  const gpuTitle = power ? `GPU — ${fmtInt(power.draw)}/${fmtInt(power.limit)} W` : "GPU";
+  const gpuDevices = metrics.gpu?.gpus ?? [];
+  const multiGpu = gpuDevices.length > 1;
+  const allCards = multiGpu ? " (all cards)" : "";
+  const gpuTitle = power ? `GPU — ${fmtInt(power.draw)}/${fmtInt(power.limit)} W${allCards}` : "GPU";
   const displayTemp =
     gpuTemp == null
       ? null
@@ -208,7 +295,10 @@ export function ScResources({
       <ScModule label="Gauges">
         <div className="gauge-grid">
           {/* VRAM */}
-          <div className={`gauge${gaugeCell(vramTone)}`}>
+          <div
+            className={`gauge${gaugeCell(vramTone)}`}
+            title={multiGpu ? `VRAM (all cards)${vramTotalLabel ? ` — ${vramTotalLabel}` : ""}` : undefined}
+          >
             <div className="gauge__top">
               <span className="mlabel">VRAM</span>
               <span className="gauge__value">
@@ -283,6 +373,33 @@ export function ScResources({
             </div>
           ) : null}
         </div>
+
+        {/* Per-card breakdown — only when the host has more than one GPU */}
+        {multiGpu ? (
+          <div className="stack" style={{ marginTop: "var(--space-3)" }}>
+            <span className="mlabel">{gpuDevices.length} GPUs</span>
+            {gpuDevices.map((d) => (
+              <GpuDeviceRow
+                key={d.uuid ?? d.index}
+                device={d}
+                sparkId={spark.id}
+                temperatureUnit={temperatureUnit}
+              />
+            ))}
+          </div>
+        ) : null}
+
+        {/* NVRM kernel OOM lines since boot — hidden at zero (nv-err port). */}
+        {(metrics.gpu?.nvErrNoMemory ?? 0) > 0 ? (
+          <div
+            className="row"
+            style={{ marginTop: "var(--space-3)", justifyContent: "space-between" }}
+            title="NVRM kernel NV_ERR_NO_MEMORY lines since boot (journal). GPU memory allocation failures under pressure."
+          >
+            <span className="mlabel">NV_ERR_NO_MEMORY</span>
+            <ScChip tone="err">{String(metrics.gpu?.nvErrNoMemory)}</ScChip>
+          </div>
+        ) : null}
 
         {/* Worker attribution */}
         {role === "worker" ? (
@@ -366,7 +483,7 @@ export function ScResources({
             </div>
             <span className="bus-line">
               {iface
-                ? `↓ ${fmtSpeed(iface.rxSpeed)} · ↑ ${fmtSpeed(iface.txSpeed)}`
+                ? `↓ ${formatBytesPerSec(iface.rxSpeed)} · ↑ ${formatBytesPerSec(iface.txSpeed)}`
                 : "no data"}
             </span>
           </div>

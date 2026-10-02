@@ -6,7 +6,7 @@ import type {
   NasCatalogResponse,
   SparkSnapshot,
 } from "../../api/types";
-import { resolveSparkRole, isLlmDetectionEnabled } from "../../api/sparkRole";
+import { resolveSparkRole, isLlmDetectionEnabled, isWorkerSpark } from "../../api/sparkRole";
 import {
   fetchModelctlRelease,
   fetchNasCatalog,
@@ -20,18 +20,26 @@ import {
 import { ConfirmShutdownDialog } from "../ConfirmShutdownDialog";
 import { FleetAlertStrip } from "./FleetAlertStrip";
 import { FleetEnergyCard } from "./FleetEnergyCard";
+import { FleetTokenTotals } from "./FleetTokenTotals";
 import { PowerOffIcon, PowerOnIcon, RotateIcon } from "../ui/icons";
 import { agoLabel, fmtStore, matchStoreMount, versionIsNewer } from "../NasPage/nasUtils";
 import { ACTIVITY_LABEL, ACTIVITY_TIP, fmtUptimeShort } from "../SparkPage/console/consoleUtils";
 import { useEngineActivity } from "../SparkPage/console/useEngineActivity";
 import { ScHist, ScLed, ScSeg, gaugeCell, histTone, worstTone } from "../SparkPage/console/ScKit";
 import { useMetricsHistoryTail } from "../../hooks/metricsStore";
+import { formatMb } from "../../shared/formatBytes";
 import "../../styles/console.css";
 import "../../styles/overview.css";
 
 interface OverviewPageProps {
   sparks: SparkSnapshot[];
   hideOffline?: boolean;
+  hideWorkers?: boolean;
+  showFleetEnergy?: boolean;
+  showFleetExceptions?: boolean;
+  showOverviewSearch?: boolean;
+  /** Overview LLM token totals card (cumulative tokens per model). */
+  showLlmTokenTotals?: boolean;
   temperatureUnit?: "celsius" | "fahrenheit";
   onSelectSpark?: (id: string) => void;
   /** settings.modelctl.nasRoot — store-root fallback for NAS cards. */
@@ -42,10 +50,7 @@ function celsiusToFahrenheit(c: number): number {
   return Math.round(c * 9 / 5 + 32);
 }
 
-function formatMb(mb: number): string {
-  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
-  return `${Math.round(mb)} MB`;
-}
+
 
 /** Format a storage value in MB, stripping trailing ".0" and optionally omitting the unit. */
 function fmtStorage(mb: number, unit: boolean): string {
@@ -495,7 +500,11 @@ function SparkCard({
                             ? "sgLang"
                             : llm.backend === "exl3"
                               ? "EXL3"
-                              : llm.backend ?? "LLM"
+                              : llm.backend === "q27"
+                                ? "q27"
+                                : llm.backend === "tensorfold"
+                                  ? "TensorFold"
+                                  : llm.backend ?? "LLM"
                     }
                     value={llm.modelId ?? "unknown"}
                     tone="accent"
@@ -698,8 +707,30 @@ function NasSparkCard({
   );
 }
 
-export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "celsius", defaultNasRoot = "", onSelectSpark }: OverviewPageProps) {
-  const visibleSparks = hideOffline ? sparks.filter((s) => s.online) : sparks;
+export function OverviewPage({
+  sparks,
+  hideOffline = false,
+  hideWorkers = false,
+  showFleetEnergy = false,
+  showFleetExceptions = false,
+  showOverviewSearch = false,
+  showLlmTokenTotals = false,
+  temperatureUnit = "celsius",
+  defaultNasRoot = "",
+  onSelectSpark,
+}: OverviewPageProps) {
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "online" | "offline" | "issues">("all");
+  const withoutWorkers = hideWorkers ? sparks.filter((s) => !isWorkerSpark(s)) : sparks;
+  const visibleSparks = withoutWorkers.filter((spark) => {
+    if (hideOffline && !spark.online) return false;
+    if (showOverviewSearch && query && !spark.name.toLowerCase().includes(query.toLowerCase())) return false;
+    if (showOverviewSearch && statusFilter === "online" && !spark.online) return false;
+    if (showOverviewSearch && statusFilter === "offline" && spark.online) return false;
+    if (showOverviewSearch && statusFilter === "issues" && spark.online && !spark.metrics.storage.some((disk) => disk.percentage >= 90)) return false;
+    return true;
+  });
+  const hiddenWorkerCount = hideWorkers ? sparks.filter(isWorkerSpark).length : 0;
   const [batchLoading, setBatchLoading] = useState(false);
   const [batchMsg, setBatchMsg] = useState<{ text: string; tone: "ok" | "err" } | null>(null);
   const [shutdownOpen, setShutdownOpen] = useState(false);
@@ -896,8 +927,8 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
     }
   }
 
-  if (visibleSparks.length === 0) {
-    const allOffline = hideOffline && sparks.length > 0;
+  if (withoutWorkers.length === 0 || (hideOffline && withoutWorkers.every((spark) => !spark.online))) {
+    const allOffline = hideOffline && withoutWorkers.length > 0;
     return (
       <div className="spark-console">
         <div className="module ocard-empty" style={{ maxWidth: 420, margin: "64px auto 0" }}>
@@ -908,6 +939,7 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
               : "Click the + tab to add a DGX Spark unit."}
           </p>
         </div>
+
       </div>
     );
   }
@@ -1025,11 +1057,40 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
           )}
         </div>
       </header>
-      <FleetAlertStrip sparks={sparks} onSelect={onSelectSpark} />
-      <FleetEnergyCard
-        nodeCount={visibleSparks.length}
-        nodeNames={Object.fromEntries(sparks.map((s) => [s.id, s.name]))}
-      />
+      {hiddenWorkerCount > 0 && (
+        <span className="text-[11px] text-muted">
+          {hiddenWorkerCount} worker{hiddenWorkerCount === 1 ? "" : "s"} hidden
+        </span>
+      )}
+      {showOverviewSearch ? (
+        <div className="flex flex-wrap gap-2" role="search" aria-label="Filter fleet units">
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search up to 12 units"
+            aria-label="Search units by name"
+            className="min-h-11 min-w-52 flex-1 rounded border border-border bg-surface-elevated px-3 text-sm text-text"
+          />
+          <select
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}
+            aria-label="Filter units by status"
+            className="min-h-11 rounded border border-border bg-surface-elevated px-3 text-sm text-text"
+          >
+            <option value="all">All status</option>
+            <option value="online">Online</option>
+            <option value="offline">Offline</option>
+            <option value="issues">Issues</option>
+          </select>
+        </div>
+      ) : null}
+      {showFleetExceptions ? <FleetAlertStrip sparks={sparks} onSelect={onSelectSpark} /> : null}
+      {showFleetEnergy ? (
+        <FleetEnergyCard
+          nodeCount={sparks.length}
+          nodeNames={Object.fromEntries(sparks.map((s) => [s.id, s.name]))}
+        />
+      ) : null}
       <ConfirmShutdownDialog
         open={shutdownOpen}
         onClose={() => setShutdownOpen(false)}
@@ -1038,7 +1099,13 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
         description={`Gracefully shut down all ${onlineShutdownCount} online Spark${onlineShutdownCount === 1 ? "" : "s"}? Offline nodes will be skipped.`}
         confirmLabel="Shut down all"
       />
+      {showLlmTokenTotals ? <FleetTokenTotals /> : null}
       <div className="overview-page grid sm:grid-cols-2 lg:grid-cols-3" style={{ gap: "var(--density-page-gap)" }}>
+        {visibleSparks.length === 0 && (
+          <p className="panel p-6 text-sm text-muted sm:col-span-2 lg:col-span-3">
+            No units match the current search and status filters.
+          </p>
+        )}
         {visibleSparks.map((spark) =>
           spark.kind === "nas" ? (
             <NasSparkCard

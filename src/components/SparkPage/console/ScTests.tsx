@@ -13,16 +13,49 @@ import { useActivePrefillBench } from "./useActivePrefillBench";
 import { BenchmarkDialog } from "../BenchmarkDialog";
 import { PrefillBenchDialog } from "../PrefillBenchDialog";
 import { formatContextSize, formatTtft } from "../../../shared/prefillBench.js";
-import type { PrefillBenchJob } from "../../../api/types";
+import { parseLlmTargetInput } from "../../../shared/llmTarget.js";
+import type { LlmBenchTarget, PrefillBenchJob } from "../../../api/types";
 
 interface ScTestsProps {
   sparkId: string;
+  /** Unit display name — lands on the benchmark share card. */
+  sparkName?: string | null;
   /** null when LLM monitoring is off */
   primaryPort: number | null;
   modelId: string | null;
   contextLength: number | null;
   llmAvailable: boolean;
+  /** Settings → Benchmark share image: the copy button also carries the card. */
+  shareImage?: boolean;
 }
+
+const REMOTE_STORAGE_KEY = "sparkdash.remote-bench-target";
+
+/** Typed on-demand bench target survives reloads (LlmPanel parity). */
+function readStoredRemote(): { host: string; port: string; tls: boolean } {
+  try {
+    const raw = localStorage.getItem(REMOTE_STORAGE_KEY);
+    if (!raw) return { host: "", port: "443", tls: true };
+    const v = JSON.parse(raw) as { host?: string; port?: number; tls?: boolean };
+    return {
+      host: typeof v.host === "string" ? v.host : "",
+      port: v.port != null ? String(v.port) : "443",
+      tls: v.tls !== false,
+    };
+  } catch {
+    return { host: "", port: "443", tls: true };
+  }
+}
+
+const INPUT_STYLE: CSSProperties = {
+  width: "100%",
+  border: "1px solid var(--color-border)",
+  borderRadius: 6,
+  background: "var(--color-surface-elevated)",
+  color: "var(--color-text)",
+  padding: "3px 7px",
+  fontSize: "var(--fs-11)",
+};
 
 /** Responsive card grid (stacks naturally on narrow viewports). */
 const GRID_STYLE: CSSProperties = {
@@ -98,13 +131,60 @@ function prefillChipTitle(job: PrefillBenchJob): string {
 
 export function ScTests({
   sparkId,
+  sparkName = null,
   primaryPort,
   modelId,
   contextLength,
   llmAvailable,
+  shareImage = false,
 }: ScTestsProps) {
   const [benchOpen, setBenchOpen] = useState(false);
   const [prefillOpen, setPrefillOpen] = useState(false);
+  // Bench target: null = this Spark's LLM; set = typed on-demand endpoint.
+  const [remoteTarget, setRemoteTarget] = useState<LlmBenchTarget | null>(null);
+  const [remoteOpen, setRemoteOpen] = useState(false);
+  const [hostDraft, setHostDraft] = useState(() => readStoredRemote().host);
+  const [portDraft, setPortDraft] = useState(() => readStoredRemote().port);
+  const [tls, setTls] = useState(() => readStoredRemote().tls);
+  const [remoteError, setRemoteError] = useState<string | null>(null);
+
+  const persistRemote = (t: LlmBenchTarget) => {
+    try {
+      localStorage.setItem(REMOTE_STORAGE_KEY, JSON.stringify(t));
+    } catch {
+      /* ignore */
+    }
+  };
+
+  /** Normalise the host field on blur; leave it as typed if it is not yet valid. */
+  const applyHostBlur = () => {
+    if (!hostDraft.trim()) return;
+    try {
+      const p = parseLlmTargetInput(hostDraft, portDraft, tls);
+      setHostDraft(p.host);
+      setPortDraft(String(p.port));
+      setTls(p.tls);
+      setRemoteError(null);
+    } catch {
+      /* leave as typed until Run */
+    }
+  };
+
+  const launchRemote = (kind: "decode" | "prefill") => {
+    try {
+      const p = parseLlmTargetInput(hostDraft, portDraft, tls);
+      persistRemote(p);
+      setHostDraft(p.host);
+      setPortDraft(String(p.port));
+      setTls(p.tls);
+      setRemoteError(null);
+      setRemoteTarget(p);
+      if (kind === "decode") setBenchOpen(true);
+      else setPrefillOpen(true);
+    } catch (err: unknown) {
+      setRemoteError(err instanceof Error ? err.message : String(err));
+    }
+  };
   // Live "prefill bench running" feedback: a run takes minutes and the dialog
   // may be closed, so the channel reports it (poll-based, no server change).
   // The button then opens the dialog attached to the active run — the server
@@ -175,9 +255,25 @@ export function ScTests({
               disabled={!engineUp}
               title={engineUp ? undefined : OFF_TITLE}
               style={engineUp ? undefined : { opacity: 0.5 }}
-              onClick={() => setBenchOpen(true)}
+              onClick={() => {
+                setRemoteTarget(null);
+                setBenchOpen(true);
+              }}
             >
               ▶ Run decode bench
+            </button>
+            <button
+              type="button"
+              className="key"
+              style={remoteOpen ? { borderColor: "var(--color-accent)", color: "var(--color-accent)" } : undefined}
+              aria-expanded={remoteOpen}
+              title="On-demand bench against a typed host (HTTPS Tailscale, LAN IP, …). Not probed until you run."
+              onClick={() => {
+                setRemoteOpen((v) => !v);
+                setRemoteError(null);
+              }}
+            >
+              Remote
             </button>
           </div>
           <div className="test-card__foot">
@@ -204,9 +300,25 @@ export function ScTests({
               disabled={!engineUp}
               title={engineUp ? undefined : OFF_TITLE}
               style={engineUp ? undefined : { opacity: 0.5 }}
-              onClick={() => setPrefillOpen(true)}
+              onClick={() => {
+                setRemoteTarget(null);
+                setPrefillOpen(true);
+              }}
             >
               {prefillRunning ? "Open prefill bench" : "▶ Run prefill bench"}
+            </button>
+            <button
+              type="button"
+              className="key"
+              style={remoteOpen ? { borderColor: "var(--color-accent)", color: "var(--color-accent)" } : undefined}
+              aria-expanded={remoteOpen}
+              title="On-demand bench against a typed host (HTTPS Tailscale, LAN IP, …). Not probed until you run."
+              onClick={() => {
+                setRemoteOpen((v) => !v);
+                setRemoteError(null);
+              }}
+            >
+              Remote
             </button>
             {prefillRunning ? (
               <span
@@ -228,6 +340,86 @@ export function ScTests({
         </ScModule>
       </div>
 
+      {/* Remote bench target — typed on-demand endpoint, nothing probed until a run. */}
+      {remoteOpen ? (
+        <ScModule label="Remote bench target" className="test-card" style={CARD_STYLE}>
+          <p className="empty-note" style={{ margin: 0 }}>
+            On-demand endpoint. Paste a URL or type host + port — nothing is probed until you run.
+          </p>
+          <div className="row" style={{ alignItems: "flex-end", gap: 8, flexWrap: "wrap" }}>
+            <label className="stack" style={{ gap: 3, flex: "1 1 220px", minWidth: 0 }}>
+              <span className="mlabel">Host</span>
+              <input
+                type="text"
+                value={hostDraft}
+                onChange={(e) => setHostDraft(e.target.value)}
+                onBlur={applyHostBlur}
+                placeholder="https://name.tailxxxxx.ts.net/v1/models"
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+                className="mono"
+                style={INPUT_STYLE}
+              />
+            </label>
+            <label className="stack" style={{ gap: 3, width: 92 }}>
+              <span className="mlabel">Port</span>
+              <input
+                type="number"
+                min={1}
+                max={65535}
+                inputMode="numeric"
+                value={portDraft}
+                onChange={(e) => setPortDraft(e.target.value)}
+                className="mono"
+                style={INPUT_STYLE}
+              />
+            </label>
+            <label className="row" style={{ alignItems: "center", gap: 6, paddingBottom: 6 }}>
+              <input
+                type="checkbox"
+                checked={tls}
+                onChange={(e) => {
+                  const next = e.target.checked;
+                  setTls(next);
+                  if (next && portDraft === "8888") setPortDraft("443");
+                  if (!next && portDraft === "443") setPortDraft("8888");
+                }}
+                style={{ accentColor: "var(--color-accent)" }}
+              />
+              <span className="mlabel">HTTPS</span>
+            </label>
+          </div>
+          {remoteError ? (
+            <span className="empty-note" style={{ color: "var(--color-danger)" }}>
+              {remoteError}
+            </span>
+          ) : null}
+          <div className="row" style={{ gap: 8 }}>
+            <button
+              type="button"
+              className="key key--primary"
+              disabled={primaryPort == null}
+              title={primaryPort == null ? NO_PORT_TITLE : undefined}
+              style={primaryPort == null ? { opacity: 0.5 } : undefined}
+              onClick={() => launchRemote("decode")}
+            >
+              Decode
+            </button>
+            <button
+              type="button"
+              className="key key--primary"
+              disabled={primaryPort == null}
+              title={primaryPort == null ? NO_PORT_TITLE : undefined}
+              style={primaryPort == null ? { opacity: 0.5 } : undefined}
+              onClick={() => launchRemote("prefill")}
+            >
+              Prefill
+            </button>
+          </div>
+        </ScModule>
+      ) : null}
+
       {/* Dialogs mount only while open (guarded so llmPort is concrete). */}
       {benchOpen && primaryPort != null ? (
         <BenchmarkDialog
@@ -235,7 +427,10 @@ export function ScTests({
           onClose={() => setBenchOpen(false)}
           sparkId={sparkId}
           llmPort={primaryPort}
-          modelId={modelId}
+          modelId={remoteTarget ? null : modelId}
+          remoteTarget={remoteTarget}
+          shareImage={shareImage}
+          sparkName={sparkName}
         />
       ) : null}
       {prefillOpen && primaryPort != null ? (
@@ -244,8 +439,11 @@ export function ScTests({
           onClose={() => setPrefillOpen(false)}
           sparkId={sparkId}
           llmPort={primaryPort}
-          modelId={modelId}
-          contextLength={contextLength}
+          modelId={remoteTarget ? null : modelId}
+          contextLength={remoteTarget ? null : contextLength}
+          remoteTarget={remoteTarget}
+          shareImage={shareImage}
+          sparkName={sparkName}
         />
       ) : null}
     </div>

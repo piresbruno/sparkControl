@@ -101,12 +101,14 @@ const TabLabelButton = memo(
     id,
     name,
     online,
+    isActive,
     onSelect,
     onEdit,
   }: {
     id: string;
     name: string;
     online: boolean;
+    isActive: boolean;
     onSelect: (id: string) => void;
     onEdit?: (id: string) => void;
   }) {
@@ -116,6 +118,7 @@ const TabLabelButton = memo(
         onClick={() => onSelect(id)}
         onDoubleClick={() => onEdit?.(id)}
         className="pill-label"
+        aria-current={isActive ? "page" : undefined}
       >
         <span
           className={`inline-block h-2 w-2 shrink-0 rounded-full ${
@@ -130,6 +133,7 @@ const TabLabelButton = memo(
     prev.id === next.id &&
     prev.name === next.name &&
     prev.online === next.online &&
+    prev.isActive === next.isActive &&
     prev.onSelect === next.onSelect &&
     prev.onEdit === next.onEdit
 );
@@ -181,6 +185,7 @@ function TabChrome({
         id={spark.id}
         name={spark.name}
         online={spark.online}
+        isActive={isActive}
         onSelect={onSelect}
         onEdit={onEdit}
       />
@@ -281,6 +286,8 @@ export function SparkTabs({
           className="icon-circle"
           onClick={() => setMobileMenuOpen((v) => !v)}
           aria-label="Select Spark"
+          aria-expanded={mobileMenuOpen}
+          aria-controls="mobile-spark-menu"
           title="Select Spark"
         >
           <HamburgerIcon className="h-4 w-4" />
@@ -357,6 +364,9 @@ export function SparkTabs({
         <AnalysisTab isActive={activeId === ANALYSIS_ID} onSelect={onSelect} />
         <ModelsTab isActive={activeId === MODELS_ID} onSelect={onSelect} />
         <ServeTab isActive={activeId === SERVE_ID} onSelect={onSelect} />
+        {/* rect (not horizontal-list) strategy: .pill-nav wraps onto several
+            rows once there are more Sparks than fit one line, and the
+            horizontal strategy only ever shifts items along X. */}
         <SortableContext items={items} strategy={rectSortingStrategy}>
           {ordered.map((spark) => (
             <SortableTab
@@ -412,6 +422,7 @@ function OverviewTab({
         type="button"
         onClick={() => onSelect(OVERVIEW_ID)}
         className={`pill-item ${isActive ? "is-active" : ""}`}
+        aria-current={isActive ? "page" : undefined}
       >
         <GridIcon className="h-3.5 w-3.5" />
         Overview
@@ -544,11 +555,12 @@ function MobileSparkMenu({
   if (!isOpen) return null;
 
   return (
-    <div ref={menuRef} className="mobile-spark-menu" role="menu">
+    <div id="mobile-spark-menu" ref={menuRef} className="mobile-spark-menu" role="menu">
       <button
         type="button"
         role="menuitem"
         className={`mobile-menu-item ${activeId === OVERVIEW_ID ? "is-active" : ""}`}
+        aria-current={activeId === OVERVIEW_ID ? "page" : undefined}
         onClick={() => handleItemClick(OVERVIEW_ID)}
       >
         <GridIcon className="h-3.5 w-3.5" />
@@ -587,6 +599,7 @@ function MobileSparkMenu({
           type="button"
           role="menuitem"
           className={`mobile-menu-item ${activeId === spark.id ? "is-active" : ""}`}
+          aria-current={activeId === spark.id ? "page" : undefined}
           onClick={() => handleItemClick(spark.id)}
         >
           <span

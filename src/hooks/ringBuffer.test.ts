@@ -24,6 +24,18 @@ describe("RingBuffer", () => {
     expect(() => new RingBuffer<number>(0)).toThrow();
     expect(() => new RingBuffer<number>(1.5)).toThrow();
   });
+
+  it("bounds an eight-hour-equivalent 12-node metric workload", () => {
+    const series = Array.from({ length: 12 * 8 }, () => new RingBuffer<number>(28_800));
+    const startedAt = performance.now();
+    for (let sample = 0; sample <= 28_800; sample += 1) {
+      for (const buffer of series) buffer.push(sample);
+    }
+    const elapsedMs = performance.now() - startedAt;
+    expect(series.every((buffer) => buffer.length === 28_800)).toBe(true);
+    expect(series[0].toArray().slice(0, 2)).toEqual([1, 2]);
+    expect(elapsedMs).toBeLessThan(5_000);
+  }, 10_000);
 });
 
 describe("TimedRingBuffer", () => {

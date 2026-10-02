@@ -1,12 +1,3 @@
-import { Agent, fetch as undiciFetch } from "undici";
-
-/**
- * Dispatcher dedicated to long-lived LLM SSE streams: disables undici's
- * 300 s headers/body idle timeouts. Must be paired with the undici fetch
- * from the same install (Node's global fetch rejects foreign dispatchers).
- */
-export const LLM_STREAM_AGENT = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
-
 /**
  * Shared OpenAI-compatible SSE streaming helpers used by DecodeBench, PrefillBench, and Showcase.
  *
@@ -14,12 +5,74 @@ export const LLM_STREAM_AGENT = new Agent({ headersTimeout: 0, bodyTimeout: 0 })
  * (not stream EOF), so trailing usage/[DONE] latency does not drag the rate down.
  */
 
+import { Agent, fetch as undiciFetch } from "undici";
+import { getTraceStore } from "./TraceStore.js";
+import { getSettings } from "../settings.js";
+
 /** Response headers worth keeping for request correlation / debugging. */
 const DEBUG_HEADER_RE =
   /^(x-request-id|x-stainless-|server|date|content-type|openai-|x-envoy-|cf-ray|request-id)$/i;
 
 /** Truncate streamed content previews stored for debugging. */
 export const CONTENT_PREVIEW_CHARS = 160;
+
+/**
+ * Undici's default headersTimeout/bodyTimeout is 300s. A 256k prefill that has
+ * not produced a first token (or even response headers) by then is aborted
+ * even when PrefillBench's own timer is 30–45 minutes. 0 disables those idle
+ * cuts; the caller AbortSignal still bounds the request.
+ *
+ * Must use undici's own `fetch` with this Agent. Node 22's global fetch is a
+ * different undici build; passing an npm Agent as `dispatcher` fails immediately
+ * with UND_ERR_INVALID_ARG ("fetch failed").
+ */
+export const LLM_STREAM_AGENT = new Agent({
+  headersTimeout: 0,
+  bodyTimeout: 0,
+});
+
+let streamAgentClosePromise = null;
+
+/** Close the shared dispatcher once, destroying it if graceful close stalls. */
+export function closeLlmStreamAgent(timeoutMs = 2_000) {
+  if (streamAgentClosePromise) return streamAgentClosePromise;
+  streamAgentClosePromise = (async () => {
+    let timer;
+    try {
+      await Promise.race([
+        LLM_STREAM_AGENT.close(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("dispatcher close timed out")), timeoutMs);
+        }),
+      ]);
+      return true;
+    } catch {
+      LLM_STREAM_AGENT.destroy();
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  })();
+  return streamAgentClosePromise;
+}
+
+/** Map fetch/undici failures to a short UI string. */
+export function describeStreamFetchError(err) {
+  if (!err) return "Request failed";
+  const code = err.code || err.cause?.code;
+  if (
+    code === "UND_ERR_HEADERS_TIMEOUT" ||
+    code === "UND_ERR_BODY_TIMEOUT" ||
+    err.name === "HeadersTimeoutError" ||
+    err.name === "BodyTimeoutError"
+  ) {
+    return `HTTP idle timeout (${code || err.name}): no data from the LLM for 5 minutes`;
+  }
+  if (err.name === "AbortError" || err.name === "TimeoutError") {
+    return "Request aborted or timed out";
+  }
+  return err.message || String(err);
+}
 
 export function round2(n) {
   return Math.round(n * 100) / 100;
@@ -43,14 +96,16 @@ export function sleep(ms, signal) {
       reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
       return;
     }
-    const onAbort = () => {
-      clearTimeout(t);
-      reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
-    };
+    const cleanup = () => signal?.removeEventListener("abort", onAbort);
     const t = setTimeout(() => {
-      if (signal) signal.removeEventListener("abort", onAbort);
+      cleanup();
       resolve();
     }, ms);
+    const onAbort = () => {
+      clearTimeout(t);
+      cleanup();
+      reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+    };
     if (signal) {
       signal.addEventListener("abort", onAbort, { once: true });
     }
@@ -106,12 +161,22 @@ export async function readServerGenerationTokens(baseUrl, opts = {}) {
           /^sglang_generation_tokens_total(?:\{[^}]*\})?\s+([\d.eE+-]+)\s*$/gm
         );
       if (sglang != null) return sglang;
+      // q27 (signalnine/q27 engine) — live processed counter first, then the
+      // completion-based per-api total (same preference as LlmProbe).
+      const q27 =
+        fromSeries(
+          /^q27_decode_tokens_processed_total(?:\{[^}]*\})?\s+([\d.eE+-]+)\s*$/gm
+        ) ??
+        fromSeries(
+          /^q27_decode_tokens_total(?:\{[^}]*\})?\s+([\d.eE+-]+)\s*$/gm
+        );
+      if (q27 != null) return q27;
     }
   } catch {
     /* try next */
   }
 
-  // EXL3 serve_openai.py — cumulative completion tokens on /health
+  // EXL3 serve_openai.py / TensorFold — cumulative completion tokens on /health
   try {
     const res = await fetch(`${baseUrl}/health`, {
       signal: AbortSignal.timeout(5_000),
@@ -121,6 +186,7 @@ export async function readServerGenerationTokens(baseUrl, opts = {}) {
       const data = await res.json();
       const v = Number(data?.completion_tokens_total);
       if (Number.isFinite(v) && data?.backend === "exl3") return v;
+      if (Number.isFinite(v) && data?.backend === "tensorfold") return v;
       if (Number.isFinite(v) && typeof data?.busy === "boolean") return v;
     }
   } catch {
@@ -423,7 +489,7 @@ export async function runStreamingRequest(
       traceStore = null;
     }
   }
-  const attempt = async (reqBody, attemptIndex) => {
+  const attempt = async (reqBody) => {
     const t0 = Date.now();
     const result = await runStreamingRequestOnce(url, reqBody, signal, {
       debug,
@@ -442,7 +508,7 @@ export async function runStreamingRequest(
     return result;
   };
 
-  const result = await attempt(body, 0);
+  const result = await attempt(body);
 
   if (
     retryOnThinking400 &&
@@ -459,7 +525,7 @@ export async function runStreamingRequest(
               : {},
         })
       : thinkingOffFallbackBody(body);
-    return attempt(retryBody, 1);
+    return attempt(retryBody);
   }
 
   return result;
@@ -590,6 +656,8 @@ async function runStreamingRequestOnce(
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
+      // Normalize the accumulated buffer so CRLF split across chunks also works.
+      buffer = buffer.replace(/\r\n/g, "\n");
 
       // SSE events are separated by blank lines
       let sep;
@@ -673,11 +741,7 @@ async function runStreamingRequestOnce(
       }
     }
   } catch (err) {
-    if (err?.name === "AbortError") {
-      error = "Request aborted or timed out";
-    } else {
-      error = err?.message || String(err);
-    }
+    error = describeStreamFetchError(err);
   }
 
   const tEnd = performance.now();
@@ -754,6 +818,4 @@ async function runStreamingRequestOnce(
 
   return out;
 }
-import { getTraceStore } from "./TraceStore.js";
-import { getSettings } from "../settings.js";
 
